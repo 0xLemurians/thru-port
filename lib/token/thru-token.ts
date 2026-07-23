@@ -1,5 +1,6 @@
 import {
   ConsensusStatus,
+  Pubkey,
   Signature,
   type Account,
   type Transaction,
@@ -9,6 +10,7 @@ import {
   createInitializeAccountInstruction,
   createInitializeMintInstruction,
   createMintToInstruction,
+  createTransferInstruction,
   deriveMintAddress,
   deriveTokenAccountAddress,
   parseMintAccountData,
@@ -23,8 +25,17 @@ import {
 } from "@/lib/wallet/thru-wallet";
 import {
   runTokenCreationWorkflow,
+  runTokenMutationWorkflow,
   type TokenCreationProgress,
+  type TokenMutationProgress,
 } from "./workflow";
+import {
+  validateMintToPreflight,
+  validateTransferPreflight,
+  verifyMintToDeltas,
+  verifyTransferDeltas,
+} from "./operations";
+import type { KnownTokenRecord } from "./portfolio";
 import {
   validateTokenInput,
   type ValidatedTokenInput,
@@ -62,6 +73,58 @@ export interface CreateTokenResult {
   initialSupplySignature: string;
   mint: MintAccountInfo;
   tokenAccount: TokenAccountInfo;
+}
+
+export interface TokenPortfolioAccount {
+  address: string;
+  state?: TokenAccountInfo;
+  error?: string;
+}
+
+export interface TokenPortfolioItem {
+  mintAddress: string;
+  label?: string;
+  mint?: MintAccountInfo;
+  error?: string;
+  tokenAccounts: TokenPortfolioAccount[];
+}
+
+export interface TokenMutationOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  onProgress: (progress: TokenMutationProgress) => void;
+}
+
+export interface MintAdditionalSupplyInput {
+  mintAddress: string;
+  destinationAddress: string;
+  amount: string;
+}
+
+export interface MintAdditionalSupplyResult {
+  signature: string;
+  amountRaw: bigint;
+  mintAddress: string;
+  destinationAddress: string;
+  mint: MintAccountInfo;
+  destination: TokenAccountInfo;
+}
+
+export interface TransferTokenInput {
+  sourceAddress: string;
+  destinationAddress: string;
+  amount: string;
+}
+
+export interface TransferTokenResult {
+  signature: string;
+  amountRaw: bigint;
+  mintAddress: string;
+  sourceAddress: string;
+  destinationAddress: string;
+  mint: MintAccountInfo;
+  source: TokenAccountInfo;
+  destination: TokenAccountInfo;
 }
 
 interface TokenCreationContext {
@@ -307,6 +370,313 @@ export async function createTokenOnAlphaNet(
   };
 }
 
+export async function fetchTokenPortfolioOnAlphaNet(
+  records: KnownTokenRecord[],
+  options: { signal?: AbortSignal } = {},
+): Promise<TokenPortfolioItem[]> {
+  const { signal } = options;
+  return Promise.all(
+    records.map(async (record): Promise<TokenPortfolioItem> => {
+      signal?.throwIfAborted();
+      const mintResult = await settleTokenRead(() =>
+        getVerifiedMint(record.mintAddress),
+      );
+      const tokenAccounts = await Promise.all(
+        record.tokenAccountAddresses.map(
+          async (address): Promise<TokenPortfolioAccount> => {
+            signal?.throwIfAborted();
+            const result = await settleTokenRead(() =>
+              getVerifiedTokenAccount(address),
+            );
+            signal?.throwIfAborted();
+            if (!result.value) {
+              return { address, error: result.error };
+            }
+            if (result.value.mint !== record.mintAddress) {
+              return {
+                address,
+                state: result.value,
+                error: "This token account belongs to a different mint.",
+              };
+            }
+            return { address, state: result.value };
+          },
+        ),
+      );
+      signal?.throwIfAborted();
+      return {
+        mintAddress: record.mintAddress,
+        ...(record.label ? { label: record.label } : {}),
+        ...(mintResult.value
+          ? { mint: mintResult.value }
+          : { error: mintResult.error }),
+        tokenAccounts,
+      };
+    }),
+  );
+}
+
+export async function mintAdditionalSupplyOnAlphaNet(
+  account: ThruAccount,
+  input: MintAdditionalSupplyInput,
+  options: TokenMutationOptions,
+): Promise<MintAdditionalSupplyResult> {
+  const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
+  const mintAddress = canonicalAddress(input.mintAddress, "Mint address");
+  const destinationAddress = canonicalAddress(
+    input.destinationAddress,
+    "Destination token account",
+  );
+  let beforeMint: MintAccountInfo | null = null;
+  let beforeDestination: TokenAccountInfo | null = null;
+  let amountRaw: bigint | null = null;
+  let afterMint: MintAccountInfo | null = null;
+  let afterDestination: TokenAccountInfo | null = null;
+
+  const result = await runTokenMutationWorkflow(
+    {
+      validate: async () => {
+        signal?.throwIfAborted();
+        await assertActiveWalletExists(account.address, signal);
+        [beforeMint, beforeDestination] = await Promise.all([
+          getVerifiedMint(mintAddress),
+          getVerifiedTokenAccount(destinationAddress),
+        ]);
+        amountRaw = validateMintToPreflight({
+          mintAddress,
+          destinationAddress,
+          activeWalletAddress: account.address,
+          amount: input.amount,
+          mint: beforeMint,
+          destination: beforeDestination,
+        });
+      },
+      execute: async (callbacks) => {
+        signal?.throwIfAborted();
+        const rawAmount = requireValue(amountRaw, "Mint amount");
+        const transaction = await thru.transactions.build({
+          feePayer: { publicKey: account.publicKey },
+          program: TOKEN_PROGRAM_ADDRESS,
+          accounts: {
+            readWrite: [mintAddress, destinationAddress],
+          },
+          instructionData: createMintToInstruction({
+            mintAccountBytes: Pubkey.from(mintAddress).toBytes(),
+            destinationAccountBytes: Pubkey.from(destinationAddress).toBytes(),
+            authorityAccountBytes: account.publicKey,
+            amount: rawAmount,
+          }),
+        });
+        await transaction.sign(account.privateKey);
+        callbacks.onAwaitingFinalConsensus();
+        const signature = await submitAndRequireFinalizedExecution(
+          transaction,
+          callbacks.onSubmitted,
+          timeoutMs,
+          signal,
+          callbacks.onFinalConsensus,
+        );
+        return { signature };
+      },
+      refetchAndVerify: async () => {
+        const mint = requireValue(beforeMint, "Mint preflight state");
+        const destination = requireValue(
+          beforeDestination,
+          "Destination preflight state",
+        );
+        const rawAmount = requireValue(amountRaw, "Mint amount");
+        const verified = await waitForParsedState(
+          async () => {
+            const [nextMint, nextDestination] = await Promise.all([
+              getVerifiedMint(mintAddress),
+              getVerifiedTokenAccount(destinationAddress),
+            ]);
+            return { mint: nextMint, destination: nextDestination };
+          },
+          (next) =>
+            mutationMatches(() =>
+              verifyMintToDeltas({
+                amount: rawAmount,
+                beforeMint: mint,
+                afterMint: next.mint,
+                beforeDestination: destination,
+                afterDestination: next.destination,
+              }),
+            ),
+          signal,
+          "Mint supply or destination balance did not reflect the additional supply.",
+        );
+        verifyMintToDeltas({
+          amount: rawAmount,
+          beforeMint: mint,
+          afterMint: verified.mint,
+          beforeDestination: destination,
+          afterDestination: verified.destination,
+        });
+        afterMint = verified.mint;
+        afterDestination = verified.destination;
+        return verified;
+      },
+    },
+    onProgress,
+  );
+
+  return {
+    signature: result.signature,
+    amountRaw: requireValue<bigint>(amountRaw, "Mint amount"),
+    mintAddress,
+    destinationAddress,
+    mint: requireValue<MintAccountInfo>(afterMint, "Verified mint state"),
+    destination: requireValue<TokenAccountInfo>(
+      afterDestination,
+      "Verified destination token state",
+    ),
+  };
+}
+
+export async function transferTokensOnAlphaNet(
+  account: ThruAccount,
+  input: TransferTokenInput,
+  options: TokenMutationOptions,
+): Promise<TransferTokenResult> {
+  const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
+  const sourceAddress = canonicalAddress(
+    input.sourceAddress,
+    "Source token account",
+  );
+  const destinationAddress = canonicalAddress(
+    input.destinationAddress,
+    "Destination token account",
+  );
+  let beforeMint: MintAccountInfo | null = null;
+  let beforeSource: TokenAccountInfo | null = null;
+  let beforeDestination: TokenAccountInfo | null = null;
+  let amountRaw: bigint | null = null;
+  let afterMint: MintAccountInfo | null = null;
+  let afterSource: TokenAccountInfo | null = null;
+  let afterDestination: TokenAccountInfo | null = null;
+  let mintAddress = "";
+
+  const result = await runTokenMutationWorkflow(
+    {
+      validate: async () => {
+        signal?.throwIfAborted();
+        await assertActiveWalletExists(account.address, signal);
+        [beforeSource, beforeDestination] = await Promise.all([
+          getVerifiedTokenAccount(sourceAddress),
+          getVerifiedTokenAccount(destinationAddress),
+        ]);
+        mintAddress = beforeSource.mint;
+        beforeMint = await getVerifiedMint(mintAddress);
+        amountRaw = validateTransferPreflight({
+          mintAddress,
+          sourceAddress,
+          destinationAddress,
+          activeWalletAddress: account.address,
+          amount: input.amount,
+          mint: beforeMint,
+          source: beforeSource,
+          destination: beforeDestination,
+        });
+      },
+      execute: async (callbacks) => {
+        signal?.throwIfAborted();
+        const rawAmount = requireValue(amountRaw, "Transfer amount");
+        const transaction = await thru.transactions.build({
+          feePayer: { publicKey: account.publicKey },
+          program: TOKEN_PROGRAM_ADDRESS,
+          accounts: {
+            readWrite: [sourceAddress, destinationAddress],
+          },
+          instructionData: createTransferInstruction({
+            sourceAccountBytes: Pubkey.from(sourceAddress).toBytes(),
+            destinationAccountBytes: Pubkey.from(destinationAddress).toBytes(),
+            amount: rawAmount,
+          }),
+        });
+        await transaction.sign(account.privateKey);
+        callbacks.onAwaitingFinalConsensus();
+        const signature = await submitAndRequireFinalizedExecution(
+          transaction,
+          callbacks.onSubmitted,
+          timeoutMs,
+          signal,
+          callbacks.onFinalConsensus,
+        );
+        return { signature };
+      },
+      refetchAndVerify: async () => {
+        const mint = requireValue(beforeMint, "Mint preflight state");
+        const source = requireValue(beforeSource, "Source preflight state");
+        const destination = requireValue(
+          beforeDestination,
+          "Destination preflight state",
+        );
+        const rawAmount = requireValue(amountRaw, "Transfer amount");
+        const verified = await waitForParsedState(
+          async () => {
+            const [nextMint, nextSource, nextDestination] = await Promise.all([
+              getVerifiedMint(mintAddress),
+              getVerifiedTokenAccount(sourceAddress),
+              getVerifiedTokenAccount(destinationAddress),
+            ]);
+            return {
+              mint: nextMint,
+              source: nextSource,
+              destination: nextDestination,
+            };
+          },
+          (next) =>
+            mutationMatches(() =>
+              verifyTransferDeltas({
+                amount: rawAmount,
+                beforeMint: mint,
+                afterMint: next.mint,
+                beforeSource: source,
+                afterSource: next.source,
+                beforeDestination: destination,
+                afterDestination: next.destination,
+              }),
+            ),
+          signal,
+          "Transfer balances or mint supply did not match the submitted amount.",
+        );
+        verifyTransferDeltas({
+          amount: rawAmount,
+          beforeMint: mint,
+          afterMint: verified.mint,
+          beforeSource: source,
+          afterSource: verified.source,
+          beforeDestination: destination,
+          afterDestination: verified.destination,
+        });
+        afterMint = verified.mint;
+        afterSource = verified.source;
+        afterDestination = verified.destination;
+        return verified;
+      },
+    },
+    onProgress,
+  );
+
+  return {
+    signature: result.signature,
+    amountRaw: requireValue<bigint>(amountRaw, "Transfer amount"),
+    mintAddress,
+    sourceAddress,
+    destinationAddress,
+    mint: requireValue<MintAccountInfo>(afterMint, "Verified mint state"),
+    source: requireValue<TokenAccountInfo>(
+      afterSource,
+      "Verified source token state",
+    ),
+    destination: requireValue<TokenAccountInfo>(
+      afterDestination,
+      "Verified destination token state",
+    ),
+  };
+}
+
 async function assertActiveWalletExists(
   address: string,
   signal?: AbortSignal,
@@ -346,11 +716,31 @@ async function submitAndRequireFinalizedExecution(
   onSubmitted: (signature: string) => void,
   timeoutMs: number,
   signal?: AbortSignal,
+  onFinalConsensus?: () => void,
 ): Promise<string> {
   let signature = "";
   let submittedNotified = false;
   let finalized = false;
   let executionSucceeded = false;
+  let finalConsensusNotified = false;
+  let latestExecution:
+    | {
+        vmError: number;
+        userErrorCode: bigint;
+        executionResult?: bigint;
+        errorProgramAccIdx?: number;
+      }
+    | undefined;
+
+  const verifyCompletedExecution = (): boolean => {
+    if (!finalized || !latestExecution) return false;
+    if (!finalConsensusNotified) {
+      finalConsensusNotified = true;
+      onFinalConsensus?.();
+    }
+    executionSucceeded = assertExecutionSucceeded(latestExecution);
+    return executionSucceeded;
+  };
 
   for await (const update of thru.transactions.sendAndTrack(
     transaction.toWire(),
@@ -367,14 +757,14 @@ async function submitAndRequireFinalizedExecution(
     }
 
     if (update.executionResult) {
-      assertExecutionSucceeded(update.executionResult);
-      executionSucceeded = true;
+      latestExecution = update.executionResult;
     }
 
     if (isFinalConsensus(update.consensusStatus)) {
       finalized = true;
     }
 
+    verifyCompletedExecution();
     if (signature && finalized && executionSucceeded) {
       return signature;
     }
@@ -388,12 +778,12 @@ async function submitAndRequireFinalizedExecution(
     signal?.throwIfAborted();
     const status = await thru.transactions.getStatus(signature);
     if (status.executionResult) {
-      assertExecutionSucceeded(status.executionResult);
-      executionSucceeded = true;
+      latestExecution = status.executionResult;
     }
     if (status.statusCode !== undefined && isFinalConsensus(status.statusCode)) {
       finalized = true;
     }
+    verifyCompletedExecution();
     if (finalized && executionSucceeded) {
       return signature;
     }
@@ -420,12 +810,22 @@ function isFinalConsensus(status: number): boolean {
 function assertExecutionSucceeded(result: {
   vmError: number;
   userErrorCode: bigint;
-}): void {
-  if (result.vmError !== 0 || result.userErrorCode !== 0n) {
+  executionResult?: bigint;
+  errorProgramAccIdx?: number;
+}): boolean {
+  if (
+    result.vmError !== 0 ||
+    result.userErrorCode !== 0n ||
+    (result.executionResult !== undefined && result.executionResult !== 0n)
+  ) {
     throw new Error(
-      `Token transaction execution failed (vmError: ${result.vmError}, userErrorCode: ${result.userErrorCode.toString()}).`,
+      `Token transaction execution failed (vmError: ${result.vmError}, ` +
+        `userErrorCode: ${result.userErrorCode.toString()}, ` +
+        `executionResult: ${result.executionResult?.toString() ?? "missing"}, ` +
+        `errorProgramAccIdx: ${result.errorProgramAccIdx ?? "unknown"}).`,
     );
   }
+  return result.executionResult === 0n;
 }
 
 async function getVerifiedMint(address: string): Promise<MintAccountInfo> {
@@ -451,6 +851,44 @@ async function getTokenProgramAccount(address: string): Promise<Account> {
     );
   }
   return account;
+}
+
+async function settleTokenRead<T>(
+  read: () => Promise<T>,
+): Promise<{ value?: T; error?: string }> {
+  try {
+    return { value: await read() };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function canonicalAddress(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${label} is required.`);
+  try {
+    return Pubkey.from(normalized).toThruFmt();
+  } catch {
+    throw new Error(`${label} is not a valid Thru address.`);
+  }
+}
+
+function requireValue<T>(value: T | null, label: string): T {
+  if (value === null) {
+    throw new Error(`${label} is unavailable.`);
+  }
+  return value;
+}
+
+function mutationMatches(verify: () => void): boolean {
+  try {
+    verify();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function waitForMintState(

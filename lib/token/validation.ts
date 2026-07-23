@@ -66,34 +66,35 @@ export function decimalAmountToRaw(
   value: string,
   decimals: number,
   maximum: bigint = TOKEN_AMOUNT_MAX_RAW,
+  fieldLabel = "Initial supply",
 ): bigint {
   validateTokenDecimals(decimals);
 
   const normalized = value.trim();
   if (!normalized) {
-    throw new Error("Initial supply is required.");
+    throw new Error(`${fieldLabel} is required.`);
   }
   if (/[eE]/.test(normalized)) {
     throw new Error("Scientific notation is not supported.");
   }
   if (normalized.startsWith("-") || normalized.startsWith("+")) {
-    throw new Error("Initial supply must be a positive decimal amount.");
+    throw new Error(`${fieldLabel} must be a positive decimal amount.`);
   }
   if (normalized.length > 64) {
-    throw new Error("Initial supply is too large.");
+    throw new Error(`${fieldLabel} is too large.`);
   }
 
   const match = DECIMAL_AMOUNT_PATTERN.exec(normalized);
   if (!match) {
     throw new Error(
-      "Initial supply must use plain decimal notation without separators.",
+      `${fieldLabel} must use plain decimal notation without separators.`,
     );
   }
 
   const fraction = match[1] ?? "";
   if (fraction.length > decimals) {
     throw new Error(
-      `Initial supply can have at most ${decimals} decimal place${
+      `${fieldLabel} can have at most ${decimals} decimal place${
         decimals === 1 ? "" : "s"
       }.`,
     );
@@ -106,11 +107,11 @@ export function decimalAmountToRaw(
     BigInt(fraction.padEnd(decimals, "0") || "0");
 
   if (raw <= 0n) {
-    throw new Error("Initial supply must be greater than zero.");
+    throw new Error(`${fieldLabel} must be greater than zero.`);
   }
   if (raw > maximum) {
     throw new Error(
-      `Initial supply exceeds the maximum raw supply of ${maximum.toString()}.`,
+      `${fieldLabel} exceeds the maximum raw amount of ${maximum.toString()}.`,
     );
   }
 

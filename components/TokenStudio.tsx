@@ -23,6 +23,7 @@ import {
   explorerAddressUrl,
   type ThruAccount,
 } from "@/lib/wallet/thru-wallet";
+import TokenPortfolio from "./TokenPortfolio";
 
 interface TokenStudioProps {
   account: ThruAccount;
@@ -58,6 +59,7 @@ export default function TokenStudio({
   const [result, setResult] = useState<CreateTokenResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [portfolioBusy, setPortfolioBusy] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
 
   useEffect(
@@ -66,6 +68,10 @@ export default function TokenStudio({
     },
     [],
   );
+
+  useEffect(() => {
+    onBusyChange?.(busy || portfolioBusy);
+  }, [busy, onBusyChange, portfolioBusy]);
 
   const decimalValue = Number(decimals);
   const displaySupply = useMemo(() => {
@@ -79,7 +85,6 @@ export default function TokenStudio({
     controllerRef.current?.abort();
     controllerRef.current = controller;
     setBusy(true);
-    onBusyChange?.(true);
     setError(null);
     setResult(null);
     setProgress({ stage: "validating" });
@@ -137,7 +142,6 @@ export default function TokenStudio({
         controllerRef.current = null;
       }
       setBusy(false);
-      onBusyChange?.(false);
     }
   }
 
@@ -160,8 +164,8 @@ export default function TokenStudio({
     <div className="panel token-studio">
       <div className="token-studio-header">
         <div>
-          <p className="eyebrow token-eyebrow">Token Studio · Phase 1</p>
-          <h2 className="panel-title">Create a fungible token</h2>
+          <p className="eyebrow token-eyebrow">Token Studio · Phase 2</p>
+          <h2 className="panel-title">Create and manage fungible tokens</h2>
         </div>
         <span className="account-chip mono" title={account.address}>
           {shortAddress(account.address)}
@@ -176,6 +180,12 @@ export default function TokenStudio({
         </span>
       </div>
 
+      <TokenPortfolio
+        account={account}
+        createdToken={result}
+        onBusyChange={setPortfolioBusy}
+      />
+
       <form className="token-form" onSubmit={handleSubmit}>
         <div className="token-form-grid">
           <label className="form-field">
@@ -185,7 +195,7 @@ export default function TokenStudio({
               type="text"
               value={name}
               onChange={(event) => setName(event.target.value)}
-              disabled={busy || Boolean(result)}
+              disabled={busy || portfolioBusy || Boolean(result)}
               maxLength={TOKEN_NAME_MAX_BYTES}
               placeholder="Example Token"
               autoComplete="off"
@@ -203,7 +213,7 @@ export default function TokenStudio({
               type="text"
               value={ticker}
               onChange={(event) => setTicker(event.target.value.toUpperCase())}
-              disabled={busy || Boolean(result)}
+              disabled={busy || portfolioBusy || Boolean(result)}
               maxLength={TOKEN_TICKER_MAX_BYTES}
               placeholder="EXAMPLE"
               autoCapitalize="characters"
@@ -226,7 +236,7 @@ export default function TokenStudio({
               step="1"
               value={decimals}
               onChange={(event) => setDecimals(event.target.value)}
-              disabled={busy || Boolean(result)}
+              disabled={busy || portfolioBusy || Boolean(result)}
             />
             <span className="hint">
               Integer from {TOKEN_DECIMALS_MIN} to {TOKEN_DECIMALS_MAX}.
@@ -241,7 +251,7 @@ export default function TokenStudio({
               inputMode="decimal"
               value={initialSupply}
               onChange={(event) => setInitialSupply(event.target.value)}
-              disabled={busy || Boolean(result)}
+              disabled={busy || portfolioBusy || Boolean(result)}
               placeholder="1000000"
               autoComplete="off"
               spellCheck={false}
@@ -264,7 +274,11 @@ export default function TokenStudio({
 
         {!result && (
           <div className="row">
-            <button className="btn btn-primary" type="submit" disabled={busy}>
+            <button
+              className="btn btn-primary"
+              type="submit"
+              disabled={busy || portfolioBusy}
+            >
               {busy ? "Creating token…" : "Create token in 3 transactions"}
             </button>
             {busy && (

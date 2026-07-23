@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   runTokenCreationWorkflow,
+  runTokenMutationWorkflow,
   TokenCreationWorkflowError,
+  TokenMutationWorkflowError,
   type TokenCreationOperations,
   type TokenCreationProgress,
+  type TokenMutationProgress,
 } from "../lib/token/workflow";
 
 function successfulOperations(): TokenCreationOperations {
@@ -152,4 +155,78 @@ test("initial-supply execution failure stops before on-chain verification", asyn
   );
 
   assert.equal(verificationCalled, false);
+});
+
+test("token mutation exposes the shared transaction stages in order", async () => {
+  const updates: TokenMutationProgress[] = [];
+  const result = await runTokenMutationWorkflow(
+    {
+      validate: async () => undefined,
+      execute: async (callbacks) => {
+        callbacks.onAwaitingFinalConsensus();
+        callbacks.onSubmitted("mutation-signature");
+        callbacks.onFinalConsensus();
+        return { signature: "mutation-signature" };
+      },
+      refetchAndVerify: async () => "verified",
+    },
+    (progress) => updates.push(progress),
+  );
+
+  assert.deepEqual(result, {
+    signature: "mutation-signature",
+    result: "verified",
+  });
+  assert.deepEqual(
+    updates.map((update) => update.stage),
+    [
+      "validating",
+      "building-transaction",
+      "waiting-final-consensus",
+      "waiting-final-consensus",
+      "verifying-execution",
+      "refetching-on-chain-state",
+      "completed",
+    ],
+  );
+});
+
+test("a failed token mutation is never submitted automatically a second time", async () => {
+  const updates: TokenMutationProgress[] = [];
+  let submissions = 0;
+  let refetches = 0;
+
+  await assert.rejects(
+    () =>
+      runTokenMutationWorkflow(
+        {
+          validate: async () => undefined,
+          execute: async (callbacks) => {
+            submissions += 1;
+            callbacks.onSubmitted("failed-signature");
+            callbacks.onFinalConsensus();
+            throw new Error("vmError: -1");
+          },
+          refetchAndVerify: async () => {
+            refetches += 1;
+          },
+        },
+        (progress) => updates.push(progress),
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof TokenMutationWorkflowError);
+      assert.equal(error.signature, "failed-signature");
+      assert.equal(error.failedAt, "verifying-execution");
+      return true;
+    },
+  );
+
+  assert.equal(submissions, 1);
+  assert.equal(refetches, 0);
+  assert.deepEqual(updates.at(-1), {
+    stage: "failed",
+    failedAt: "verifying-execution",
+    error: "vmError: -1",
+    signature: "failed-signature",
+  });
 });

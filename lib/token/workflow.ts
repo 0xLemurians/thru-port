@@ -127,3 +127,118 @@ export async function runTokenCreationWorkflow(
     throw error;
   }
 }
+
+export const TOKEN_MUTATION_STAGES = [
+  "validating",
+  "building-transaction",
+  "waiting-final-consensus",
+  "verifying-execution",
+  "refetching-on-chain-state",
+  "completed",
+] as const;
+
+export type TokenMutationStage =
+  | (typeof TOKEN_MUTATION_STAGES)[number]
+  | "failed";
+
+export const TOKEN_MUTATION_STAGE_LABELS: Record<TokenMutationStage, string> = {
+  validating: "Validating",
+  "building-transaction": "Building transaction",
+  "waiting-final-consensus": "Waiting for final consensus",
+  "verifying-execution": "Verifying execution",
+  "refetching-on-chain-state": "Refetching on-chain state",
+  completed: "Completed",
+  failed: "Failed",
+};
+
+export interface TokenMutationProgress {
+  stage: TokenMutationStage;
+  failedAt?: Exclude<TokenMutationStage, "failed">;
+  error?: string;
+  signature?: string;
+}
+
+export interface TokenMutationExecutionCallbacks {
+  onAwaitingFinalConsensus: () => void;
+  onSubmitted: (signature: string) => void;
+  onFinalConsensus: () => void;
+}
+
+export interface TokenMutationOperations<TResult> {
+  validate: () => Promise<void>;
+  execute: (
+    callbacks: TokenMutationExecutionCallbacks,
+  ) => Promise<{ signature: string }>;
+  refetchAndVerify: () => Promise<TResult>;
+}
+
+export class TokenMutationWorkflowError extends Error {
+  readonly failedAt: Exclude<TokenMutationStage, "failed">;
+  readonly signature?: string;
+
+  constructor(
+    failedAt: Exclude<TokenMutationStage, "failed">,
+    cause: unknown,
+    signature?: string,
+  ) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(message, { cause });
+    this.name = "TokenMutationWorkflowError";
+    this.failedAt = failedAt;
+    this.signature = signature;
+  }
+}
+
+export async function runTokenMutationWorkflow<TResult>(
+  operations: TokenMutationOperations<TResult>,
+  onProgress: (progress: TokenMutationProgress) => void,
+): Promise<{ signature: string; result: TResult }> {
+  let currentStage: Exclude<TokenMutationStage, "failed"> = "validating";
+  let signature: string | undefined;
+  const progress = (
+    stage: Exclude<TokenMutationStage, "failed">,
+    details: Omit<TokenMutationProgress, "stage"> = {},
+  ) => {
+    currentStage = stage;
+    onProgress({ stage, ...details });
+  };
+
+  try {
+    progress("validating");
+    await operations.validate();
+
+    progress("building-transaction");
+    const execution = await operations.execute({
+      onAwaitingFinalConsensus: () => {
+        progress("waiting-final-consensus", { signature });
+      },
+      onSubmitted: (submittedSignature) => {
+        signature = submittedSignature;
+        progress("waiting-final-consensus", { signature });
+      },
+      onFinalConsensus: () => {
+        progress("verifying-execution", { signature });
+      },
+    });
+    signature = execution.signature;
+
+    progress("refetching-on-chain-state", { signature });
+    const result = await operations.refetchAndVerify();
+
+    progress("completed", { signature });
+    return { signature, result };
+  } catch (cause) {
+    const error = new TokenMutationWorkflowError(
+      currentStage,
+      cause,
+      signature,
+    );
+    onProgress({
+      stage: "failed",
+      failedAt: currentStage,
+      error: error.message,
+      signature,
+    });
+    throw error;
+  }
+}
