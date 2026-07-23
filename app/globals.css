@@ -260,6 +260,7 @@ body::before {
 .btn:focus-visible,
 .tab:focus-visible,
 .icon-btn:focus-visible,
+.workspace-nav-item:focus-visible,
 .template-card:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -489,6 +490,275 @@ textarea:focus-visible {
   margin-top: 32px;
 }
 
+/* Workspace navigation */
+.workspace-nav {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 20px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--ink-raised);
+}
+
+.workspace-nav-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ash);
+  font: 600 12.5px var(--sans);
+  cursor: pointer;
+}
+
+.workspace-nav-item:hover {
+  color: var(--parchment);
+}
+
+.workspace-nav-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.workspace-nav-item-active {
+  color: var(--parchment);
+  border-color: var(--border);
+  background: var(--panel-strong);
+}
+
+.workspace-nav-tag {
+  padding: 2px 5px;
+  border-radius: 999px;
+  color: var(--amber);
+  background: rgba(240, 168, 60, 0.1);
+  font: 600 9px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Token Studio */
+.token-studio {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.token-studio-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.token-studio-header .panel-title,
+.token-eyebrow {
+  margin-bottom: 0;
+}
+
+.experimental-box {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 15px 17px;
+  border: 1px solid rgba(240, 168, 60, 0.28);
+  border-radius: 14px;
+  background: rgba(240, 168, 60, 0.08);
+  color: #f4c98a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.token-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.token-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px 14px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.form-field .hint {
+  font-size: 12px;
+}
+
+.authority-box {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--ink-raised);
+}
+
+.authority-box code {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.token-progress {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--ink-raised);
+  list-style: none;
+}
+
+.token-progress-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: var(--ash-dim);
+  font-size: 12.5px;
+}
+
+.token-progress-node {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font: 700 10px var(--mono);
+}
+
+.token-progress-active {
+  color: var(--parchment);
+}
+
+.token-progress-active .token-progress-node {
+  border-color: var(--ember);
+  color: var(--ember-soft);
+  box-shadow: 0 0 0 3px var(--ember-dim);
+}
+
+.token-progress-done {
+  color: var(--ash);
+}
+
+.token-progress-done .token-progress-node {
+  color: var(--moss);
+  border-color: rgba(61, 220, 151, 0.45);
+  background: var(--moss-dim);
+}
+
+.token-progress-failed {
+  color: #ff8d8d;
+}
+
+.token-progress-failed .token-progress-node {
+  color: #ff8d8d;
+  border-color: rgba(255, 115, 115, 0.55);
+  background: rgba(255, 115, 115, 0.08);
+}
+
+.transaction-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.transaction-list h3 {
+  margin: 0 0 2px;
+  color: var(--ash);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.transaction-link {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--ink-raised);
+  color: var(--parchment);
+  font-size: 12.5px;
+  text-decoration: none;
+}
+
+.transaction-link code {
+  color: var(--ash);
+  font-size: 11px;
+}
+
+.transaction-link:hover {
+  border-color: var(--ember);
+}
+
+.token-error {
+  margin: 0;
+  padding: 13px 15px;
+  border: 1px solid rgba(255, 115, 115, 0.28);
+  border-radius: 12px;
+  background: rgba(255, 115, 115, 0.07);
+  line-height: 1.5;
+}
+
+.token-result {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.token-result .success-box,
+.token-result .field {
+  margin-bottom: 0;
+}
+
+.token-result-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--border-soft);
+}
+
+.token-result-grid div {
+  padding: 12px 14px;
+  background: var(--ink-raised);
+}
+
+.token-result-grid dt {
+  color: var(--ash);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.token-result-grid dd {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 13.5px;
+}
+
 /* Template grid + editor */
 .template-grid {
   display: grid;
@@ -604,8 +874,36 @@ textarea:focus-visible {
     padding: 20px;
   }
 
+  .workspace-nav {
+    overflow-x: auto;
+  }
+
+  .workspace-nav-item {
+    flex: 0 0 auto;
+    min-width: 112px;
+  }
+
+  .workspace-nav-tag {
+    display: none;
+  }
+
+  .token-studio-header,
   .editor-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .token-form-grid,
+  .token-progress,
+  .token-result-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .transaction-link {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .transaction-link code {
+    display: none;
   }
 }

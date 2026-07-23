@@ -4,33 +4,66 @@ import { useState } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import AccountPanel from "./AccountPanel";
 import EditorPanel from "./EditorPanel";
+import TokenStudio from "./TokenStudio";
+import WorkspaceNav, { type WorkspaceStage } from "./WorkspaceNav";
 
 export default function AppFlow() {
-  const [stage, setStage] = useState<"account" | "editor">("account");
+  const [stage, setStage] = useState<WorkspaceStage>("account");
   const [account, setAccount] = useState<ThruAccount | null>(null);
+  const [tokenBusy, setTokenBusy] = useState(false);
 
   function forgetAccount() {
     account?.privateKey.fill(0);
+    setTokenBusy(false);
     setAccount(null);
     setStage("account");
   }
 
   if (stage === "editor" && account) {
     return (
-      <EditorPanel
-        accountAddress={account.address}
-        onBack={() => setStage("account")}
-        onForgetAccount={forgetAccount}
-      />
+      <>
+        <WorkspaceNav
+          current={stage}
+          onChange={setStage}
+          disabled={tokenBusy}
+        />
+        <EditorPanel
+          accountAddress={account.address}
+          onBack={() => setStage("account")}
+          onForgetAccount={forgetAccount}
+        />
+      </>
+    );
+  }
+
+  if (stage === "token" && account) {
+    return (
+      <>
+        <WorkspaceNav
+          current={stage}
+          onChange={setStage}
+          disabled={tokenBusy}
+        />
+        <TokenStudio account={account} onBusyChange={setTokenBusy} />
+      </>
     );
   }
 
   return (
-    <AccountPanel
-      account={account}
-      onAccountChange={setAccount}
-      onContinue={() => setStage("editor")}
-      onForgetAccount={forgetAccount}
-    />
+    <>
+      {account && (
+        <WorkspaceNav
+          current={stage}
+          onChange={setStage}
+          disabled={tokenBusy}
+        />
+      )}
+      <AccountPanel
+        account={account}
+        onAccountChange={setAccount}
+        onContinue={() => setStage("editor")}
+        onForgetAccount={forgetAccount}
+      />
+    </>
   );
 }

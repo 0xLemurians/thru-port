@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
-    "@thru/sdk": "^0.2.39",
+    "@thru/programs": "0.2.39",
+    "@thru/sdk": "0.2.39",
     "next": "^15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
