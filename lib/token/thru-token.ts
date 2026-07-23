@@ -35,6 +35,7 @@ export const TOKEN_PROGRAM_ADDRESS =
 
 const FINALIZATION_TIMEOUT_MS = 60_000;
 const REFRESH_ATTEMPTS = 7;
+const TOKEN_ACCOUNT_DEFAULT_SEED = new Uint8Array(32);
 
 export interface CreateTokenInput {
   name: string;
@@ -67,6 +68,7 @@ interface TokenCreationContext {
   validated: ValidatedTokenInput;
   mint: ReturnType<typeof deriveMintAddress>;
   tokenAccount: ReturnType<typeof deriveTokenAccountAddress>;
+  tokenAccountSeed: Uint8Array;
   mintSeedHex: string;
   verifiedMint?: MintAccountInfo;
   verifiedTokenAccount?: TokenAccountInfo;
@@ -101,16 +103,24 @@ export async function createTokenOnAlphaNet(
           mintSeedHex,
           TOKEN_PROGRAM_ADDRESS,
         );
+        const tokenAccountSeed = TOKEN_ACCOUNT_DEFAULT_SEED.slice();
         const tokenAccount = deriveTokenAccountAddress(
           thru,
           account.address,
           mint.address,
           TOKEN_PROGRAM_ADDRESS,
+          tokenAccountSeed,
         );
 
         await assertAccountDoesNotExist(mint.address);
         await assertAccountDoesNotExist(tokenAccount.address);
-        context = { validated, mint, tokenAccount, mintSeedHex };
+        context = {
+          validated,
+          mint,
+          tokenAccount,
+          tokenAccountSeed,
+          mintSeedHex,
+        };
       },
 
       createMint: async (onSubmitted) => {
@@ -167,6 +177,7 @@ export async function createTokenOnAlphaNet(
       createTokenAccount: async (onSubmitted) => {
         signal?.throwIfAborted();
         const current = getContext();
+        await assertAccountDoesNotExist(current.tokenAccount.address);
         const stateProof = await thru.proofs.generate({
           address: current.tokenAccount.address,
           proofType: StateProofType.CREATING,
@@ -184,7 +195,7 @@ export async function createTokenOnAlphaNet(
             tokenAccountBytes: current.tokenAccount.bytes,
             mintAccountBytes: current.mint.bytes,
             ownerAccountBytes: account.publicKey,
-            seedBytes: current.tokenAccount.derivedSeed,
+            seedBytes: current.tokenAccountSeed,
             stateProof: stateProof.proof,
           }),
         });
