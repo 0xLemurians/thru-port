@@ -1,3 +1,5 @@
+import { TransactionStatusUncertainError } from "./transaction-status";
+
 export const TOKEN_CREATION_STAGES = [
   "validating",
   "creating-mint",
@@ -9,7 +11,10 @@ export const TOKEN_CREATION_STAGES = [
   "completed",
 ] as const;
 
-export type TokenCreationStage = (typeof TOKEN_CREATION_STAGES)[number] | "failed";
+export type TokenCreationStage =
+  | (typeof TOKEN_CREATION_STAGES)[number]
+  | "failed"
+  | "uncertain";
 export type TokenTransactionKind = "mint" | "token-account" | "initial-supply";
 
 export const TOKEN_CREATION_STAGE_LABELS: Record<TokenCreationStage, string> = {
@@ -22,6 +27,7 @@ export const TOKEN_CREATION_STAGE_LABELS: Record<TokenCreationStage, string> = {
   "verifying-on-chain-state": "Verifying on-chain state",
   completed: "Completed",
   failed: "Failed",
+  uncertain: "Status unconfirmed",
 };
 
 export interface TokenTransactionReceipt {
@@ -36,10 +42,12 @@ export interface TokenCreationWorkflowResult {
 
 export interface TokenCreationProgress {
   stage: TokenCreationStage;
-  failedAt?: Exclude<TokenCreationStage, "failed">;
+  failedAt?: Exclude<TokenCreationStage, "failed" | "uncertain">;
+  uncertainAt?: Exclude<TokenCreationStage, "failed" | "uncertain">;
   error?: string;
   signature?: string;
   transactionKind?: TokenTransactionKind;
+  expectedStateObserved?: boolean;
 }
 
 type SubmittedCallback = (signature: string) => void;
@@ -57,10 +65,10 @@ export interface TokenCreationOperations {
 }
 
 export class TokenCreationWorkflowError extends Error {
-  readonly failedAt: Exclude<TokenCreationStage, "failed">;
+  readonly failedAt: Exclude<TokenCreationStage, "failed" | "uncertain">;
 
   constructor(
-    failedAt: Exclude<TokenCreationStage, "failed">,
+    failedAt: Exclude<TokenCreationStage, "failed" | "uncertain">,
     cause: unknown,
   ) {
     const message = cause instanceof Error ? cause.message : String(cause);
@@ -74,9 +82,10 @@ export async function runTokenCreationWorkflow(
   operations: TokenCreationOperations,
   onProgress: (progress: TokenCreationProgress) => void,
 ): Promise<TokenCreationWorkflowResult> {
-  let currentStage: Exclude<TokenCreationStage, "failed"> = "validating";
+  let currentStage: Exclude<TokenCreationStage, "failed" | "uncertain"> =
+    "validating";
   const progress = (
-    stage: Exclude<TokenCreationStage, "failed">,
+    stage: Exclude<TokenCreationStage, "failed" | "uncertain">,
     details: Omit<TokenCreationProgress, "stage"> = {},
   ) => {
     currentStage = stage;
@@ -118,6 +127,16 @@ export async function runTokenCreationWorkflow(
     progress("completed");
     return { mint, tokenAccount, initialSupply };
   } catch (cause) {
+    if (cause instanceof TransactionStatusUncertainError) {
+      onProgress({
+        stage: "uncertain",
+        uncertainAt: currentStage,
+        error: cause.message,
+        signature: cause.signature,
+        expectedStateObserved: cause.expectedStateObserved,
+      });
+      throw cause;
+    }
     const error = new TokenCreationWorkflowError(currentStage, cause);
     onProgress({
       stage: "failed",
@@ -139,7 +158,8 @@ export const TOKEN_MUTATION_STAGES = [
 
 export type TokenMutationStage =
   | (typeof TOKEN_MUTATION_STAGES)[number]
-  | "failed";
+  | "failed"
+  | "uncertain";
 
 export const TOKEN_MUTATION_STAGE_LABELS: Record<TokenMutationStage, string> = {
   validating: "Validating",
@@ -149,13 +169,16 @@ export const TOKEN_MUTATION_STAGE_LABELS: Record<TokenMutationStage, string> = {
   "refetching-on-chain-state": "Refetching on-chain state",
   completed: "Completed",
   failed: "Failed",
+  uncertain: "Status unconfirmed",
 };
 
 export interface TokenMutationProgress {
   stage: TokenMutationStage;
-  failedAt?: Exclude<TokenMutationStage, "failed">;
+  failedAt?: Exclude<TokenMutationStage, "failed" | "uncertain">;
+  uncertainAt?: Exclude<TokenMutationStage, "failed" | "uncertain">;
   error?: string;
   signature?: string;
+  expectedStateObserved?: boolean;
 }
 
 export interface TokenMutationExecutionCallbacks {
@@ -173,11 +196,11 @@ export interface TokenMutationOperations<TResult> {
 }
 
 export class TokenMutationWorkflowError extends Error {
-  readonly failedAt: Exclude<TokenMutationStage, "failed">;
+  readonly failedAt: Exclude<TokenMutationStage, "failed" | "uncertain">;
   readonly signature?: string;
 
   constructor(
-    failedAt: Exclude<TokenMutationStage, "failed">,
+    failedAt: Exclude<TokenMutationStage, "failed" | "uncertain">,
     cause: unknown,
     signature?: string,
   ) {
@@ -193,10 +216,11 @@ export async function runTokenMutationWorkflow<TResult>(
   operations: TokenMutationOperations<TResult>,
   onProgress: (progress: TokenMutationProgress) => void,
 ): Promise<{ signature: string; result: TResult }> {
-  let currentStage: Exclude<TokenMutationStage, "failed"> = "validating";
+  let currentStage: Exclude<TokenMutationStage, "failed" | "uncertain"> =
+    "validating";
   let signature: string | undefined;
   const progress = (
-    stage: Exclude<TokenMutationStage, "failed">,
+    stage: Exclude<TokenMutationStage, "failed" | "uncertain">,
     details: Omit<TokenMutationProgress, "stage"> = {},
   ) => {
     currentStage = stage;
@@ -228,6 +252,16 @@ export async function runTokenMutationWorkflow<TResult>(
     progress("completed", { signature });
     return { signature, result };
   } catch (cause) {
+    if (cause instanceof TransactionStatusUncertainError) {
+      onProgress({
+        stage: "uncertain",
+        uncertainAt: currentStage,
+        error: cause.message,
+        signature: cause.signature,
+        expectedStateObserved: cause.expectedStateObserved,
+      });
+      throw cause;
+    }
     const error = new TokenMutationWorkflowError(
       currentStage,
       cause,

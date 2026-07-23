@@ -9,6 +9,7 @@ import {
   type TokenCreationProgress,
   type TokenMutationProgress,
 } from "../lib/token/workflow";
+import { TransactionStatusUncertainError } from "../lib/token/transaction-status";
 
 function successfulOperations(): TokenCreationOperations {
   return {
@@ -155,6 +156,38 @@ test("initial-supply execution failure stops before on-chain verification", asyn
   );
 
   assert.equal(verificationCalled, false);
+});
+
+test("unconfirmed transaction status is reported as uncertain, not failed", async () => {
+  const updates: TokenCreationProgress[] = [];
+  let tokenAccountCalled = false;
+  const operations = successfulOperations();
+  operations.createMint = async (onSubmitted) => {
+    onSubmitted("mint-signature");
+    throw new TransactionStatusUncertainError("mint-signature", true);
+  };
+  operations.createTokenAccount = async () => {
+    tokenAccountCalled = true;
+    return { signature: "unexpected" };
+  };
+
+  await assert.rejects(
+    () =>
+      runTokenCreationWorkflow(operations, (progress) =>
+        updates.push(progress),
+      ),
+    TransactionStatusUncertainError,
+  );
+
+  assert.equal(tokenAccountCalled, false);
+  assert.deepEqual(updates.at(-1), {
+    stage: "uncertain",
+    uncertainAt: "waiting-mint-finalization",
+    error: "Transaction submitted but final status could not be confirmed",
+    signature: "mint-signature",
+    expectedStateObserved: true,
+  });
+  assert.equal(updates.some((update) => update.stage === "failed"), false);
 });
 
 test("token mutation exposes the shared transaction stages in order", async () => {

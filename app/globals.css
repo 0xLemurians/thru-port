@@ -673,6 +673,26 @@ textarea:focus-visible {
   background: rgba(255, 115, 115, 0.08);
 }
 
+.token-progress-uncertain {
+  color: var(--amber);
+}
+
+.token-progress-uncertain .token-progress-node {
+  color: var(--amber);
+  border-color: rgba(240, 168, 60, 0.55);
+  background: rgba(240, 168, 60, 0.1);
+}
+
+.token-uncertain-box {
+  margin: 0;
+  padding: 13px 15px;
+  border: 1px solid rgba(240, 168, 60, 0.3);
+  border-radius: 12px;
+  background: rgba(240, 168, 60, 0.08);
+  color: #f4c98a;
+  line-height: 1.5;
+}
+
 .transaction-list {
   display: flex;
   flex-direction: column;
@@ -918,6 +938,32 @@ textarea:focus-visible {
   gap: 14px;
 }
 
+.token-resume-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.token-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--ash);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.token-confirmation input {
+  margin-top: 3px;
+}
+
+.token-resume-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .token-action-card {
   display: flex;
   flex-direction: column;
@@ -1080,6 +1126,10 @@ textarea:focus-visible {
   .portfolio-details,
   .portfolio-account-details,
   .token-actions-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .token-resume-panel {
     grid-template-columns: 1fr;
   }
 

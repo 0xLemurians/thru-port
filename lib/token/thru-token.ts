@@ -37,9 +37,21 @@ import {
 } from "./operations";
 import type { KnownTokenRecord } from "./portfolio";
 import {
+  planTokenSetupResume,
+  type TokenResumeProgress,
+  type TokenResumeStage,
+} from "./resume";
+import {
+  decimalAmountToRaw,
   validateTokenInput,
   type ValidatedTokenInput,
 } from "./validation";
+import {
+  TRANSACTION_VISIBILITY_TIMEOUT_MS,
+  TransactionStatusUncertainError,
+  isTransactionNotFoundError,
+  waitForTransactionVisibility,
+} from "./transaction-status";
 
 export const TOKEN_PROGRAM_ADDRESS =
   "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKqq";
@@ -87,6 +99,30 @@ export interface TokenPortfolioItem {
   mint?: MintAccountInfo;
   error?: string;
   tokenAccounts: TokenPortfolioAccount[];
+}
+
+export interface ResumeTokenSetupInput {
+  mintAddress: string;
+  initialSupply: string;
+}
+
+export interface ResumeTokenSetupOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  onProgress: (progress: TokenResumeProgress) => void;
+}
+
+export interface ResumeTokenSetupResult {
+  mintAddress: string;
+  tokenAccountAddress: string;
+  decimals: number;
+  initialSupplyRaw: bigint;
+  tokenAccountCreated: boolean;
+  initialSupplyMinted: boolean;
+  tokenAccountSignature?: string;
+  initialSupplySignature?: string;
+  mint: MintAccountInfo;
+  tokenAccount: TokenAccountInfo;
 }
 
 export interface TokenMutationOptions {
@@ -218,6 +254,21 @@ export async function createTokenOnAlphaNet(
           onSubmitted,
           timeoutMs,
           signal,
+          {
+            verifyExpectedState: () =>
+              observeMintState(
+                current.mint.address,
+                (mint) =>
+                  mint.decimals === current.validated.decimals &&
+                  mint.ticker === current.validated.ticker &&
+                  mint.creator === account.address &&
+                  mint.mintAuthority === account.address &&
+                  mint.supply === 0n &&
+                  mint.freezeAuthority === null &&
+                  !mint.hasFreezeAuthority,
+                "The observed mint state did not match the submitted configuration.",
+              ),
+          },
         );
 
         await waitForMintState(
@@ -269,6 +320,18 @@ export async function createTokenOnAlphaNet(
           onSubmitted,
           timeoutMs,
           signal,
+          {
+            verifyExpectedState: () =>
+              observeTokenAccountState(
+                current.tokenAccount.address,
+                (tokenAccount) =>
+                  tokenAccount.mint === current.mint.address &&
+                  tokenAccount.owner === account.address &&
+                  tokenAccount.amount === 0n &&
+                  !tokenAccount.isFrozen,
+                "The observed token account did not match its mint and owner.",
+              ),
+          },
         );
 
         await waitForTokenAccountState(
@@ -311,6 +374,29 @@ export async function createTokenOnAlphaNet(
           onSubmitted,
           timeoutMs,
           signal,
+          {
+            verifyExpectedState: async () => {
+              const [mintObserved, accountObserved] = await Promise.all([
+                observeMintState(
+                  current.mint.address,
+                  (mint) =>
+                    mint.supply === current.validated.initialSupplyRaw,
+                  "The observed mint supply did not match the initial supply.",
+                ),
+                observeTokenAccountState(
+                  current.tokenAccount.address,
+                  (tokenAccount) =>
+                    tokenAccount.mint === current.mint.address &&
+                    tokenAccount.owner === account.address &&
+                    tokenAccount.amount ===
+                      current.validated.initialSupplyRaw &&
+                    !tokenAccount.isFrozen,
+                  "The observed token balance did not match the initial supply.",
+                ),
+              ]);
+              return mintObserved && accountObserved;
+            },
+          },
         );
         return { signature };
       },
@@ -416,6 +502,278 @@ export async function fetchTokenPortfolioOnAlphaNet(
   );
 }
 
+export async function resumeTokenSetupOnAlphaNet(
+  account: ThruAccount,
+  input: ResumeTokenSetupInput,
+  options: ResumeTokenSetupOptions,
+): Promise<ResumeTokenSetupResult> {
+  const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
+  let currentStage: Exclude<TokenResumeStage, "failed" | "uncertain"> =
+    "validating";
+  let mintAddress = "";
+  let tokenAccountAddress = "";
+  let initialSupplyRaw: bigint | null = null;
+  let mint: MintAccountInfo | null = null;
+  let tokenAccount: TokenAccountInfo | null = null;
+  let tokenAccountSignature: string | undefined;
+  let initialSupplySignature: string | undefined;
+  let tokenAccountCreated = false;
+  let initialSupplyMinted = false;
+
+  const progress = (
+    stage: Exclude<TokenResumeStage, "failed" | "uncertain">,
+    details: Omit<TokenResumeProgress, "stage"> = {},
+  ) => {
+    currentStage = stage;
+    onProgress({ stage, ...details });
+  };
+
+  try {
+    progress("validating");
+    signal?.throwIfAborted();
+    mintAddress = canonicalAddress(input.mintAddress, "Mint address");
+    await assertActiveWalletExists(account.address, signal);
+    mint = await getVerifiedMint(mintAddress);
+    initialSupplyRaw = decimalAmountToRaw(
+      input.initialSupply,
+      mint.decimals,
+      undefined,
+      "Initial supply",
+    );
+
+    const tokenAccountSeed = TOKEN_ACCOUNT_DEFAULT_SEED.slice();
+    const derivedTokenAccount = deriveTokenAccountAddress(
+      thru,
+      account.address,
+      mintAddress,
+      TOKEN_PROGRAM_ADDRESS,
+      tokenAccountSeed,
+    );
+    tokenAccountAddress = derivedTokenAccount.address;
+    tokenAccount = await getOptionalVerifiedTokenAccount(tokenAccountAddress);
+    let plan = planTokenSetupResume({
+      mintAddress,
+      ownerAddress: account.address,
+      mint,
+      tokenAccount,
+    });
+
+    progress("ensuring-token-account", {
+      detail: plan.createTokenAccount
+        ? "The deterministic token account is missing and will be created."
+        : "The deterministic token account already exists; creation is skipped.",
+    });
+
+    if (plan.createTokenAccount) {
+      signal?.throwIfAborted();
+      tokenAccount = await getOptionalVerifiedTokenAccount(tokenAccountAddress);
+      plan = planTokenSetupResume({
+        mintAddress,
+        ownerAddress: account.address,
+        mint,
+        tokenAccount,
+      });
+
+      if (plan.createTokenAccount) {
+        const stateProof = await thru.proofs.generate({
+          address: tokenAccountAddress,
+          proofType: StateProofType.CREATING,
+        });
+        signal?.throwIfAborted();
+        const transaction = await thru.transactions.build({
+          feePayer: { publicKey: account.publicKey },
+          program: TOKEN_PROGRAM_ADDRESS,
+          accounts: {
+            readWrite: [tokenAccountAddress],
+            readOnly: [mintAddress],
+          },
+          instructionData: createInitializeAccountInstruction({
+            tokenAccountBytes: derivedTokenAccount.bytes,
+            mintAccountBytes: Pubkey.from(mintAddress).toBytes(),
+            ownerAccountBytes: account.publicKey,
+            seedBytes: tokenAccountSeed,
+            stateProof: stateProof.proof,
+          }),
+        });
+        await transaction.sign(account.privateKey);
+        tokenAccountSignature = await submitAndRequireFinalizedExecution(
+          transaction,
+          (signature) => {
+            progress("waiting-account-finalization", {
+              signature,
+              transactionKind: "token-account",
+            });
+          },
+          timeoutMs,
+          signal,
+          {
+            verifyExpectedState: () =>
+              observeTokenAccountState(
+                tokenAccountAddress,
+                (state) =>
+                  state.mint === mintAddress &&
+                  state.owner === account.address &&
+                  state.amount === 0n &&
+                  !state.isFrozen,
+                "The observed token account did not match the resumed mint and owner.",
+              ),
+          },
+        );
+        tokenAccount = await waitForTokenAccountState(
+          tokenAccountAddress,
+          (state) =>
+            state.mint === mintAddress &&
+            state.owner === account.address &&
+            state.amount === 0n &&
+            !state.isFrozen,
+          signal,
+          "The resumed token account did not match its mint and owner.",
+        );
+        tokenAccountCreated = true;
+      }
+    }
+
+    mint = await getVerifiedMint(mintAddress);
+    tokenAccount =
+      tokenAccount ?? (await getVerifiedTokenAccount(tokenAccountAddress));
+    plan = planTokenSetupResume({
+      mintAddress,
+      ownerAddress: account.address,
+      mint,
+      tokenAccount,
+    });
+
+    progress("minting-initial-supply", {
+      detail: plan.mintInitialSupply
+        ? "Mint supply is zero; the confirmed initial supply will be minted."
+        : "Mint supply is already non-zero; initial supply minting is skipped.",
+    });
+
+    if (plan.mintInitialSupply) {
+      signal?.throwIfAborted();
+      const rawAmount = requireValue(initialSupplyRaw, "Initial supply");
+      const beforeMint = mint;
+      const beforeTokenAccount = tokenAccount;
+      const transaction = await thru.transactions.build({
+        feePayer: { publicKey: account.publicKey },
+        program: TOKEN_PROGRAM_ADDRESS,
+        accounts: {
+          readWrite: [mintAddress, tokenAccountAddress],
+        },
+        instructionData: createMintToInstruction({
+          mintAccountBytes: Pubkey.from(mintAddress).toBytes(),
+          destinationAccountBytes: Pubkey.from(tokenAccountAddress).toBytes(),
+          authorityAccountBytes: account.publicKey,
+          amount: rawAmount,
+        }),
+      });
+      await transaction.sign(account.privateKey);
+      initialSupplySignature = await submitAndRequireFinalizedExecution(
+        transaction,
+        (signature) => {
+          progress("waiting-supply-finalization", {
+            signature,
+            transactionKind: "initial-supply",
+          });
+        },
+        timeoutMs,
+        signal,
+        {
+          verifyExpectedState: async () => {
+            const [nextMint, nextTokenAccount] = await Promise.all([
+              getVerifiedMint(mintAddress),
+              getVerifiedTokenAccount(tokenAccountAddress),
+            ]);
+            return mutationMatches(() =>
+              verifyMintToDeltas({
+                amount: rawAmount,
+                beforeMint,
+                afterMint: nextMint,
+                beforeDestination: beforeTokenAccount,
+                afterDestination: nextTokenAccount,
+              }),
+            );
+          },
+        },
+      );
+      const verified = await waitForParsedState(
+        async () => {
+          const [nextMint, nextTokenAccount] = await Promise.all([
+            getVerifiedMint(mintAddress),
+            getVerifiedTokenAccount(tokenAccountAddress),
+          ]);
+          return { mint: nextMint, tokenAccount: nextTokenAccount };
+        },
+        (state) =>
+          mutationMatches(() =>
+            verifyMintToDeltas({
+              amount: rawAmount,
+              beforeMint,
+              afterMint: state.mint,
+              beforeDestination: beforeTokenAccount,
+              afterDestination: state.tokenAccount,
+            }),
+          ),
+        signal,
+        "Mint supply or token balance did not reflect the resumed initial supply.",
+      );
+      verifyMintToDeltas({
+        amount: rawAmount,
+        beforeMint,
+        afterMint: verified.mint,
+        beforeDestination: beforeTokenAccount,
+        afterDestination: verified.tokenAccount,
+      });
+      mint = verified.mint;
+      tokenAccount = verified.tokenAccount;
+      initialSupplyMinted = true;
+    }
+
+    progress("verifying-on-chain-state");
+    [mint, tokenAccount] = await Promise.all([
+      getVerifiedMint(mintAddress),
+      getVerifiedTokenAccount(tokenAccountAddress),
+    ]);
+    planTokenSetupResume({
+      mintAddress,
+      ownerAddress: account.address,
+      mint,
+      tokenAccount,
+    });
+
+    progress("completed");
+    return {
+      mintAddress,
+      tokenAccountAddress,
+      decimals: mint.decimals,
+      initialSupplyRaw: requireValue(initialSupplyRaw, "Initial supply"),
+      tokenAccountCreated,
+      initialSupplyMinted,
+      ...(tokenAccountSignature ? { tokenAccountSignature } : {}),
+      ...(initialSupplySignature ? { initialSupplySignature } : {}),
+      mint,
+      tokenAccount,
+    };
+  } catch (error) {
+    if (error instanceof TransactionStatusUncertainError) {
+      onProgress({
+        stage: "uncertain",
+        uncertainAt: currentStage,
+        signature: error.signature,
+        error: error.message,
+        expectedStateObserved: error.expectedStateObserved,
+      });
+      throw error;
+    }
+    onProgress({
+      stage: "failed",
+      failedAt: currentStage,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
 export async function mintAdditionalSupplyOnAlphaNet(
   account: ThruAccount,
   input: MintAdditionalSupplyInput,
@@ -474,7 +832,29 @@ export async function mintAdditionalSupplyOnAlphaNet(
           callbacks.onSubmitted,
           timeoutMs,
           signal,
-          callbacks.onFinalConsensus,
+          {
+            onFinalConsensus: callbacks.onFinalConsensus,
+            verifyExpectedState: async () => {
+              const mint = requireValue(beforeMint, "Mint preflight state");
+              const destination = requireValue(
+                beforeDestination,
+                "Destination preflight state",
+              );
+              const [nextMint, nextDestination] = await Promise.all([
+                getVerifiedMint(mintAddress),
+                getVerifiedTokenAccount(destinationAddress),
+              ]);
+              return mutationMatches(() =>
+                verifyMintToDeltas({
+                  amount: rawAmount,
+                  beforeMint: mint,
+                  afterMint: nextMint,
+                  beforeDestination: destination,
+                  afterDestination: nextDestination,
+                }),
+              );
+            },
+          },
         );
         return { signature };
       },
@@ -601,7 +981,36 @@ export async function transferTokensOnAlphaNet(
           callbacks.onSubmitted,
           timeoutMs,
           signal,
-          callbacks.onFinalConsensus,
+          {
+            onFinalConsensus: callbacks.onFinalConsensus,
+            verifyExpectedState: async () => {
+              const mint = requireValue(beforeMint, "Mint preflight state");
+              const source = requireValue(
+                beforeSource,
+                "Source preflight state",
+              );
+              const destination = requireValue(
+                beforeDestination,
+                "Destination preflight state",
+              );
+              const [nextMint, nextSource, nextDestination] = await Promise.all([
+                getVerifiedMint(mintAddress),
+                getVerifiedTokenAccount(sourceAddress),
+                getVerifiedTokenAccount(destinationAddress),
+              ]);
+              return mutationMatches(() =>
+                verifyTransferDeltas({
+                  amount: rawAmount,
+                  beforeMint: mint,
+                  afterMint: nextMint,
+                  beforeSource: source,
+                  afterSource: nextSource,
+                  beforeDestination: destination,
+                  afterDestination: nextDestination,
+                }),
+              );
+            },
+          },
         );
         return { signature };
       },
@@ -716,8 +1125,12 @@ async function submitAndRequireFinalizedExecution(
   onSubmitted: (signature: string) => void,
   timeoutMs: number,
   signal?: AbortSignal,
-  onFinalConsensus?: () => void,
+  tracking: {
+    onFinalConsensus?: () => void;
+    verifyExpectedState?: () => Promise<boolean>;
+  } = {},
 ): Promise<string> {
+  const { onFinalConsensus, verifyExpectedState } = tracking;
   let signature = "";
   let submittedNotified = false;
   let finalized = false;
@@ -742,62 +1155,57 @@ async function submitAndRequireFinalizedExecution(
     return executionSucceeded;
   };
 
-  for await (const update of thru.transactions.sendAndTrack(
-    transaction.toWire(),
-    { timeoutMs, signal },
-  )) {
-    signal?.throwIfAborted();
+  try {
+    for await (const update of thru.transactions.sendAndTrack(
+      transaction.toWire(),
+      { timeoutMs, signal },
+    )) {
+      signal?.throwIfAborted();
 
-    if (update.signature?.value) {
-      signature = Signature.from(update.signature.value).toThruFmt();
-      if (!submittedNotified) {
-        submittedNotified = true;
-        onSubmitted(signature);
+      if (update.signature?.value) {
+        signature = Signature.from(update.signature.value).toThruFmt();
+        if (!submittedNotified) {
+          submittedNotified = true;
+          onSubmitted(signature);
+        }
+      }
+
+      if (update.executionResult) {
+        latestExecution = update.executionResult;
+      }
+
+      if (isFinalConsensus(update.consensusStatus)) {
+        finalized = true;
+      }
+
+      verifyCompletedExecution();
+      if (signature && finalized && executionSucceeded) {
+        return signature;
       }
     }
-
-    if (update.executionResult) {
-      latestExecution = update.executionResult;
-    }
-
-    if (isFinalConsensus(update.consensusStatus)) {
-      finalized = true;
-    }
-
-    verifyCompletedExecution();
-    if (signature && finalized && executionSucceeded) {
-      return signature;
-    }
+  } catch (error) {
+    if (!signature || !isTransactionNotFoundError(error)) throw error;
   }
 
   if (!signature) {
     throw new Error("The transaction ended without a signature.");
   }
 
-  for (let attempt = 0; attempt < REFRESH_ATTEMPTS; attempt++) {
-    signal?.throwIfAborted();
-    const status = await thru.transactions.getStatus(signature);
-    if (status.executionResult) {
-      latestExecution = status.executionResult;
-    }
-    if (status.statusCode !== undefined && isFinalConsensus(status.statusCode)) {
-      finalized = true;
-    }
-    verifyCompletedExecution();
-    if (finalized && executionSucceeded) {
-      return signature;
-    }
-    await abortableDelay(Math.min(500 * 2 ** attempt, 4_000), signal);
-  }
-
-  if (!finalized) {
-    throw new Error(
-      "The transaction signature was received, but final consensus was not confirmed.",
-    );
-  }
-  throw new Error(
-    "The transaction finalized, but a successful execution result was not confirmed.",
-  );
+  await waitForTransactionVisibility({
+    signature,
+    readStatus: () => thru.transactions.getStatus(signature),
+    isFinalConsensus,
+    assertExecutionSucceeded,
+    verifyExpectedState,
+    onFinalConsensus: () => {
+      if (finalConsensusNotified) return;
+      finalConsensusNotified = true;
+      onFinalConsensus?.();
+    },
+    signal,
+    timeoutMs: Math.min(timeoutMs, TRANSACTION_VISIBILITY_TIMEOUT_MS),
+  });
+  return signature;
 }
 
 function isFinalConsensus(status: number): boolean {
@@ -838,6 +1246,47 @@ async function getVerifiedTokenAccount(
 ): Promise<TokenAccountInfo> {
   const account = await getTokenProgramAccount(address);
   return parseTokenAccountData(account);
+}
+
+async function getOptionalVerifiedTokenAccount(
+  address: string,
+): Promise<TokenAccountInfo | null> {
+  try {
+    return await getVerifiedTokenAccount(address);
+  } catch (error) {
+    if (isAccountNotFoundError(error)) return null;
+    throw error;
+  }
+}
+
+async function observeMintState(
+  address: string,
+  matches: (mint: MintAccountInfo) => boolean,
+  mismatchMessage: string,
+): Promise<boolean> {
+  try {
+    const mint = await getVerifiedMint(address);
+    if (!matches(mint)) throw new Error(mismatchMessage);
+    return true;
+  } catch (error) {
+    if (isAccountNotFoundError(error)) return false;
+    throw error;
+  }
+}
+
+async function observeTokenAccountState(
+  address: string,
+  matches: (tokenAccount: TokenAccountInfo) => boolean,
+  mismatchMessage: string,
+): Promise<boolean> {
+  try {
+    const tokenAccount = await getVerifiedTokenAccount(address);
+    if (!matches(tokenAccount)) throw new Error(mismatchMessage);
+    return true;
+  } catch (error) {
+    if (isAccountNotFoundError(error)) return false;
+    throw error;
+  }
 }
 
 async function getTokenProgramAccount(address: string): Promise<Account> {

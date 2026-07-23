@@ -309,7 +309,13 @@ export default function TokenStudio({
                 aria-current={state === "active" ? "step" : undefined}
               >
                 <span className="token-progress-node" aria-hidden="true">
-                  {state === "done" ? "✓" : state === "failed" ? "!" : index + 1}
+                  {state === "done"
+                    ? "✓"
+                    : state === "failed"
+                      ? "!"
+                      : state === "uncertain"
+                        ? "?"
+                        : index + 1}
                 </span>
                 <span>{label}</span>
               </li>
@@ -341,7 +347,20 @@ export default function TokenStudio({
         </div>
       )}
 
-      {error && <p className="error token-error">{error}</p>}
+      {error && (
+        <p
+          className={
+            progress?.stage === "uncertain"
+              ? "token-uncertain-box"
+              : "error token-error"
+          }
+        >
+          {error}
+          {progress?.stage === "uncertain" &&
+            progress.expectedStateObserved &&
+            " The expected on-chain account state was observed, but final consensus remains unconfirmed."}
+        </p>
+      )}
 
       {result && (
         <div className="token-result">
@@ -440,7 +459,7 @@ function TransactionLink({
   );
 }
 
-type ProgressState = "pending" | "active" | "done" | "failed";
+type ProgressState = "pending" | "active" | "done" | "failed" | "uncertain";
 
 function progressState(
   stage: (typeof DISPLAY_STAGES)[number],
@@ -455,9 +474,19 @@ function progressState(
     if (stageIndex === failedIndex || stage === "completed") return "failed";
     return "pending";
   }
+  if (progress.stage === "uncertain") {
+    const uncertainIndex = progress.uncertainAt
+      ? DISPLAY_STAGES.indexOf(progress.uncertainAt)
+      : 0;
+    if (stageIndex < uncertainIndex) return "done";
+    if (stageIndex === uncertainIndex || stage === "completed") {
+      return "uncertain";
+    }
+    return "pending";
+  }
 
   const activeIndex = DISPLAY_STAGES.indexOf(
-    progress.stage as Exclude<TokenCreationStage, "failed">,
+    progress.stage as Exclude<TokenCreationStage, "failed" | "uncertain">,
   );
   if (progress.stage === "completed" || stageIndex < activeIndex) return "done";
   if (stageIndex === activeIndex) return "active";

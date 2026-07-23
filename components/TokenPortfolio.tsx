@@ -32,6 +32,7 @@ import {
   explorerAddressUrl,
   type ThruAccount,
 } from "@/lib/wallet/thru-wallet";
+import ResumeTokenSetup from "./ResumeTokenSetup";
 
 interface TokenPortfolioProps {
   account: ThruAccount;
@@ -70,6 +71,7 @@ export default function TokenPortfolio({
     null,
   );
   const [mutationBusy, setMutationBusy] = useState(false);
+  const [resumeBusy, setResumeBusy] = useState(false);
 
   const requestTrackerRef = useRef(new LatestRequestTracker());
   const mutationControllerRef = useRef<AbortController | null>(null);
@@ -126,9 +128,11 @@ export default function TokenPortfolio({
     persistAndRefresh(next);
   }, [createdToken, persistAndRefresh, records, storageReady]);
 
+  const actionsBusy = mutationBusy || resumeBusy;
+
   useEffect(() => {
-    onBusyChange?.(mutationBusy);
-  }, [mutationBusy, onBusyChange]);
+    onBusyChange?.(actionsBusy);
+  }, [actionsBusy, onBusyChange]);
 
   const allAccounts = useMemo(
     () =>
@@ -264,6 +268,24 @@ export default function TokenPortfolio({
     }
   }
 
+  const handleResumeCompleted = useCallback(
+    (result: {
+      mintAddress: string;
+      tokenAccountAddress: string;
+    }) => {
+      const existing = records.find(
+        (record) => record.mintAddress === result.mintAddress,
+      );
+      const next = upsertKnownToken(records, {
+        mintAddress: result.mintAddress,
+        tokenAccountAddress: result.tokenAccountAddress,
+        label: existing?.label,
+      });
+      persistAndRefresh(next);
+    },
+    [persistAndRefresh, records],
+  );
+
   return (
     <section className="token-section" aria-labelledby="token-portfolio-title">
       <div className="token-section-header">
@@ -274,7 +296,7 @@ export default function TokenPortfolio({
         <button
           className="btn btn-ghost"
           type="button"
-          disabled={refreshing || mutationBusy}
+          disabled={refreshing || actionsBusy}
           onClick={() => void refreshRecords(records)}
         >
           {refreshing ? "Refreshing..." : "Refresh"}
@@ -294,7 +316,7 @@ export default function TokenPortfolio({
             value={manualLabel}
             onChange={(event) => setManualLabel(event.target.value)}
             placeholder="Treasury token"
-            disabled={mutationBusy}
+            disabled={actionsBusy}
           />
         </label>
         <label className="form-field">
@@ -306,7 +328,7 @@ export default function TokenPortfolio({
             placeholder="ta..."
             spellCheck={false}
             autoComplete="off"
-            disabled={mutationBusy}
+            disabled={actionsBusy}
           />
         </label>
         <label className="form-field">
@@ -318,13 +340,13 @@ export default function TokenPortfolio({
             placeholder="ta..."
             spellCheck={false}
             autoComplete="off"
-            disabled={mutationBusy}
+            disabled={actionsBusy}
           />
         </label>
         <button
           className="btn btn-ghost portfolio-add-button"
           type="submit"
-          disabled={mutationBusy}
+          disabled={actionsBusy}
         >
           Add known token
         </button>
@@ -344,6 +366,14 @@ export default function TokenPortfolio({
         </div>
       )}
 
+      <ResumeTokenSetup
+        account={account}
+        portfolio={portfolio}
+        disabled={mutationBusy}
+        onBusyChange={setResumeBusy}
+        onCompleted={handleResumeCompleted}
+      />
+
       <div className="token-actions-grid">
         <form className="token-action-card" onSubmit={runMintTo}>
           <div>
@@ -359,7 +389,7 @@ export default function TokenPortfolio({
                 setMintToMint(event.target.value);
                 setMintToDestination("");
               }}
-              disabled={mutationBusy}
+              disabled={actionsBusy}
             >
               <option value="">Select mint</option>
               {portfolio.map((item) => (
@@ -375,7 +405,7 @@ export default function TokenPortfolio({
               className="input mono"
               value={mintToDestination}
               onChange={(event) => setMintToDestination(event.target.value)}
-              disabled={mutationBusy || !mintToMint}
+              disabled={actionsBusy || !mintToMint}
             >
               <option value="">Select token account</option>
               {allAccounts
@@ -390,7 +420,7 @@ export default function TokenPortfolio({
           <AmountField
             value={mintToAmount}
             onChange={setMintToAmount}
-            disabled={mutationBusy}
+            disabled={actionsBusy}
           />
           {!mintToAllowed && mintToMint && (
             <p className="hint">
@@ -401,7 +431,7 @@ export default function TokenPortfolio({
           <button
             className="btn btn-primary"
             type="submit"
-            disabled={mutationBusy || !mintToAllowed || !mintToAmount.trim()}
+            disabled={actionsBusy || !mintToAllowed || !mintToAmount.trim()}
           >
             Mint additional supply
           </button>
@@ -418,7 +448,7 @@ export default function TokenPortfolio({
               className="input mono"
               value={transferSource}
               onChange={(event) => setTransferSource(event.target.value)}
-              disabled={mutationBusy}
+              disabled={actionsBusy}
             >
               <option value="">Select source</option>
               {allAccounts.map((entry) => (
@@ -434,7 +464,7 @@ export default function TokenPortfolio({
               className="input mono"
               value={transferDestination}
               onChange={(event) => setTransferDestination(event.target.value)}
-              disabled={mutationBusy}
+              disabled={actionsBusy}
             >
               <option value="">Select destination</option>
               {allAccounts.map((entry) => (
@@ -447,7 +477,7 @@ export default function TokenPortfolio({
           <AmountField
             value={transferAmount}
             onChange={setTransferAmount}
-            disabled={mutationBusy}
+            disabled={actionsBusy}
           />
           {!transferAllowed && transferSource && transferDestination && (
             <p className="hint">
@@ -459,7 +489,7 @@ export default function TokenPortfolio({
             className="btn btn-primary"
             type="submit"
             disabled={
-              mutationBusy || !transferAllowed || !transferAmount.trim()
+              actionsBusy || !transferAllowed || !transferAmount.trim()
             }
           >
             Transfer tokens
@@ -498,7 +528,20 @@ export default function TokenPortfolio({
               }
             />
           )}
-          {mutationError && <p className="error token-error">{mutationError}</p>}
+          {mutationError && (
+            <p
+              className={
+                mutationProgress.stage === "uncertain"
+                  ? "token-uncertain-box"
+                  : "error token-error"
+              }
+            >
+              {mutationError}
+              {mutationProgress.stage === "uncertain" &&
+                mutationProgress.expectedStateObserved &&
+                " The expected on-chain state was observed, but final consensus remains unconfirmed."}
+            </p>
+          )}
         </div>
       )}
     </section>
@@ -649,7 +692,13 @@ function MutationProgress({ progress }: { progress: TokenMutationProgress }) {
             aria-current={state === "active" ? "step" : undefined}
           >
             <span className="token-progress-node" aria-hidden="true">
-              {state === "done" ? "✓" : state === "failed" ? "!" : index + 1}
+              {state === "done"
+                ? "✓"
+                : state === "failed"
+                  ? "!"
+                  : state === "uncertain"
+                    ? "?"
+                    : index + 1}
             </span>
             <span>{TOKEN_MUTATION_STAGE_LABELS[stage]}</span>
           </li>
@@ -662,7 +711,7 @@ function MutationProgress({ progress }: { progress: TokenMutationProgress }) {
 function mutationProgressState(
   stage: (typeof TOKEN_MUTATION_STAGES)[number],
   progress: TokenMutationProgress,
-): "pending" | "active" | "done" | "failed" {
+): "pending" | "active" | "done" | "failed" | "uncertain" {
   const stageIndex = TOKEN_MUTATION_STAGES.indexOf(stage);
   if (progress.stage === "failed") {
     const failedIndex = progress.failedAt
@@ -672,8 +721,18 @@ function mutationProgressState(
     if (stageIndex === failedIndex) return "failed";
     return "pending";
   }
+  if (progress.stage === "uncertain") {
+    const uncertainIndex = progress.uncertainAt
+      ? TOKEN_MUTATION_STAGES.indexOf(progress.uncertainAt)
+      : 0;
+    if (stageIndex < uncertainIndex) return "done";
+    if (stageIndex === uncertainIndex || stage === "completed") {
+      return "uncertain";
+    }
+    return "pending";
+  }
   const activeIndex = TOKEN_MUTATION_STAGES.indexOf(
-    progress.stage as Exclude<TokenMutationStage, "failed">,
+    progress.stage as Exclude<TokenMutationStage, "failed" | "uncertain">,
   );
   if (progress.stage === "completed" || stageIndex < activeIndex) return "done";
   if (stageIndex === activeIndex) return "active";
