@@ -945,6 +945,33 @@ textarea:focus-visible {
   gap: 14px;
 }
 
+.token-destination-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.derived-account-preview,
+.token-destination-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.derived-account-preview {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--ink);
+}
+
+.derived-account-preview code {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
 .token-confirmation {
   display: flex;
   align-items: flex-start;
@@ -1130,6 +1157,10 @@ textarea:focus-visible {
   }
 
   .token-resume-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .token-destination-panel {
     grid-template-columns: 1fr;
   }
 

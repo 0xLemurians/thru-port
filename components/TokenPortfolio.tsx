@@ -33,6 +33,7 @@ import {
   type ThruAccount,
 } from "@/lib/wallet/thru-wallet";
 import ResumeTokenSetup from "./ResumeTokenSetup";
+import CreateDestinationTokenAccount from "./CreateDestinationTokenAccount";
 
 interface TokenPortfolioProps {
   account: ThruAccount;
@@ -72,6 +73,7 @@ export default function TokenPortfolio({
   );
   const [mutationBusy, setMutationBusy] = useState(false);
   const [resumeBusy, setResumeBusy] = useState(false);
+  const [destinationAccountBusy, setDestinationAccountBusy] = useState(false);
 
   const requestTrackerRef = useRef(new LatestRequestTracker());
   const mutationControllerRef = useRef<AbortController | null>(null);
@@ -128,7 +130,8 @@ export default function TokenPortfolio({
     persistAndRefresh(next);
   }, [createdToken, persistAndRefresh, records, storageReady]);
 
-  const actionsBusy = mutationBusy || resumeBusy;
+  const actionsBusy =
+    mutationBusy || resumeBusy || destinationAccountBusy;
 
   useEffect(() => {
     onBusyChange?.(actionsBusy);
@@ -286,6 +289,24 @@ export default function TokenPortfolio({
     [persistAndRefresh, records],
   );
 
+  const handleDestinationAccountCompleted = useCallback(
+    (result: {
+      mintAddress: string;
+      tokenAccountAddress: string;
+    }) => {
+      const existing = records.find(
+        (record) => record.mintAddress === result.mintAddress,
+      );
+      const next = upsertKnownToken(records, {
+        mintAddress: result.mintAddress,
+        tokenAccountAddress: result.tokenAccountAddress,
+        label: existing?.label,
+      });
+      persistAndRefresh(next);
+    },
+    [persistAndRefresh, records],
+  );
+
   return (
     <section className="token-section" aria-labelledby="token-portfolio-title">
       <div className="token-section-header">
@@ -369,9 +390,17 @@ export default function TokenPortfolio({
       <ResumeTokenSetup
         account={account}
         portfolio={portfolio}
-        disabled={mutationBusy}
+        disabled={mutationBusy || destinationAccountBusy}
         onBusyChange={setResumeBusy}
         onCompleted={handleResumeCompleted}
+      />
+
+      <CreateDestinationTokenAccount
+        account={account}
+        portfolio={portfolio}
+        disabled={mutationBusy || resumeBusy}
+        onBusyChange={setDestinationAccountBusy}
+        onCompleted={handleDestinationAccountCompleted}
       />
 
       <div className="token-actions-grid">

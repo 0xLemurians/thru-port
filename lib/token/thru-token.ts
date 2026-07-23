@@ -28,6 +28,7 @@ import {
   runTokenMutationWorkflow,
   type TokenCreationProgress,
   type TokenMutationProgress,
+  type TokenMutationStage,
 } from "./workflow";
 import {
   validateMintToPreflight,
@@ -41,6 +42,13 @@ import {
   type TokenResumeProgress,
   type TokenResumeStage,
 } from "./resume";
+import {
+  assertOfficialTokenProgramOwnership,
+  buildDestinationInitializeAccountArgs,
+  deriveDestinationTokenAccount,
+  ensureDestinationTokenAccount,
+  type DestinationTokenAccountPreview,
+} from "./destination-account";
 import {
   decimalAmountToRaw,
   validateTokenInput,
@@ -121,6 +129,21 @@ export interface ResumeTokenSetupResult {
   initialSupplyMinted: boolean;
   tokenAccountSignature?: string;
   initialSupplySignature?: string;
+  mint: MintAccountInfo;
+  tokenAccount: TokenAccountInfo;
+}
+
+export interface CreateDestinationTokenAccountInput {
+  mintAddress: string;
+  destinationOwnerAddress: string;
+}
+
+export interface CreateDestinationTokenAccountResult {
+  mintAddress: string;
+  destinationOwnerAddress: string;
+  tokenAccountAddress: string;
+  created: boolean;
+  signature?: string;
   mint: MintAccountInfo;
   tokenAccount: TokenAccountInfo;
 }
@@ -774,6 +797,162 @@ export async function resumeTokenSetupOnAlphaNet(
   }
 }
 
+export function previewDestinationTokenAccount(
+  input: CreateDestinationTokenAccountInput,
+): DestinationTokenAccountPreview {
+  return deriveDestinationTokenAccount(thru, {
+    ...input,
+    tokenProgramAddress: TOKEN_PROGRAM_ADDRESS,
+  });
+}
+
+export async function createDestinationTokenAccountOnAlphaNet(
+  account: ThruAccount,
+  input: CreateDestinationTokenAccountInput,
+  options: TokenMutationOptions,
+): Promise<CreateDestinationTokenAccountResult> {
+  const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
+  let currentStage: Exclude<TokenMutationStage, "failed" | "uncertain"> =
+    "validating";
+  let activeSignature: string | undefined;
+  const progress = (
+    stage: Exclude<TokenMutationStage, "failed" | "uncertain">,
+    details: Omit<TokenMutationProgress, "stage"> = {},
+  ) => {
+    currentStage = stage;
+    onProgress({ stage, ...details });
+  };
+
+  try {
+    progress("validating");
+    signal?.throwIfAborted();
+    const preview = previewDestinationTokenAccount(input);
+    if (preview.destinationOwnerAddress === account.address) {
+      throw new Error(
+        "Destination owner must differ from the active wallet. Use Resume token setup for the active wallet.",
+      );
+    }
+    await assertActiveWalletExists(account.address, signal);
+    const mint = await getVerifiedMint(preview.mintAddress);
+
+    const ensured = await ensureDestinationTokenAccount(
+      {
+        tokenAccountAddress: preview.tokenAccountAddress,
+        mintAddress: preview.mintAddress,
+        destinationOwnerAddress: preview.destinationOwnerAddress,
+      },
+      {
+        readOptionalTokenAccount: async (address) => {
+          signal?.throwIfAborted();
+          return getOptionalVerifiedTokenAccount(address);
+        },
+        createTokenAccount: async () => {
+          signal?.throwIfAborted();
+          progress("building-transaction");
+          const stateProof = await thru.proofs.generate({
+            address: preview.tokenAccountAddress,
+            proofType: StateProofType.CREATING,
+          });
+          signal?.throwIfAborted();
+          const transaction = await thru.transactions.build({
+            feePayer: { publicKey: account.publicKey },
+            program: TOKEN_PROGRAM_ADDRESS,
+            accounts: {
+              readWrite: [preview.tokenAccountAddress],
+              readOnly: [
+                preview.mintAddress,
+                preview.destinationOwnerAddress,
+              ],
+            },
+            instructionData: createInitializeAccountInstruction(
+              buildDestinationInitializeAccountArgs({
+                preview,
+                stateProof: stateProof.proof,
+              }),
+            ),
+          });
+          await transaction.sign(account.privateKey);
+          return submitAndRequireFinalizedExecution(
+            transaction,
+            (signature) => {
+              activeSignature = signature;
+              progress("waiting-final-consensus", { signature });
+            },
+            timeoutMs,
+            signal,
+            {
+              isRequiredConsensus: (status) =>
+                status === ConsensusStatus.CLUSTER_EXECUTED,
+              onFinalConsensus: () => {
+                progress("verifying-execution", {
+                  signature: activeSignature,
+                });
+              },
+              verifyExpectedState: () =>
+                observeTokenAccountState(
+                  preview.tokenAccountAddress,
+                  (tokenAccount) =>
+                    tokenAccount.mint === preview.mintAddress &&
+                    tokenAccount.owner ===
+                      preview.destinationOwnerAddress &&
+                    tokenAccount.amount === 0n &&
+                    !tokenAccount.isFrozen,
+                  "The observed destination token account did not match its mint and owner.",
+                ),
+            },
+          );
+        },
+        readCreatedTokenAccount: (address) => {
+          progress("refetching-on-chain-state", {
+            signature: activeSignature,
+          });
+          return waitForTokenAccountState(
+            address,
+            (tokenAccount) =>
+              tokenAccount.mint === preview.mintAddress &&
+              tokenAccount.owner === preview.destinationOwnerAddress &&
+              tokenAccount.amount === 0n &&
+              !tokenAccount.isFrozen,
+            signal,
+            "The created destination token account did not match its mint, owner, zero balance, or frozen state.",
+          );
+        },
+      },
+    );
+
+    progress("completed", {
+      ...(ensured.signature ? { signature: ensured.signature } : {}),
+    });
+    return {
+      mintAddress: preview.mintAddress,
+      destinationOwnerAddress: preview.destinationOwnerAddress,
+      tokenAccountAddress: preview.tokenAccountAddress,
+      created: ensured.created,
+      ...(ensured.signature ? { signature: ensured.signature } : {}),
+      mint,
+      tokenAccount: ensured.tokenAccount,
+    };
+  } catch (error) {
+    if (error instanceof TransactionStatusUncertainError) {
+      onProgress({
+        stage: "uncertain",
+        uncertainAt: currentStage,
+        signature: error.signature,
+        error: error.message,
+        expectedStateObserved: error.expectedStateObserved,
+      });
+      throw error;
+    }
+    onProgress({
+      stage: "failed",
+      failedAt: currentStage,
+      error: error instanceof Error ? error.message : String(error),
+      ...(activeSignature ? { signature: activeSignature } : {}),
+    });
+    throw error;
+  }
+}
+
 export async function mintAdditionalSupplyOnAlphaNet(
   account: ThruAccount,
   input: MintAdditionalSupplyInput,
@@ -1126,11 +1305,16 @@ async function submitAndRequireFinalizedExecution(
   timeoutMs: number,
   signal?: AbortSignal,
   tracking: {
+    isRequiredConsensus?: (status: number) => boolean;
     onFinalConsensus?: () => void;
     verifyExpectedState?: () => Promise<boolean>;
   } = {},
 ): Promise<string> {
-  const { onFinalConsensus, verifyExpectedState } = tracking;
+  const {
+    isRequiredConsensus = isFinalConsensus,
+    onFinalConsensus,
+    verifyExpectedState,
+  } = tracking;
   let signature = "";
   let submittedNotified = false;
   let finalized = false;
@@ -1174,7 +1358,7 @@ async function submitAndRequireFinalizedExecution(
         latestExecution = update.executionResult;
       }
 
-      if (isFinalConsensus(update.consensusStatus)) {
+      if (isRequiredConsensus(update.consensusStatus)) {
         finalized = true;
       }
 
@@ -1194,7 +1378,7 @@ async function submitAndRequireFinalizedExecution(
   await waitForTransactionVisibility({
     signature,
     readStatus: () => thru.transactions.getStatus(signature),
-    isFinalConsensus,
+    isFinalConsensus: isRequiredConsensus,
     assertExecutionSucceeded,
     verifyExpectedState,
     onFinalConsensus: () => {
@@ -1294,11 +1478,7 @@ async function getTokenProgramAccount(address: string): Promise<Account> {
     minConsensus: ConsensusStatus.FINALIZED,
   });
   const owner = account.meta?.owner?.toThruFmt();
-  if (owner !== TOKEN_PROGRAM_ADDRESS) {
-    throw new Error(
-      `On-chain account ${address} is not owned by the official Token Program.`,
-    );
-  }
+  assertOfficialTokenProgramOwnership(owner, TOKEN_PROGRAM_ADDRESS, address);
   return account;
 }
 
