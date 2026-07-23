@@ -1009,6 +1009,225 @@ textarea:focus-visible {
   padding: 18px;
 }
 
+/* Read-only Name Studio */
+.name-studio {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.name-studio .panel-sub {
+  margin-bottom: 0;
+}
+
+.name-studio-header,
+.name-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.name-studio-header .workspace-nav-tag {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.name-security-notice {
+  padding: 16px 18px;
+  border: 1px solid rgba(240, 168, 60, 0.28);
+  border-radius: 14px;
+  background: rgba(240, 168, 60, 0.08);
+  color: #f4c98a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.name-security-notice ul {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 20px;
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.name-lookup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--ink-raised);
+}
+
+.name-label-field {
+  margin-bottom: 0;
+}
+
+.name-input-wrap {
+  position: relative;
+}
+
+.name-input-wrap .input {
+  padding-right: 64px;
+}
+
+.name-input-suffix {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  color: var(--ash);
+  font: 600 13px var(--mono);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.name-label-preview {
+  color: var(--ash);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.name-results,
+.name-result-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.name-results {
+  gap: 14px;
+}
+
+.name-result-section {
+  gap: 15px;
+  padding: 18px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--ink-raised);
+}
+
+.name-section-heading {
+  align-items: center;
+}
+
+.name-section-heading h3,
+.name-section-heading h4 {
+  margin: 0;
+}
+
+.name-address-link {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--parchment);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.name-address-link:hover {
+  color: var(--ember-soft);
+}
+
+.name-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--border-soft);
+}
+
+.name-detail-grid > div {
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--ink);
+}
+
+.name-detail-grid dt {
+  color: var(--ash);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.name-detail-grid dd {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.name-snapshot-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  color: var(--ash);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.name-snapshot-empty strong {
+  color: var(--parchment);
+}
+
+.name-timestamp-warning {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(240, 168, 60, 0.25);
+  border-radius: 11px;
+  background: rgba(240, 168, 60, 0.07);
+  color: #f4c98a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.name-records {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.name-record-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.name-record {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.65fr) minmax(0, 1.35fr);
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 11px;
+  background: var(--ink);
+}
+
+.name-record dt,
+.name-record dd {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.name-record dt span,
+.name-record dd small {
+  color: var(--ash-dim);
+  font-size: 10px;
+}
+
 /* Template grid + editor */
 .template-grid {
   display: grid;
@@ -1141,7 +1360,9 @@ textarea:focus-visible {
   .token-section-header,
   .portfolio-card-header,
   .portfolio-account-header,
-  .editor-header {
+  .editor-header,
+  .name-studio-header,
+  .name-section-heading {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1166,6 +1387,12 @@ textarea:focus-visible {
 
   .portfolio-details .portfolio-detail-wide {
     grid-column: auto;
+  }
+
+  .name-security-notice ul,
+  .name-detail-grid,
+  .name-record {
+    grid-template-columns: 1fr;
   }
 
   .transaction-link {

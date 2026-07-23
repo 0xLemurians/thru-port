@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import AccountPanel from "./AccountPanel";
 import EditorPanel from "./EditorPanel";
+import NameStudio from "./NameStudio";
 import TokenStudio from "./TokenStudio";
 import WorkspaceNav, { type WorkspaceStage } from "./WorkspaceNav";
 
@@ -26,6 +27,7 @@ export default function AppFlow() {
           current={stage}
           onChange={setStage}
           disabled={tokenBusy}
+          accountAvailable
         />
         <EditorPanel
           accountAddress={account.address}
@@ -43,21 +45,35 @@ export default function AppFlow() {
           current={stage}
           onChange={setStage}
           disabled={tokenBusy}
+          accountAvailable
         />
         <TokenStudio account={account} onBusyChange={setTokenBusy} />
       </>
     );
   }
 
-  return (
-    <>
-      {account && (
+  if (stage === "name") {
+    return (
+      <>
         <WorkspaceNav
           current={stage}
           onChange={setStage}
           disabled={tokenBusy}
+          accountAvailable={Boolean(account)}
         />
-      )}
+        <NameStudio />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <WorkspaceNav
+        current={stage}
+        onChange={setStage}
+        disabled={tokenBusy}
+        accountAvailable={Boolean(account)}
+      />
       <AccountPanel
         account={account}
         onAccountChange={setAccount}
