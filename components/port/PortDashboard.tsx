@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useState } from "react";
-import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { type ThruAccount, downloadBackupFile } from "@/lib/wallet/thru-wallet";
 import PortSafetyRail from "./PortSafetyRail";
 import type { AlphaNetHealth } from "./useAlphaNetHealth";
+import PortFaucetPanel from "./PortFaucetPanel";
+import PortFooter from "./PortFooter";
 
 interface PortDashboardProps {
   account: ThruAccount | null;
@@ -14,6 +16,13 @@ interface PortDashboardProps {
   onCreateWallet: () => void;
   onImportWallet: (kind: "mnemonic" | "hex", value: string) => void;
   health: AlphaNetHealth;
+  faucetState?: "idle" | "requesting" | "success" | "error";
+  faucetError?: string | null;
+  retryInfo?: string | null;
+  lastSignature?: string | null;
+  onRequestFaucet?: () => void;
+  onCancelFaucet?: () => void;
+  onForgetAccount?: () => void;
 }
 
 export default function PortDashboard({
@@ -25,14 +34,51 @@ export default function PortDashboard({
   onCreateWallet,
   onImportWallet,
   health,
+  faucetState = "idle",
+  faucetError = null,
+  retryInfo = null,
+  lastSignature = null,
+  onRequestFaucet = () => {},
+  onCancelFaucet = () => {},
+  onForgetAccount = () => {},
 }: PortDashboardProps) {
   const [importMode, setImportMode] = useState<"hidden" | "mnemonic" | "hex">("hidden");
   const [importValue, setImportValue] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [disconnectConfirm, setDisconnectConfirm] = useState(false);
+  const [copyError, setCopyError] = useState(false);
 
   const handleImportSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (importMode === "hidden") return;
     onImportWallet(importMode, importValue);
+  };
+
+  const copyAddress = () => {
+    if (!account) return;
+    setCopyError(false);
+    navigator.clipboard.writeText(account.address).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {
+      setCopyError(true);
+      setTimeout(() => setCopyError(false), 3000);
+    });
+  };
+
+  const handleDisconnect = () => {
+    if (disconnectConfirm) {
+      setDisconnectConfirm(false);
+      onForgetAccount();
+    } else {
+      setDisconnectConfirm(true);
+      setTimeout(() => setDisconnectConfirm(false), 3000);
+    }
+  };
+
+  const handleDownloadBackup = () => {
+    if (!account) return;
+    downloadBackupFile(account);
   };
 
   const shortAddress = account
@@ -124,13 +170,23 @@ export default function PortDashboard({
                   </>
                 )
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "100%", maxWidth: "480px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
                     <div className="pc-anim-mask" style={{ display: "flex", alignItems: "center", gap: "8px", color: "#CEBAB0", fontSize: "14px", fontWeight: 500 }}>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
                       Wallet ready
                     </div>
                   </div>
+
+                  <PortFaucetPanel
+                    faucetState={faucetState}
+                    faucetError={faucetError}
+                    retryInfo={retryInfo}
+                    lastSignature={lastSignature}
+                    health={health}
+                    onRequest={onRequestFaucet}
+                    onCancel={onCancelFaucet}
+                  />
                 </div>
               )}
               {walletError && (
@@ -217,11 +273,11 @@ export default function PortDashboard({
                   <span className="pc-info-key">Public address</span>
                   <span className="pc-info-val-mono">{shortAddress}</span>
                 </div>
-                <div className="pc-info-row pc-anim-bottom" style={{ animationDelay: "200ms" }}>
+                <div className="pc-info-row pc-anim-bottom" style={{ borderBottom: balanceError ? "none" : undefined, animationDelay: "200ms" }}>
                   <span className="pc-info-key">Balance</span>
                   <span className="pc-info-val-mono">
                     {balanceError ? (
-                      <span style={{ color: "#ff8d8d" }}>{balanceError}</span>
+                      <span style={{ color: "#ff8d8d" }}>Unavailable</span>
                     ) : balance === null ? (
                       "Loading..."
                     ) : (
@@ -229,10 +285,56 @@ export default function PortDashboard({
                     )}
                   </span>
                 </div>
+                {balanceError && (
+                  <div className="pc-anim-mask" style={{
+                    marginBottom: "16px",
+                    padding: "10px 14px",
+                    background: "rgba(255, 141, 141, 0.08)",
+                    border: "1px solid rgba(255, 141, 141, 0.2)",
+                    borderRadius: "6px",
+                    color: "#ff8d8d",
+                    fontSize: "12px",
+                    lineHeight: "1.4"
+                  }}>
+                    {balanceError}
+                  </div>
+                )}
                 <div className="pc-info-row pc-anim-bottom" style={{ borderBottom: "none", animationDelay: "250ms" }}>
                   <span className="pc-info-key">Secret storage</span>
                   <span className="pc-info-val-mono">Memory only</span>
                 </div>
+
+                <div className="pc-anim-bottom" style={{ animationDelay: "300ms", display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: "8px", marginTop: "24px", paddingTop: "16px", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                  <button
+                    type="button"
+                    className="pc-btn-secondary"
+                    style={{ padding: "8px", fontSize: "12px", gap: "6px", width: "100%", justifyContent: "center" }}
+                    onClick={copyAddress}
+                  >
+                    {copied ? <span style={{ color: "#3DDC97" }}>✓ Copied</span> : copyError ? <span style={{ color: "#ff8d8d" }}>Error</span> : "Copy Address"}
+                  </button>
+                  <button
+                    type="button"
+                    className="pc-btn-secondary"
+                    style={{ padding: "8px 12px", fontSize: "12px", gap: "6px", whiteSpace: "nowrap" }}
+                    onClick={handleDownloadBackup}
+                  >
+                    Download Backup
+                  </button>
+                  <button
+                    type="button"
+                    className="pc-btn-secondary"
+                    style={{ padding: "8px", fontSize: "12px", gap: "6px", width: "100%", justifyContent: "center", color: disconnectConfirm ? "#ff8d8d" : "inherit", borderColor: disconnectConfirm ? "rgba(255,141,141,0.2)" : "rgba(255,255,255,0.1)" }}
+                    onClick={handleDisconnect}
+                  >
+                    {disconnectConfirm ? "Confirm?" : "Disconnect"}
+                  </button>
+                </div>
+                {disconnectConfirm && (
+                  <div className="pc-anim-mask" style={{ color: "#ff8d8d", fontSize: "12px", marginTop: "8px", textAlign: "center" }}>
+                    Disconnect this in-memory wallet?
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -240,6 +342,7 @@ export default function PortDashboard({
       </div>
       
       <PortSafetyRail />
+      <PortFooter />
     </div>
   );
 }

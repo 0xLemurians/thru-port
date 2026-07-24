@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import {
   type ThruAccount,
   createNewAccount,
@@ -10,6 +10,7 @@ import {
   hexToBytes,
   isAccountNotFoundError,
 } from "@/lib/wallet/thru-wallet";
+import { withdrawFromFaucet, FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
 import EditorPanel from "./EditorPanel";
 import NameStudio from "./NameStudio";
 import TokenStudio from "./TokenStudio";
@@ -27,6 +28,12 @@ export default function AppFlow() {
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
+
+  const [faucetState, setFaucetState] = useState<"idle" | "requesting" | "success" | "error">("idle");
+  const [faucetError, setFaucetError] = useState<string | null>(null);
+  const [retryInfo, setRetryInfo] = useState<string | null>(null);
+  const [lastSignature, setLastSignature] = useState<string | null>(null);
+  const faucetControllerRef = useRef<AbortController | null>(null);
 
   const health = useAlphaNetHealth();
 
@@ -53,8 +60,19 @@ export default function AppFlow() {
     }
   }, [health.status]);
 
+  useEffect(
+    () => () => {
+      faucetControllerRef.current?.abort();
+    },
+    [],
+  );
+
   useEffect(() => {
     if (account) {
+      setFaucetState("idle");
+      setFaucetError(null);
+      setLastSignature(null);
+      setRetryInfo(null);
       void refreshBalance(account.address);
     } else {
       setBalance(null);
@@ -101,8 +119,59 @@ export default function AppFlow() {
     }
   }
 
-  // Not implemented yet (Phase 2), but we provide a dummy disconnect to clear memory
+  async function handleFaucet() {
+    if (!account) return;
+    const controller = new AbortController();
+    faucetControllerRef.current?.abort();
+    faucetControllerRef.current = controller;
+    setFaucetState("requesting");
+    setFaucetError(null);
+    setRetryInfo(null);
+    try {
+      const result = await withdrawFromFaucet(account, FAUCET_WITHDRAW_LIMIT, {
+        signal: controller.signal,
+        onRetry: ({ attempt, maxAttempts, delayMs }) => {
+          setRetryInfo(
+            attempt === 0
+              ? "Creating and confirming your account on-chain…"
+              : `AlphaNet seems busy — retrying (${attempt}/${maxAttempts}) in ${Math.round(delayMs / 1000)}s…`,
+          );
+        },
+      });
+      setRetryInfo(null);
+      if (result.failureReason) {
+        setFaucetState("error");
+        setFaucetError(result.failureReason);
+      } else {
+        setFaucetState("success");
+        setLastSignature(result.signature || null);
+        await refreshBalance(account.address);
+      }
+    } catch (err) {
+      setRetryInfo(null);
+      if (controller.signal.aborted) {
+        setFaucetState("idle");
+        setFaucetError(null);
+        return;
+      }
+      setFaucetState("error");
+      setFaucetError(
+          err instanceof Error ? err.message : "Faucet request failed. AlphaNet may be busy — try again in a moment.",
+      );
+    } finally {
+      if (faucetControllerRef.current === controller) {
+        faucetControllerRef.current = null;
+      }
+    }
+  }
+
+  function cancelFaucet() {
+    faucetControllerRef.current?.abort();
+  }
+
+  // Phase 2 disconnect
   function forgetAccount() {
+    faucetControllerRef.current?.abort();
     account?.privateKey.fill(0);
     setAccount(null);
     setStage("account");
@@ -124,8 +193,15 @@ export default function AppFlow() {
           walletBusy={walletBusy}
           walletError={walletError}
           health={health}
+          faucetState={faucetState}
+          faucetError={faucetError}
+          retryInfo={retryInfo}
+          lastSignature={lastSignature}
           onCreateWallet={handleCreateWallet}
           onImportWallet={handleImportWallet}
+          onRequestFaucet={handleFaucet}
+          onCancelFaucet={cancelFaucet}
+          onForgetAccount={forgetAccount}
         />
       )}
       {stage === "token" && account && (
