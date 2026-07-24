@@ -65,7 +65,7 @@ export default function NameStudio() {
           <p className="eyebrow token-eyebrow">Name Studio · Read only</p>
           <h2 className="panel-title">Inspect .thru names on AlphaNet</h2>
         </div>
-        <span className="workspace-nav-tag">No wallet required</span>
+        <span className="workspace-nav-tag">READ ONLY</span>
       </div>
 
       <p className="panel-sub">
