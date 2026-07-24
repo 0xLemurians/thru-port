@@ -169,3 +169,24 @@ function normalizeLabel(value: unknown): string | undefined {
   if (!normalized) return undefined;
   return normalized.slice(0, 64);
 }
+
+export function classifyPortfolio(
+  portfolio: import('./thru-token').TokenPortfolioItem[],
+  activeWalletAddress?: string
+) {
+  const activeAssets = [];
+  const externalAssets = [];
+
+  for (const item of portfolio) {
+    const isOwner = activeWalletAddress && item.tokenAccounts.some((acc) => acc.state?.owner === activeWalletAddress);
+    const isMintAuthority = activeWalletAddress && item.mint?.mintAuthority === activeWalletAddress;
+
+    if (isOwner || isMintAuthority) {
+      activeAssets.push(item);
+    } else {
+      externalAssets.push(item);
+    }
+  }
+
+  return { activeAssets, externalAssets };
+}

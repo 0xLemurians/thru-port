@@ -1403,3 +1403,62 @@ textarea:focus-visible {
     display: none;
   }
 }
+/* Token Studio Nav */
+.token-studio-nav {
+  display: flex;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0 2rem;
+  margin: -1.5rem -2rem 1.5rem;
+  overflow-x: auto;
+}
+.token-studio-nav button {
+  background: none;
+  border: none;
+  padding: 1rem 0;
+  color: var(--foreground-muted);
+  font-weight: 500;
+  font-size: 0.875rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+.token-studio-nav button:hover {
+  color: var(--foreground);
+}
+.token-studio-nav button.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.token-studio-content {
+  padding: 1rem 0;
+}
+
+.advanced-settings-toggle {
+  margin-top: 1rem;
+}
+
+.simplified-progress .token-progress {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.simplified-progress .token-progress-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.5rem;
+}
+
+.portfolio-card-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}

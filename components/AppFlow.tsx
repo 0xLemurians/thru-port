@@ -38,14 +38,14 @@ export default function AppFlow() {
     );
   }
 
-  if (stage === "token" && account) {
+  if (stage === "token") {
     return (
       <>
         <WorkspaceNav
           current={stage}
           onChange={setStage}
           disabled={tokenBusy}
-          accountAvailable
+          accountAvailable={Boolean(account)}
         />
         <TokenStudio account={account} onBusyChange={setTokenBusy} />
       </>
