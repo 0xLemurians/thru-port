@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { mintAdditionalSupplyOnAlphaNet, type TokenPortfolioItem, type MintAdditionalSupplyResult } from "@/lib/token/thru-token";
+import { formatRawAmount } from "@thru/programs/token";
 import type { TokenMutationProgress } from "@/lib/token/workflow";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 
@@ -7,15 +8,20 @@ export default function TokenMintMoreForm({
   account,
   portfolio,
   onBusyChange,
+  onSuccess,
+  selectedTokenMint,
 }: {
   account: ThruAccount | null;
   portfolio: TokenPortfolioItem[];
   onBusyChange: (busy: boolean) => void;
+  onSuccess?: () => void;
+  selectedTokenMint?: string;
 }) {
-  const [mintAddress, setMintAddress] = useState("");
+  const mintAddress = selectedTokenMint || "";
+
   const [destinationAddress, setDestinationAddress] = useState("");
   const [amount, setAmount] = useState("");
-  
+
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<TokenMutationProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,9 +48,17 @@ export default function TokenMintMoreForm({
       .flatMap(item => item.tokenAccounts);
   }, [portfolio, mintAddress]);
 
+  // Clear destination and amount when selected token changes
+  useEffect(() => {
+    setDestinationAddress("");
+    setAmount("");
+  }, [selectedTokenMint]);
+
+  const isSelectedUnauthorized = selectedTokenMint && !activeWalletMints.some(m => m.mintAddress === selectedTokenMint);
+
   const mintAllowed = Boolean(
     account && mintAddress && destinationAddress &&
-    activeWalletMints.some(m => m.mintAddress === mintAddress)
+    !isSelectedUnauthorized
   );
 
   async function handleMint(e: React.FormEvent) {
@@ -74,6 +88,7 @@ export default function TokenMintMoreForm({
       );
       setResult(next);
       setAmount("");
+      onSuccess?.();
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Mint failed.";
       setError(
@@ -97,6 +112,9 @@ export default function TokenMintMoreForm({
     );
   }
 
+  // Get token info for display
+  const activeMint = portfolio.find(item => item.mintAddress === selectedTokenMint);
+
   return (
     <div className="token-section">
       <div className="token-section-header">
@@ -106,31 +124,27 @@ export default function TokenMintMoreForm({
         </div>
       </div>
 
-      {activeWalletMints.length === 0 ? (
+      {!selectedTokenMint ? (
         <p className="hint">
-          You are not the mint authority for any known tokens.
+          Select a token from the sidebar to mint additional supply.
         </p>
       ) : (
-        <form className="token-form" onSubmit={handleMint}>
+        <>
+          {isSelectedUnauthorized && (
+            <p className="error" style={{ marginBottom: "1rem" }}>
+              The connected wallet is not the mint authority for this token.
+            </p>
+          )}
+          <form className="token-form" onSubmit={handleMint}>
           <div className="token-form-grid">
             <label className="form-field">
-              <span className="field-label">Token (where you are mint authority)</span>
-              <select
+              <span className="field-label">Token (locked to sidebar selection)</span>
+              <input
                 className="input mono"
-                value={mintAddress}
-                onChange={(e) => {
-                  setMintAddress(e.target.value);
-                  setDestinationAddress("");
-                }}
-                disabled={busy}
-              >
-                <option value="">Select token</option>
-                {activeWalletMints.map((item) => (
-                  <option key={item.mintAddress} value={item.mintAddress}>
-                    {item.mint?.ticker ?? "TOKEN"} - {item.mintAddress.slice(0,10)}...
-                  </option>
-                ))}
-              </select>
+                value={activeMint ? `${activeMint.mint?.ticker ?? "TOKEN"} - ${activeMint.mintAddress.slice(0,10)}...` : (selectedTokenMint ? `TOKEN - ${selectedTokenMint.slice(0, 10)}...` : "")}
+                disabled
+                style={{ opacity: 0.8, cursor: 'not-allowed' }}
+              />
             </label>
 
             <label className="form-field">
@@ -139,14 +153,20 @@ export default function TokenMintMoreForm({
                 className="input mono"
                 value={destinationAddress}
                 onChange={(e) => setDestinationAddress(e.target.value)}
-                disabled={busy || !mintAddress}
+                disabled={busy || isSelectedUnauthorized || !mintAddress}
               >
                 <option value="">Select destination</option>
-                {allAccountsForMint.map((acc) => (
-                  <option key={acc.address} value={acc.address}>
-                    {acc.address.slice(0,10)}... (Bal: {acc.state?.amount.toString()})
-                  </option>
-                ))}
+                {allAccountsForMint.map((acc) => {
+                  const token = portfolio.find(item => item.mintAddress === mintAddress);
+                  const decimals = token?.mint?.decimals ?? 0;
+                  const ticker = token?.mint?.ticker ?? token?.label ?? "TOKEN";
+                  const formattedBal = acc.state ? formatRawAmount(acc.state.amount, decimals) : "0";
+                  return (
+                    <option key={acc.address} value={acc.address}>
+                      {acc.address.slice(0, 10)}... (Bal: {formattedBal} {ticker})
+                    </option>
+                  );
+                })}
               </select>
             </label>
           </div>
@@ -160,7 +180,7 @@ export default function TokenMintMoreForm({
                 inputMode="decimal"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                disabled={busy}
+                disabled={busy || isSelectedUnauthorized || !mintAddress}
                 placeholder="1.00"
                 spellCheck={false}
                 autoComplete="off"
@@ -178,6 +198,7 @@ export default function TokenMintMoreForm({
             </button>
           </div>
         </form>
+        </>
       )}
 
       {(progress || error || result) && (

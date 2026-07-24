@@ -1,4 +1,10 @@
 import type { TokenPortfolioItem } from "@/lib/token/thru-token";
+import { formatRawAmount } from "@thru/programs/token";
+
+function shortAddress(address: string): string {
+  if (address.length <= 20) return address;
+  return `${address.slice(0, 10)}…${address.slice(-8)}`;
+}
 
 interface PortTokenOverviewProps {
   selectedToken: TokenPortfolioItem | null;
@@ -52,19 +58,29 @@ export default function PortTokenOverview({
         </div>
         <div className="detail-row">
           <span className="key">Balance</span>
-          <span className="val">—</span>
+          <span className="val">
+            {selectedToken.tokenAccounts[0]?.state?.amount !== undefined && selectedToken.mint?.decimals !== undefined
+              ? `${formatRawAmount(selectedToken.tokenAccounts[0].state.amount, selectedToken.mint.decimals)} ${selectedToken.mint?.ticker ?? selectedToken.label ?? ""}`.trim()
+              : "—"}
+          </span>
         </div>
         <div className="detail-row">
           <span className="key">Supply</span>
-          <span className="val">—</span>
+          <span className="val">
+            {selectedToken.mint?.supply !== undefined && selectedToken.mint?.decimals !== undefined
+              ? `${formatRawAmount(selectedToken.mint.supply, selectedToken.mint.decimals)} ${selectedToken.mint?.ticker ?? selectedToken.label ?? ""}`.trim()
+              : "—"}
+          </span>
         </div>
         <div className="detail-row">
           <span className="key">Decimals</span>
-          <span className="val">—</span>
+          <span className="val">{selectedToken.mint?.decimals ?? "—"}</span>
         </div>
         <div className="detail-row">
           <span className="key">Authority</span>
-          <span className="val">—</span>
+          <span className="val mono" title={selectedToken.mint?.mintAuthority}>
+            {selectedToken.mint?.mintAuthority ? shortAddress(selectedToken.mint.mintAuthority) : "—"}
+          </span>
         </div>
       </div>
 

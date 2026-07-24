@@ -72,6 +72,8 @@ export default function PortTokenWorkspace({
           account={account}
           portfolio={portfolioHook.portfolio}
           onBusyChange={onBusyChange}
+          onSuccess={() => portfolioHook.refreshRecords(portfolioHook.records)}
+          selectedTokenMint={selectedToken?.mintAddress}
         />
       )}
 

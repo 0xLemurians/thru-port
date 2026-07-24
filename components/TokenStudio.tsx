@@ -102,7 +102,8 @@ export default function TokenStudio({
             selectedToken={selectedToken}
             activeView={activeTab}
             onAction={(view) => setActiveTab(view)}
-            isOffline={false} // Phase 3A: No health prop passed yet
+            isOffline={false}
+            account={account}
           />
         }
       />

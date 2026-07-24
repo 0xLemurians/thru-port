@@ -1,11 +1,18 @@
 import { useState } from "react";
 import type { TokenPortfolioItem } from "@/lib/token/thru-token";
+import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+
+function shortAddress(address: string): string {
+  if (address.length <= 20) return address;
+  return `${address.slice(0, 10)}…${address.slice(-8)}`;
+}
 
 interface PortTokenQuickActionsProps {
   selectedToken: TokenPortfolioItem | null;
   activeView: string;
   onAction: (view: "send" | "mint-more") => void;
   isOffline: boolean;
+  account?: ThruAccount | null;
 }
 
 export default function PortTokenQuickActions({
@@ -13,6 +20,7 @@ export default function PortTokenQuickActions({
   activeView,
   onAction,
   isOffline,
+  account,
 }: PortTokenQuickActionsProps) {
   const [copied, setCopied] = useState(false);
 
@@ -67,7 +75,15 @@ export default function PortTokenQuickActions({
         </div>
         <div className="pc-token-qa-info-row">
           <span className="key">Authority</span>
-          <span className="val">Unknown</span>
+          <span className="val mono" title={selectedToken?.mint?.mintAuthority}>
+            {!selectedToken
+              ? "Unknown"
+              : selectedToken.mint?.mintAuthority === account?.address
+              ? "Current wallet"
+              : selectedToken.mint?.mintAuthority
+              ? shortAddress(selectedToken.mint.mintAuthority)
+              : "—"}
+          </span>
         </div>
       </div>
     </div>

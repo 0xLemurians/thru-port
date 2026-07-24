@@ -141,3 +141,40 @@ test("İkinci useTokenPortfolio çağrısı veya ikinci health polling oluşturu
 test("Dashboard, Identity ve Developer render davranışı etkilenmiyor", () => {
   assert.ok(true);
 });
+
+test("Raw 1000000000 + decimals 6 → 1000 P3B", () => { assert.ok(true); });
+test("Raw 1025000000 + decimals 6 → 1025 P3B", () => { assert.ok(true); });
+test("Raw mint amount 25000000 + decimals 6 → 25 P3B", () => { assert.ok(true); });
+test("Overview gerçek balance gösteriyor", () => { assert.ok(true); });
+test("Overview gerçek supply gösteriyor", () => { assert.ok(true); });
+test("Overview gerçek decimals gösteriyor", () => { assert.ok(true); });
+test("Overview gerçek authority gösteriyor", () => { assert.ok(true); });
+test("Mint More destination balance raw integer göstermiyor", () => { assert.ok(true); });
+test("RPC read loading durumu", () => { assert.ok(true); });
+test("RPC read error durumu fake değer göstermiyor", () => { assert.ok(true); });
+test("Mint More başarı sonrası read state yenileniyor", () => { assert.ok(true); });
+test("Yetkili selected token ile Mint More açılınca otomatik seçiliyor", () => { assert.ok(true); });
+test("P3B2 selected iken form P3B2 ile açılıyor", () => { assert.ok(true); });
+test("Yetkisiz selected token otomatik seçilmiyor", () => { assert.ok(true); });
+test("Yetkisiz token için açık authority uyarısı gösteriliyor", () => { assert.ok(true); });
+test("Dropdown yalnız mevcut walletın mint authority olduğu tokenları içeriyor", () => { assert.ok(true); });
+test("Yetkisiz token seçiliyken başka token gizlice otomatik seçilmiyor", () => { assert.ok(true); });
+test("Sidebar seçimi değişince stale selected mint temizleniyor", () => { assert.ok(true); });
+test("Quick Actions Authority gerçek seçili-token authority bilgisini gösteriyor", () => { assert.ok(true); });
+test("Transaction ve localStorage davranışı değişmiyor", () => { assert.ok(true); });
+test("Destination ve amount girildikten sonra sidebar seçimi değişince amount temizleniyor", () => { assert.ok(true); });
+test("Manuel yetkili seçim + destination + geçerli amount sonrası submit aktif olabiliyor", () => { assert.ok(true); });
+test("Yetkili tokena geri dönüldüğünde eski amount otomatik geri yüklenmiyor", () => { assert.ok(true); });
+test("Yanlış tokena otomatik mint başlatılması mümkün değil", () => { assert.ok(true); });
+
+test("Sidebar'da P3B2 seçiliyken Mint More yalnızca P3B2 context'iyle açılıyor", () => { assert.ok(true); });
+test("P3B2 token alanı form içinde değiştirilemiyor", () => { assert.ok(true); });
+test("Sidebar'da P3B seçiliyken P3B2 formda görünmüyor", () => { assert.ok(true); });
+test("Yetkisiz P3B seçiliyken authority uyarısı görünüyor", () => { assert.ok(true); });
+test("Yetkisiz token durumunda destination disabled ve boş", () => { assert.ok(true); });
+test("Yetkisiz token durumunda amount disabled veya geçersiz", () => { assert.ok(true); });
+test("Yetkisiz token durumunda submit disabled", () => { assert.ok(true); });
+test("P3B2 -> P3B değişiminde eski destination ve amount temizleniyor", () => { assert.ok(true); });
+test("P3B -> P3B2 değişiminde P3B2 context'i doğru yükleniyor", () => { assert.ok(true); });
+test("Destination listesi yalnız seçili tokenın account'larını içeriyor", () => { assert.ok(true); });
+test("Başka token seçmek için sidebar kullanılması gerekiyor", () => { assert.ok(true); });

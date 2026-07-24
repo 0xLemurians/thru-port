@@ -1535,7 +1535,7 @@ textarea:focus-visible {
         }
         .pc-nav-btn {
           background: none; border: none; cursor: pointer;
-          font-size: 13px; font-weight: 500; color: #9D8982;
+          font-size: 14px; font-weight: 500; color: #9D8982;
           padding: 8px 12px; position: relative; font-family: inherit; transition: color 0.15s;
         }
         .pc-nav-btn:hover { color: #CEBAB0; }
@@ -2069,7 +2069,7 @@ textarea:focus-visible {
 
 .pc-token-list-item-address {
   font-size: 11px;
-  color: var(--text-muted);
+  color: rgba(255, 226, 210, 0.62);
 }
 
 .pc-token-sidebar-bottom {
