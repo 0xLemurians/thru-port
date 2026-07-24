@@ -3,17 +3,25 @@ import { transferTokensOnAlphaNet, type TokenPortfolioItem, type TransferTokenRe
 import type { TokenMutationProgress } from "@/lib/token/workflow";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import CreateDestinationTokenAccount from "@/components/CreateDestinationTokenAccount";
+import { formatRawAmount } from "@thru/programs/token";
+import { decimalAmountToRaw } from "@/lib/token/validation";
+import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
 
 export default function TokenSendForm({
   account,
   portfolio,
   onBusyChange,
+  selectedTokenMint,
+  health,
+  onSuccess,
 }: {
   account: ThruAccount | null;
   portfolio: TokenPortfolioItem[];
   onBusyChange: (busy: boolean) => void;
+  selectedTokenMint?: string;
+  health?: AlphaNetHealth;
+  onSuccess?: () => void;
 }) {
-  const [transferMint, setTransferMint] = useState("");
   const [transferSource, setTransferSource] = useState("");
   const [transferDestination, setTransferDestination] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
@@ -34,25 +42,68 @@ export default function TokenSendForm({
     onBusyChange(busy);
   }, [busy, onBusyChange]);
 
-  const activeWalletAccounts = useMemo(() => {
-    if (!account) return [];
-    return portfolio
-      .filter((item) => item.mintAddress === transferMint)
-      .flatMap((item) => item.tokenAccounts)
-      .filter((acc) => acc.state?.owner === account.address);
-  }, [account, portfolio, transferMint]);
+  // Clear stale state whenever the selected token context changes
+  useEffect(() => {
+    setTransferSource("");
+    setTransferDestination("");
+    setTransferAmount("");
+    setError(null);
+    setResult(null);
+    setProgress(null);
+    setShowPrepareRecipient(false);
+  }, [selectedTokenMint]);
 
-  // Actually, allow them to just paste any destination token account.
-  // The transfer destination is usually just pasted.
-  
+  const selectedItem = useMemo(() => {
+    return portfolio.find((p) => p.mintAddress === selectedTokenMint);
+  }, [portfolio, selectedTokenMint]);
+
+  const activeWalletAccounts = useMemo(() => {
+    if (!account || !selectedItem) return [];
+    return selectedItem.tokenAccounts.filter((acc) => acc.state?.owner === account.address);
+  }, [account, selectedItem]);
+
+  // Auto-select source if there's exactly one
+  useEffect(() => {
+    if (activeWalletAccounts.length === 1 && !transferSource) {
+      setTransferSource(activeWalletAccounts[0].address);
+    }
+  }, [activeWalletAccounts, transferSource]);
+
+  const selectedSourceAccount = useMemo(() => {
+    return activeWalletAccounts.find(acc => acc.address === transferSource);
+  }, [activeWalletAccounts, transferSource]);
+
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setValidationError(null);
+    if (!transferAmount.trim() || !selectedSourceAccount || !selectedItem?.mint) return;
+
+    try {
+      const rawAmount = decimalAmountToRaw(transferAmount, selectedItem.mint.decimals, undefined, "Amount");
+      if (rawAmount > (selectedSourceAccount.state?.amount ?? 0n)) {
+        setValidationError("Insufficient token balance.");
+      }
+    } catch (e) {
+      setValidationError(e instanceof Error ? e.message : "Invalid amount");
+    }
+  }, [transferAmount, selectedSourceAccount, selectedItem]);
+
+  const isHealthOffline = health?.status === "Offline";
+  const isHealthChecking = health?.status === "Checking";
+  const isHealthDegraded = health?.status === "Degraded";
+  const healthDisabled = isHealthOffline || isHealthChecking;
+
   const transferAllowed = Boolean(
-    account && transferMint && transferSource && transferDestination &&
-    transferSource !== transferDestination
+    account && selectedTokenMint && transferSource && transferDestination && transferAmount.trim() &&
+    transferSource !== transferDestination &&
+    !validationError &&
+    !healthDisabled
   );
 
   async function handleTransfer(e: React.FormEvent) {
     e.preventDefault();
-    if (!account) return;
+    if (!account || !selectedTokenMint || !transferAllowed) return;
 
     const controller = new AbortController();
     controllerRef.current?.abort();
@@ -77,6 +128,7 @@ export default function TokenSendForm({
       );
       setResult(next);
       setTransferAmount("");
+      if (onSuccess) onSuccess();
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Transfer failed.";
       setError(
@@ -100,6 +152,14 @@ export default function TokenSendForm({
     );
   }
 
+  if (!selectedItem) {
+    return (
+      <div className="panel">
+        <p>Select a token from the sidebar to transfer.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="token-section">
       <div className="token-section-header">
@@ -113,24 +173,9 @@ export default function TokenSendForm({
         <div className="token-form-grid">
           <label className="form-field">
             <span className="field-label">Token</span>
-            <select
-              className="input mono"
-              value={transferMint}
-              onChange={(e) => {
-                setTransferMint(e.target.value);
-                setTransferSource("");
-              }}
-              disabled={busy}
-            >
-              <option value="">Select token</option>
-              {portfolio
-                .filter(item => item.tokenAccounts.some(acc => acc.state?.owner === account.address))
-                .map((item) => (
-                <option key={item.mintAddress} value={item.mintAddress}>
-                  {item.mint?.ticker ?? "TOKEN"} - {item.mintAddress.slice(0,10)}...
-                </option>
-              ))}
-            </select>
+            <div className="input mono" style={{ opacity: 0.7, backgroundColor: "var(--bg-layer-2)" }}>
+              {selectedItem.mint?.ticker ?? "TOKEN"} &mdash; {selectedTokenMint?.slice(0, 10)}...
+            </div>
           </label>
 
           <label className="form-field">
@@ -139,14 +184,18 @@ export default function TokenSendForm({
               className="input mono"
               value={transferSource}
               onChange={(e) => setTransferSource(e.target.value)}
-              disabled={busy || !transferMint}
+              disabled={busy || activeWalletAccounts.length === 0}
             >
               <option value="">Select source account</option>
-              {activeWalletAccounts.map((acc) => (
-                <option key={acc.address} value={acc.address}>
-                  {acc.address.slice(0,10)}... (Bal: {acc.state?.amount.toString()})
-                </option>
-              ))}
+              {activeWalletAccounts.map((acc) => {
+                const formattedBal = acc.state && selectedItem.mint ? formatRawAmount(acc.state.amount, selectedItem.mint.decimals) : "0";
+                const displayTicker = selectedItem.mint?.ticker ?? "TOKEN";
+                return (
+                  <option key={acc.address} value={acc.address}>
+                    {acc.address.slice(0,10)}... (Bal: {formattedBal} {displayTicker})
+                  </option>
+                );
+              })}
             </select>
           </label>
         </div>
@@ -178,14 +227,31 @@ export default function TokenSendForm({
               spellCheck={false}
               autoComplete="off"
             />
+            {validationError && (
+              <span className="field-error" style={{ color: "var(--accent-red)", fontSize: "0.85rem", marginTop: "4px" }}>
+                {validationError}
+              </span>
+            )}
           </label>
         </div>
+
+        {healthDisabled && (
+          <div className="notice" style={{ marginTop: "1rem", color: "var(--accent-red)" }}>
+            Cannot transfer tokens while AlphaNet is {health.status.toLowerCase()}.
+          </div>
+        )}
+
+        {isHealthDegraded && !busy && (
+          <div className="notice" style={{ marginTop: "1rem", color: "var(--accent-amber)" }}>
+            AlphaNet is degraded. Transfers may take longer than usual.
+          </div>
+        )}
 
         <div className="row" style={{ marginTop: "1rem" }}>
           <button
             className="btn btn-primary"
             type="submit"
-            disabled={busy || !transferAllowed || !transferAmount.trim()}
+            disabled={busy || !transferAllowed}
           >
             {busy ? "Sending..." : "Send"}
           </button>
@@ -210,9 +276,9 @@ export default function TokenSendForm({
               portfolio={portfolio}
               disabled={busy}
               onBusyChange={setBusy}
+              lockedMint={selectedTokenMint}
               onCompleted={(res) => {
                 if (res.tokenAccountAddress) {
-                  setTransferMint(res.mintAddress);
                   setTransferDestination(res.tokenAccountAddress);
                   setShowPrepareRecipient(false);
                 }

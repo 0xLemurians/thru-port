@@ -206,7 +206,7 @@ export default function AppFlow() {
       )}
       {stage === "token" && account && (
         <div style={{ marginTop: 24 }}>
-          <TokenStudio account={account} />
+          <TokenStudio account={account} health={health} />
         </div>
       )}
       {stage === "name" && account && (

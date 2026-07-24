@@ -21,6 +21,7 @@ interface CreateDestinationTokenAccountProps {
   disabled: boolean;
   onBusyChange: (busy: boolean) => void;
   onCompleted: (result: CreateDestinationTokenAccountResult) => void;
+  lockedMint?: string;
 }
 
 export default function CreateDestinationTokenAccount({
@@ -29,8 +30,9 @@ export default function CreateDestinationTokenAccount({
   disabled,
   onBusyChange,
   onCompleted,
+  lockedMint,
 }: CreateDestinationTokenAccountProps) {
-  const [mintAddress, setMintAddress] = useState("");
+  const [mintAddress, setMintAddress] = useState(lockedMint || "");
   const [destinationOwnerAddress, setDestinationOwnerAddress] = useState("");
   const [progress, setProgress] = useState<TokenMutationProgress | null>(null);
   const [result, setResult] =
@@ -61,6 +63,12 @@ export default function CreateDestinationTokenAccount({
   useEffect(() => {
     onBusyChange(busy);
   }, [busy, onBusyChange]);
+
+  useEffect(() => {
+    if (lockedMint) {
+      setMintAddress(lockedMint);
+    }
+  }, [lockedMint]);
 
   async function createAccount(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -123,26 +131,34 @@ export default function CreateDestinationTokenAccount({
         </p>
         <label className="form-field">
           <span className="field-label">Mint address</span>
-          <input
-            className="input mono"
-            list="destination-known-mints"
-            value={mintAddress}
-            onChange={(event) => {
-              setMintAddress(event.target.value);
-              setResult(null);
-            }}
-            placeholder="ta..."
-            autoComplete="off"
-            spellCheck={false}
-            disabled={disabled || busy}
-          />
-          <datalist id="destination-known-mints">
-            {portfolio.map((item) => (
-              <option key={item.mintAddress} value={item.mintAddress}>
-                {item.mint?.ticker ?? item.label ?? "Known mint"}
-              </option>
-            ))}
-          </datalist>
+          {lockedMint ? (
+            <div className="input mono" style={{ opacity: 0.7, backgroundColor: "var(--bg-layer-2)" }}>
+              {mintAddress}
+            </div>
+          ) : (
+            <>
+              <input
+                className="input mono"
+                list="destination-known-mints"
+                value={mintAddress}
+                onChange={(event) => {
+                  setMintAddress(event.target.value);
+                  setResult(null);
+                }}
+                placeholder="ta..."
+                autoComplete="off"
+                spellCheck={false}
+                disabled={disabled || busy}
+              />
+              <datalist id="destination-known-mints">
+                {portfolio.map((item) => (
+                  <option key={item.mintAddress} value={item.mintAddress}>
+                    {item.mint?.ticker ?? item.label ?? "Known mint"}
+                  </option>
+                ))}
+              </datalist>
+            </>
+          )}
         </label>
         <label className="form-field">
           <span className="field-label">Destination owner public address</span>

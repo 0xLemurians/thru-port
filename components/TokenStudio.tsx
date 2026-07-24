@@ -12,17 +12,18 @@ import PortTokenQuickActions from "./port/token/PortTokenQuickActions";
 
 type StudioTab = "overview" | "create" | "send" | "mint-more" | "advanced";
 
+import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
+
 interface TokenStudioProps {
   account: ThruAccount | null;
   onBusyChange?: (busy: boolean) => void;
-  // health from AppFlow might be useful if we want to pass isOffline,
-  // but for now, we'll pass false or check if we can get it.
-  // The user said "Mevcut AppFlow health state’i prop zincirinde zaten erişilebiliyorsa yalnızca küçük bir status notice gösterilebilir. Health prop’u Token Studio sınırında mevcut değilse bu aşamada AppFlow’u değiştirme."
+  health?: AlphaNetHealth;
 }
 
 export default function TokenStudio({
   account,
   onBusyChange = () => {},
+  health,
 }: TokenStudioProps) {
   const [activeTab, setActiveTab] = useState<StudioTab>("overview");
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
@@ -95,6 +96,7 @@ export default function TokenStudio({
             onBusyChange={onBusyChange}
             onTokenCreated={handleTokenCreated}
             onCreateNew={() => setActiveTab("create")}
+            health={health}
           />
         }
         quickActions={

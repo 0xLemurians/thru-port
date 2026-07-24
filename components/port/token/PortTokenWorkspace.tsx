@@ -6,6 +6,7 @@ import TokenCreateForm from "@/components/token-studio/TokenCreateForm";
 import TokenSendForm from "@/components/token-studio/TokenSendForm";
 import TokenMintMoreForm from "@/components/token-studio/TokenMintMoreForm";
 import TokenAdvancedTools from "@/components/token-studio/TokenAdvancedTools";
+import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
 import PortTokenOverview from "./PortTokenOverview";
 
 interface PortTokenWorkspaceProps {
@@ -14,8 +15,9 @@ interface PortTokenWorkspaceProps {
   account: ThruAccount | null;
   portfolioHook: ReturnType<typeof import("@/lib/token/portfolio-hook").useTokenPortfolio>;
   onBusyChange: (busy: boolean) => void;
-  onTokenCreated: (result: CreateTokenResult) => void;
-  onCreateNew: () => void;
+  onTokenCreated?: (result: CreateTokenResult) => void;
+  onCreateNew?: () => void;
+  health?: AlphaNetHealth;
 }
 
 export default function PortTokenWorkspace({
@@ -24,8 +26,9 @@ export default function PortTokenWorkspace({
   account,
   portfolioHook,
   onBusyChange,
-  onTokenCreated,
-  onCreateNew,
+  onTokenCreated = () => {},
+  onCreateNew = () => {},
+  health,
 }: PortTokenWorkspaceProps) {
   const [manualLabel, setManualLabel] = useState("");
   const [manualMint, setManualMint] = useState("");
@@ -64,6 +67,9 @@ export default function PortTokenWorkspace({
           account={account}
           portfolio={portfolioHook.portfolio}
           onBusyChange={onBusyChange}
+          selectedTokenMint={selectedToken?.mintAddress}
+          health={health}
+          onSuccess={() => portfolioHook.refreshRecords(portfolioHook.records)}
         />
       )}
 
