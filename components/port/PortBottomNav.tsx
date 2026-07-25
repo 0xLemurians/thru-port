@@ -14,7 +14,6 @@ const ITEMS: Array<{ id: WorkspaceStage; label: string }> = [
   { id: "account", label: "Dashboard" },
   { id: "token", label: "Tokens" },
   { id: "name", label: "Identity" },
-  { id: "editor", label: "Dev" },
 ];
 
 export default function PortBottomNav({
@@ -30,10 +29,9 @@ export default function PortBottomNav({
   };
 
   const navMetrics: Record<WorkspaceStage, { left: number; width: number }> = {
-    account: { left: 0, width: 25 },
-    token: { left: 25, width: 25 },
-    name: { left: 50, width: 25 },
-    editor: { left: 75, width: 25 },
+    account: { left: 0, width: 33.33 },
+    token: { left: 33.33, width: 33.33 },
+    name: { left: 66.66, width: 33.33 },
   };
 
   const activeNavStyle = navMetrics[currentStage] || navMetrics.account;

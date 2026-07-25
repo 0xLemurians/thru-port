@@ -12,6 +12,8 @@ interface PortShellProps {
   publicAddress?: string | null;
   onStageChange: (stage: WorkspaceStage) => void;
   health: AlphaNetHealth;
+  account?: import("@/lib/wallet/thru-wallet").ThruAccount | null;
+  balance?: bigint | null;
   children: React.ReactNode;
 }
 
@@ -21,6 +23,8 @@ export default function PortShell({
   publicAddress,
   onStageChange,
   health,
+  account,
+  balance,
   children,
 }: PortShellProps) {
   const [displayStage, setDisplayStage] = useState<WorkspaceStage>(currentStage);
@@ -87,6 +91,8 @@ export default function PortShell({
           onStageChange={handleStageChange}
           isTransitioning={isTransitioning}
           health={health}
+          account={account}
+          balance={balance}
         />
 
         <main className="pc-workspace">

@@ -11,7 +11,6 @@ import {
   isAccountNotFoundError,
 } from "@/lib/wallet/thru-wallet";
 import { withdrawFromFaucet, FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
-import EditorPanel from "./EditorPanel";
 import NameStudio from "./NameStudio";
 import TokenStudio from "./TokenStudio";
 import type { WorkspaceStage } from "./port/PortHeader";
@@ -182,6 +181,8 @@ export default function AppFlow() {
       currentStage={stage}
       accountAvailable={Boolean(account)}
       publicAddress={account?.address}
+      account={account}
+      balance={balance}
       onStageChange={setStage}
       health={health}
     >
@@ -212,15 +213,6 @@ export default function AppFlow() {
       {stage === "name" && account && (
         <div style={{ marginTop: 24 }}>
           <NameStudio />
-        </div>
-      )}
-      {stage === "editor" && account && (
-        <div style={{ marginTop: 24 }}>
-          <EditorPanel
-            accountAddress={account.address}
-            onBack={() => setStage("account")}
-            onForgetAccount={forgetAccount}
-          />
         </div>
       )}
     </PortShell>

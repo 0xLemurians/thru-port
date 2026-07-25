@@ -70,3 +70,20 @@ test("complete token input returns normalized metadata and raw initial supply", 
     initialSupplyRaw: 12_345n,
   });
 });
+
+test("decimal amount converts correctly for user scenario: initialSupply 10, decimals 2 -> expected raw 1000n", () => {
+  const value = validateTokenInput({
+    name: "MVP Test",
+    ticker: "MVP",
+    decimals: 2,
+    initialSupply: "10",
+  });
+
+  assert.deepEqual(value, {
+    name: "MVP Test",
+    ticker: "MVP",
+    decimals: 2,
+    initialSupply: "10",
+    initialSupplyRaw: 1000n,
+  });
+});

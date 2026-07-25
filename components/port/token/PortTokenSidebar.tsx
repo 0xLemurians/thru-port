@@ -6,7 +6,6 @@ interface PortTokenSidebarProps {
   selectedToken: string | null;
   onSelectToken: (mintAddress: string) => void;
   onCreateNew: () => void;
-  onAdvanced: () => void;
   loading: boolean;
   error: string | null;
 }
@@ -16,7 +15,6 @@ export default function PortTokenSidebar({
   selectedToken,
   onSelectToken,
   onCreateNew,
-  onAdvanced,
   loading,
   error,
 }: PortTokenSidebarProps) {
@@ -73,17 +71,13 @@ export default function PortTokenSidebar({
                 className={`pc-token-list-item ${isSelected ? "active" : ""}`}
                 onClick={() => onSelectToken(item.mintAddress)}
               >
-                <div className="pc-token-list-item-label">
-                  {item.label || "Unnamed Token"}
+                <div className="pc-token-list-item-label" style={{ fontWeight: 600 }}>
+                  {item.mint?.ticker ?? item.label ?? "Unnamed Token"}
                 </div>
-                <div className="pc-token-list-item-address mono">
-                  Mint: {item.mintAddress.slice(0, 8)}...
+                {/* The detailed balances will be shown in the Send tab, but here we can show a label */}
+                <div className="pc-token-list-item-address mono" style={{ marginTop: "4px" }}>
+                  {item.mint?.ticker ?? "TOKEN"}
                 </div>
-                {item.tokenAccounts?.[0]?.address && (
-                  <div className="pc-token-list-item-address mono">
-                    Account: {item.tokenAccounts[0].address.slice(0, 8)}...
-                  </div>
-                )}
               </button>
             );
           })}
@@ -97,13 +91,6 @@ export default function PortTokenSidebar({
           style={{ width: "100%", display: "block", boxSizing: "border-box", marginBottom: "12px" }}
         >
           Create New
-        </button>
-        <button
-          className="pc-btn-secondary pc-btn-block"
-          onClick={onAdvanced}
-          style={{ width: "100%", display: "block", boxSizing: "border-box", border: "none", background: "transparent", color: "var(--text-dim)" }}
-        >
-          Advanced
         </button>
       </div>
     </div>

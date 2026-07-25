@@ -42,6 +42,7 @@ import {
   type TokenResumeProgress,
   type TokenResumeStage,
 } from "./resume";
+import type { PendingTokenSetup } from "./pending-setup";
 import {
   assertOfficialTokenProgramOwnership,
   buildDestinationInitializeAccountArgs,
@@ -186,6 +187,115 @@ export interface TransferTokenResult {
   destination: TokenAccountInfo;
 }
 
+/**
+ * Input for a read-only token recovery check.
+ * The UI collects only public on-chain addresses; no private data.
+ */
+export interface RecoverTokenInput {
+  mintAddress: string;
+  tokenAccountAddress: string;
+  /** Display label, e.g. "MVP Test". */
+  name: string;
+  /** Ticker / symbol, e.g. "MVP". */
+  ticker: string;
+  /** The currently connected wallet address (owner check). */
+  ownerAddress: string;
+}
+
+/** Result returned when on-chain verification succeeds for a recovery. */
+export interface RecoverTokenResult {
+  mintAddress: string;
+  tokenAccountAddress: string;
+  name: string;
+  ticker: string;
+  decimals: number;
+  rawBalance: bigint;
+  rawSupply: bigint;
+  mint: MintAccountInfo;
+  tokenAccount: TokenAccountInfo;
+}
+
+/**
+ * Verify that a previously created token still exists on-chain with the
+ * expected owner.  No transaction is ever submitted by this function.
+ *
+ * Throws a descriptive Error if any on-chain check fails.
+ */
+export async function verifyAndRecoverTokenOnAlphaNet(
+  input: RecoverTokenInput,
+  options: { signal?: AbortSignal } = {},
+): Promise<RecoverTokenResult> {
+  const { signal } = options;
+
+  const mintAddress = canonicalAddressPublic(input.mintAddress, "Mint address");
+  const tokenAccountAddress = canonicalAddressPublic(
+    input.tokenAccountAddress,
+    "Token account address",
+  );
+  const ownerAddress = canonicalAddressPublic(
+    input.ownerAddress,
+    "Owner address",
+  );
+
+  signal?.throwIfAborted();
+
+  // 1. Fetch and verify mint account (must be owned by the official Token Program).
+  const mint = await getVerifiedMint(mintAddress);
+
+  signal?.throwIfAborted();
+
+  // 2. Fetch and verify token account.
+  const tokenAccount = await getVerifiedTokenAccount(tokenAccountAddress);
+
+  signal?.throwIfAborted();
+
+  // 3. Token account mint must match the supplied mint address.
+  if (tokenAccount.mint !== mintAddress) {
+    throw new Error(
+      "The token account belongs to a different mint. " +
+        `Expected ${mintAddress}, got ${tokenAccount.mint}.`,
+    );
+  }
+
+  // 4. Token account owner must be the currently connected wallet.
+  if (tokenAccount.owner !== ownerAddress) {
+    throw new Error(
+      "The token account owner does not match the connected wallet. " +
+        "Only accounts you own can be recovered into your portfolio.",
+    );
+  }
+
+  // 5. Token account must not be frozen.
+  if (tokenAccount.isFrozen) {
+    throw new Error(
+      "The token account is frozen and cannot be added to the portfolio.",
+    );
+  }
+
+  return {
+    mintAddress,
+    tokenAccountAddress,
+    name: input.name.trim() || "Recovered Token",
+    ticker: input.ticker.trim().toUpperCase() || "RCVR",
+    decimals: mint.decimals,
+    rawBalance: tokenAccount.amount,
+    rawSupply: mint.supply,
+    mint,
+    tokenAccount,
+  };
+}
+
+/** Internal helper that does NOT require the SDK `thru` client. */
+function canonicalAddressPublic(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${label} is required.`);
+  try {
+    return Pubkey.from(normalized).toThruFmt();
+  } catch {
+    throw new Error(`${label} is not a valid Thru address.`);
+  }
+}
+
 interface TokenCreationContext {
   validated: ValidatedTokenInput;
   mint: ReturnType<typeof deriveMintAddress>;
@@ -196,12 +306,30 @@ interface TokenCreationContext {
   verifiedTokenAccount?: TokenAccountInfo;
 }
 
+export interface CreateTokenOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  onProgress: (progress: TokenCreationProgress) => void;
+  /**
+   * Optional hooks so that callers can persist/remove the pending-setup
+   * record without this library depending on localStorage directly.
+   */
+  onPendingSetupAvailable?: (setup: Omit<PendingTokenSetup, "savedAt">) => void;
+  onSetupComplete?: (mintAddress: string) => void;
+}
+
 export async function createTokenOnAlphaNet(
   account: ThruAccount,
   input: CreateTokenInput,
   options: CreateTokenOptions,
 ): Promise<CreateTokenResult> {
-  const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
+  const {
+    signal,
+    timeoutMs = FINALIZATION_TIMEOUT_MS,
+    onProgress,
+    onPendingSetupAvailable,
+    onSetupComplete,
+  } = options;
   let context: TokenCreationContext | null = null;
 
   const getContext = (): TokenCreationContext => {
@@ -243,6 +371,17 @@ export async function createTokenOnAlphaNet(
           tokenAccountSeed,
           mintSeedHex,
         };
+        // Persist the pending setup as soon as addresses are known.
+        // This allows recovery even if final verification times out.
+        onPendingSetupAvailable?.({
+          walletAddress: account.address,
+          mintAddress: mint.address,
+          tokenAccountAddress: tokenAccount.address,
+          name: input.name,
+          ticker: input.ticker,
+          decimals: input.decimals,
+          initialSupply: input.initialSupply,
+        });
       },
 
       createMint: async (onSubmitted) => {
@@ -289,7 +428,6 @@ export async function createTokenOnAlphaNet(
                   mint.supply === 0n &&
                   mint.freezeAuthority === null &&
                   !mint.hasFreezeAuthority,
-                "The observed mint state did not match the submitted configuration.",
               ),
           },
         );
@@ -352,7 +490,6 @@ export async function createTokenOnAlphaNet(
                   tokenAccount.owner === account.address &&
                   tokenAccount.amount === 0n &&
                   !tokenAccount.isFrozen,
-                "The observed token account did not match its mint and owner.",
               ),
           },
         );
@@ -404,7 +541,6 @@ export async function createTokenOnAlphaNet(
                   current.mint.address,
                   (mint) =>
                     mint.supply === current.validated.initialSupplyRaw,
-                  "The observed mint supply did not match the initial supply.",
                 ),
                 observeTokenAccountState(
                   current.tokenAccount.address,
@@ -414,7 +550,6 @@ export async function createTokenOnAlphaNet(
                     tokenAccount.amount ===
                       current.validated.initialSupplyRaw &&
                     !tokenAccount.isFrozen,
-                  "The observed token balance did not match the initial supply.",
                 ),
               ]);
               return mintObserved && accountObserved;
@@ -463,6 +598,9 @@ export async function createTokenOnAlphaNet(
   if (!current.verifiedMint || !current.verifiedTokenAccount) {
     throw new Error("Verified on-chain token state is unavailable.");
   }
+
+  // Verification succeeded — the pending setup can be cleared.
+  onSetupComplete?.(current.mint.address);
 
   return {
     name: current.validated.name,
@@ -638,7 +776,6 @@ export async function resumeTokenSetupOnAlphaNet(
                   state.owner === account.address &&
                   state.amount === 0n &&
                   !state.isFrozen,
-                "The observed token account did not match the resumed mint and owner.",
               ),
           },
         );
@@ -897,7 +1034,6 @@ export async function createDestinationTokenAccountOnAlphaNet(
                       preview.destinationOwnerAddress &&
                     tokenAccount.amount === 0n &&
                     !tokenAccount.isFrozen,
-                  "The observed destination token account did not match its mint and owner.",
                 ),
             },
           );
@@ -1443,14 +1579,13 @@ async function getOptionalVerifiedTokenAccount(
   }
 }
 
-async function observeMintState(
+export async function observeMintState(
   address: string,
   matches: (mint: MintAccountInfo) => boolean,
-  mismatchMessage: string,
 ): Promise<boolean> {
   try {
     const mint = await getVerifiedMint(address);
-    if (!matches(mint)) throw new Error(mismatchMessage);
+    if (!matches(mint)) return false;
     return true;
   } catch (error) {
     if (isAccountNotFoundError(error)) return false;
@@ -1458,14 +1593,13 @@ async function observeMintState(
   }
 }
 
-async function observeTokenAccountState(
+export async function observeTokenAccountState(
   address: string,
   matches: (tokenAccount: TokenAccountInfo) => boolean,
-  mismatchMessage: string,
 ): Promise<boolean> {
   try {
     const tokenAccount = await getVerifiedTokenAccount(address);
-    if (!matches(tokenAccount)) throw new Error(mismatchMessage);
+    if (!matches(tokenAccount)) return false;
     return true;
   } catch (error) {
     if (isAccountNotFoundError(error)) return false;

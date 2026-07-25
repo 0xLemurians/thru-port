@@ -8,9 +8,8 @@ import type { CreateTokenResult } from "@/lib/token/thru-token";
 import PortTokenLayout from "./port/token/PortTokenLayout";
 import PortTokenSidebar from "./port/token/PortTokenSidebar";
 import PortTokenWorkspace from "./port/token/PortTokenWorkspace";
-import PortTokenQuickActions from "./port/token/PortTokenQuickActions";
 
-type StudioTab = "overview" | "create" | "send" | "mint-more" | "advanced";
+type StudioTab = "create" | "send";
 
 import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
 
@@ -25,63 +24,63 @@ export default function TokenStudio({
   onBusyChange = () => {},
   health,
 }: TokenStudioProps) {
-  const [activeTab, setActiveTab] = useState<StudioTab>("overview");
+  const [activeTab, setActiveTab] = useState<StudioTab>("send");
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
   const [initialSelectDone, setInitialSelectDone] = useState(false);
 
   // Lift portfolio state to TokenStudio so it can be shared across tabs.
   const portfolioHook = useTokenPortfolio(account);
 
+  const ownedPortfolio = portfolioHook.portfolio.filter((p) =>
+    p.tokenAccounts.some((acc) => acc.state?.owner === account?.address)
+  );
+
   // Handle default selection
   useEffect(() => {
-    if (!initialSelectDone && !portfolioHook.refreshing && portfolioHook.portfolio.length > 0) {
-      setSelectedTokenMint(portfolioHook.portfolio[0].mintAddress);
+    if (!initialSelectDone && !portfolioHook.refreshing && ownedPortfolio.length > 0) {
+      setSelectedTokenMint(ownedPortfolio[0].mintAddress);
       setInitialSelectDone(true);
     }
-  }, [portfolioHook.portfolio, portfolioHook.refreshing, initialSelectDone]);
+  }, [ownedPortfolio, portfolioHook.refreshing, initialSelectDone]);
 
   // Ensure selection is valid
   useEffect(() => {
     if (selectedTokenMint && !portfolioHook.refreshing) {
-      const exists = portfolioHook.portfolio.some(p => p.mintAddress === selectedTokenMint);
+      const exists = ownedPortfolio.some(p => p.mintAddress === selectedTokenMint);
       if (!exists) {
-        if (portfolioHook.portfolio.length > 0) {
-          setSelectedTokenMint(portfolioHook.portfolio[0].mintAddress);
-          setActiveTab("overview");
+        if (ownedPortfolio.length > 0) {
+          setSelectedTokenMint(ownedPortfolio[0].mintAddress);
+          setActiveTab("send");
         } else {
           setSelectedTokenMint(null);
-          setActiveTab("overview");
+          setActiveTab("send");
         }
       }
     }
-  }, [portfolioHook.portfolio, selectedTokenMint, portfolioHook.refreshing]);
+  }, [ownedPortfolio, selectedTokenMint, portfolioHook.refreshing]);
 
 
   function handleTokenCreated(result: CreateTokenResult) {
     portfolioHook.addKnownToken(result.mintAddress, result.tokenAccountAddress, result.name);
-    // Optionally auto-select the new token:
     setSelectedTokenMint(result.mintAddress);
-    setActiveTab("overview");
+    setActiveTab("send");
   }
 
-  const selectedToken = portfolioHook.portfolio.find(p => p.mintAddress === selectedTokenMint) || null;
+  const selectedToken = ownedPortfolio.find(p => p.mintAddress === selectedTokenMint) || null;
 
   return (
     <div className="pc-token-studio-root">
       <PortTokenLayout
         sidebar={
           <PortTokenSidebar
-            portfolio={portfolioHook.portfolio}
+            portfolio={ownedPortfolio}
             selectedToken={selectedTokenMint}
             onSelectToken={(mint) => {
               setSelectedTokenMint(mint);
-              setActiveTab("overview");
+              setActiveTab("send");
             }}
             onCreateNew={() => {
               setActiveTab("create");
-            }}
-            onAdvanced={() => {
-              setActiveTab("advanced");
             }}
             loading={portfolioHook.refreshing}
             error={portfolioHook.portfolioError}
@@ -95,17 +94,7 @@ export default function TokenStudio({
             portfolioHook={portfolioHook}
             onBusyChange={onBusyChange}
             onTokenCreated={handleTokenCreated}
-            onCreateNew={() => setActiveTab("create")}
             health={health}
-          />
-        }
-        quickActions={
-          <PortTokenQuickActions
-            selectedToken={selectedToken}
-            activeView={activeTab}
-            onAction={(view) => setActiveTab(view)}
-            isOffline={false}
-            account={account}
           />
         }
       />

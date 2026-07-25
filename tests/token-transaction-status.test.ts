@@ -172,3 +172,38 @@ test("uncertain status retains evidence that the expected account exists", async
 
   assert.equal(accountVerifications, 1);
 });
+
+test("stale read behavior: verifyExpectedState returns false initially, then true, polling continues successfully without resubmitting", async () => {
+  let clock = 0;
+  let verifications = 0;
+  let statusReads = 0;
+
+  const result = await waitForTransactionVisibility({
+    signature: "stale-read-signature",
+    readStatus: async () => {
+      statusReads += 1;
+      return {
+        // Return 3 until verifications have happened, then 4
+        statusCode: verifications >= 2 ? 4 : 3,
+        executionResult: { vmError: 0, userErrorCode: 0n, executionResult: 0n }
+      };
+    },
+    isFinalConsensus,
+    assertExecutionSucceeded,
+    verifyExpectedState: async () => {
+      verifications += 1;
+      if (verifications === 1) return false;
+      return true;
+    },
+    timeoutMs: 100,
+    initialBackoffMs: 10,
+    now: () => clock,
+    sleep: async (delay) => {
+      clock += delay;
+    },
+  });
+
+  assert.equal(verifications, 2);
+  assert.equal(statusReads, 3);
+  assert.equal(result.expectedStateObserved, true);
+});
