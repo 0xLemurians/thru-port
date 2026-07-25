@@ -30,7 +30,7 @@ export default function PortFooter() {
             white-space: nowrap !important;
             align-items: center !important;
             max-width: 1200px !important;
-            font-size: 11px !important;
+            font-size: 12px !important;
             gap: 12px !important;
           }
           .pc-footer-left,
