@@ -23,17 +23,24 @@ import {
   type PendingTokenSetup,
 } from "@/lib/token/pending-setup";
 import { explorerAddressUrl, type ThruAccount } from "@/lib/wallet/thru-wallet";
+import type { NetworkStatus } from "@/components/port/useAlphaNetHealth";
+import {
+  safeTokenActionError,
+  tokenNetworkActionsDisabled,
+} from "@/lib/token/network-state";
 
 interface TokenCreateFormProps {
   account: ThruAccount | null;
   onBusyChange: (busy: boolean) => void;
   onSuccess: (result: CreateTokenResult) => void;
+  networkStatus?: NetworkStatus;
 }
 
 export default function TokenCreateForm({
   account,
   onBusyChange,
   onSuccess,
+  networkStatus,
 }: TokenCreateFormProps) {
   const [name, setName] = useState("");
   const [ticker, setTicker] = useState("");
@@ -61,6 +68,7 @@ export default function TokenCreateForm({
 
   const controllerRef = useRef<AbortController | null>(null);
   const recoveryControllerRef = useRef<AbortController | null>(null);
+  const networkActionsDisabled = tokenNetworkActionsDisabled(networkStatus);
 
   useEffect(() => {
     return () => {
@@ -126,7 +134,7 @@ export default function TokenCreateForm({
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!account) return;
+    if (!account || networkActionsDisabled) return;
 
     const controller = new AbortController();
     controllerRef.current?.abort();
@@ -174,7 +182,7 @@ export default function TokenCreateForm({
       setTicker(created.ticker);
       onSuccess(created);
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "Token creation failed.";
+      const message = safeTokenActionError(caught, "Token creation failed.");
       const isAborted = controller.signal.aborted;
       setError(
         isAborted
@@ -196,7 +204,7 @@ export default function TokenCreateForm({
 
   async function handleRecover(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!account) return;
+    if (!account || networkActionsDisabled) return;
 
     const controller = new AbortController();
     recoveryControllerRef.current?.abort();
@@ -234,7 +242,7 @@ export default function TokenCreateForm({
       handleSetupComplete(verified.mintAddress);
       setRecoveryOpen(false);
     } catch (caught) {
-      setRecoveryError(caught instanceof Error ? caught.message : "Recovery failed.");
+      setRecoveryError(safeTokenActionError(caught, "Recovery failed."));
     } finally {
       if (recoveryControllerRef.current === controller) {
         recoveryControllerRef.current = null;
@@ -382,9 +390,9 @@ export default function TokenCreateForm({
         {!result && (
           <div className="row" style={{ marginTop: "1.5rem" }}>
             <button
-              className="btn btn-primary"
+              className="btn btn-primary token-network-action"
               type="submit"
-              disabled={busy}
+              disabled={busy || networkActionsDisabled}
             >
               {busy ? "Creating token…" : "Create token"}
             </button>
@@ -415,11 +423,13 @@ export default function TokenCreateForm({
             })}
           </ol>
 
-          {(error || Object.keys(signatures).length > 0) && (
+          {((error && !networkActionsDisabled) || Object.keys(signatures).length > 0) && (
             <details className="technical-details" style={{ marginTop: "1rem" }}>
               <summary>Technical details</summary>
               <div className="technical-details-content">
-                {error && <p className="error token-error">{error}</p>}
+                {error && !networkActionsDisabled && (
+                  <p className="error token-error">{error}</p>
+                )}
                 {Object.entries(signatures).map(([key, sig]) => (
                   <div key={key}>
                     <span>{key}: </span>
@@ -589,15 +599,15 @@ export default function TokenCreateForm({
                 </label>
               </div>
 
-              {recoveryError && (
+              {recoveryError && !networkActionsDisabled && (
                 <p className="error token-error" style={{ marginTop: "0.75rem" }}>{recoveryError}</p>
               )}
 
               <div className="row" style={{ marginTop: "1rem" }}>
                 <button
-                  className="btn btn-primary"
+                  className="btn btn-primary token-network-action"
                   type="submit"
-                  disabled={recoveryBusy}
+                  disabled={recoveryBusy || networkActionsDisabled}
                 >
                   {recoveryBusy ? "Verifying on-chain…" : "Recover token"}
                 </button>

@@ -1,6 +1,7 @@
 import type { NameLookupSnapshot } from "@/lib/thru/name-service/account-types";
 import {
   LEASE_TIMESTAMP_WARNING,
+  NAME_LEASE_INVALID_MESSAGE,
   NAME_NOT_FOUND_MESSAGE,
   NAME_SNAPSHOT_WARNING,
 } from "@/lib/thru/name-service/constants";
@@ -35,7 +36,7 @@ export default function LeaseDetails({ snapshot }: LeaseDetailsProps) {
 
       {lease.status === "invalid" && (
         <p className="token-error" role="alert">
-          {lease.error}
+          {NAME_LEASE_INVALID_MESSAGE}
         </p>
       )}
 

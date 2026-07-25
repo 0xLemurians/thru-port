@@ -435,7 +435,7 @@ test("lookup honors AbortSignal", async () => {
   await assert.rejects(pending, /cancelled/i);
 });
 
-test("Name Studio source has no mutation or secret-material access path", () => {
+test("the existing read-only lookup remains isolated from mutation paths", () => {
   const files = [
     "lib/thru/name-service/constants.ts",
     "lib/thru/name-service/derivation.ts",
@@ -443,7 +443,6 @@ test("Name Studio source has no mutation or secret-material access path", () => 
     "lib/thru/name-service/account-parser.ts",
     "lib/thru/name-service/lookup.ts",
     "lib/thru/name-service/validation.ts",
-    "components/NameStudio.tsx",
     "components/name-studio/NameLookupForm.tsx",
     "components/name-studio/NameAccountDetails.tsx",
     "components/name-studio/LeaseDetails.tsx",

@@ -262,7 +262,13 @@ export default function AppFlow() {
       )}
       {stage === "name" && account && (
         <div style={{ marginTop: 24 }}>
-          <NameStudio />
+          <NameStudio
+            account={account}
+            health={health}
+            walletReady={
+              restoreStatus === "WALLET_READY" && !persistenceWarning
+            }
+          />
         </div>
       )}
     </PortShell>

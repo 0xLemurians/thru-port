@@ -5,6 +5,7 @@ import { formatRawAmount } from "@thru/programs/token";
 import { decimalAmountToRaw } from "@/lib/token/validation";
 import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
+import { safeTokenActionError } from "@/lib/token/network-state";
 
 export default function TokenSendForm({
   account,
@@ -70,7 +71,6 @@ export default function TokenSendForm({
 
   const isHealthOffline = health?.status === "Offline";
   const isHealthChecking = health?.status === "Checking";
-  const isHealthDegraded = health?.status === "Degraded";
   const healthDisabled = isHealthOffline || isHealthChecking;
 
   const transferAllowed = Boolean(
@@ -161,21 +161,9 @@ export default function TokenSendForm({
           </label>
         </div>
 
-        {healthDisabled && (
-          <div className="notice" style={{ marginTop: "1rem", color: "var(--accent-red)" }}>
-            Cannot transfer tokens while AlphaNet is {health.status.toLowerCase()}.
-          </div>
-        )}
-
-        {isHealthDegraded && !busy && (
-          <div className="notice" style={{ marginTop: "1rem", color: "var(--accent-amber)" }}>
-            AlphaNet is degraded. Transfers may take longer than usual.
-          </div>
-        )}
-
         <div className="row" style={{ marginTop: "1rem" }}>
           <button
-            className="btn btn-primary"
+            className="btn btn-primary token-network-action"
             type="submit"
             disabled={busy || !transferAllowed}
             style={{ width: "100%" }}
@@ -185,9 +173,13 @@ export default function TokenSendForm({
         </div>
       </form>
 
-      {(error || result) && (
+      {((error && !isHealthOffline) || result) && (
         <div className="technical-details" style={{ marginTop: "2rem" }}>
-          {error && <p className="error">{error}</p>}
+          {error && !isHealthOffline && (
+            <p className="error">
+              {safeTokenActionError(error, "Token transfer failed.")}
+            </p>
+          )}
           {result && (
             <div>
               <p className="success">Transfer successful!</p>

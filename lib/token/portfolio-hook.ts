@@ -11,8 +11,20 @@ import {
   type KnownTokenRecord,
 } from "./portfolio";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import type { NetworkStatus } from "@/components/port/useAlphaNetHealth";
+import {
+  safeTokenReadError,
+  tokenNetworkReadAllowed,
+} from "@/lib/token/network-state";
 
-export function useTokenPortfolio(account: ThruAccount | null) {
+interface UseTokenPortfolioOptions {
+  networkStatus?: NetworkStatus;
+}
+
+export function useTokenPortfolio(
+  account: ThruAccount | null,
+  options: UseTokenPortfolioOptions = {},
+) {
   const [records, setRecords] = useState<KnownTokenRecord[]>([]);
   const [portfolio, setPortfolio] = useState<TokenPortfolioItem[]>([]);
   const [storageReady, setStorageReady] = useState(false);
@@ -20,8 +32,16 @@ export function useTokenPortfolio(account: ThruAccount | null) {
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
 
   const requestTrackerRef = useRef(new LatestRequestTracker());
+  const networkReadAllowed = tokenNetworkReadAllowed(options.networkStatus);
 
   const refreshRecords = useCallback(async (next: KnownTokenRecord[]) => {
+    if (!networkReadAllowed) {
+      requestTrackerRef.current.invalidate();
+      setRefreshing(false);
+      setPortfolioError(null);
+      return;
+    }
+
     const request = requestTrackerRef.current.begin();
     setRefreshing(true);
     setPortfolioError(null);
@@ -32,15 +52,13 @@ export function useTokenPortfolio(account: ThruAccount | null) {
       setPortfolio(nextPortfolio);
     } catch (error) {
       if (!requestTrackerRef.current.isCurrent(request)) return;
-      setPortfolioError(
-        error instanceof Error ? error.message : "Portfolio refresh failed.",
-      );
+      setPortfolioError(safeTokenReadError(error));
     } finally {
       if (requestTrackerRef.current.isCurrent(request)) {
         setRefreshing(false);
       }
     }
-  }, [account?.address]);
+  }, [account?.address, networkReadAllowed]);
 
   const persistAndRefresh = useCallback(
     (next: KnownTokenRecord[]) => {
@@ -55,8 +73,14 @@ export function useTokenPortfolio(account: ThruAccount | null) {
     const loaded = loadKnownTokens(window.localStorage);
     setRecords(loaded);
     setStorageReady(true);
-    void refreshRecords(loaded);
-  }, [account?.address, refreshRecords]);
+    if (networkReadAllowed) {
+      void refreshRecords(loaded);
+    } else {
+      requestTrackerRef.current.invalidate();
+      setRefreshing(false);
+      setPortfolioError(null);
+    }
+  }, [account?.address, networkReadAllowed, refreshRecords]);
 
   useEffect(() => {
     const tracker = requestTrackerRef.current;

@@ -4,6 +4,11 @@ import { useState, useEffect } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
 import type { CreateTokenResult } from "@/lib/token/thru-token";
+import {
+  safeTokenReadError,
+  tokenNetworkActionsDisabled,
+  tokenNetworkWarning,
+} from "@/lib/token/network-state";
 
 import PortTokenLayout from "./port/token/PortTokenLayout";
 import PortTokenSidebar from "./port/token/PortTokenSidebar";
@@ -29,10 +34,17 @@ export default function TokenStudio({
   const [initialSelectDone, setInitialSelectDone] = useState(false);
 
   // Lift portfolio state to TokenStudio so it can be shared across tabs.
-  const portfolioHook = useTokenPortfolio(account);
+  const portfolioHook = useTokenPortfolio(account, {
+    networkStatus: health?.status,
+  });
+  const networkActionsDisabled = tokenNetworkActionsDisabled(health?.status);
+  const networkWarning = tokenNetworkWarning(health?.status);
 
   const ownedPortfolio = portfolioHook.portfolio.filter((p) =>
     p.tokenAccounts.some((acc) => acc.state?.owner === account?.address)
+  );
+  const savedRecords = portfolioHook.records.filter(
+    (record) => !record.walletAddress || record.walletAddress === account?.address,
   );
 
   // Handle default selection
@@ -70,20 +82,35 @@ export default function TokenStudio({
 
   return (
     <div className="pc-token-studio-root">
+      {networkWarning && (
+        <p
+          className={
+            health?.status === "Offline"
+              ? "name-network-message name-network-offline pc-token-network-message"
+              : "name-network-message pc-token-network-message"
+          }
+          role="status"
+        >
+          {networkWarning}
+        </p>
+      )}
       <PortTokenLayout
         sidebar={
           <PortTokenSidebar
             portfolio={ownedPortfolio}
+            savedRecords={savedRecords}
             selectedToken={selectedTokenMint}
             onSelectToken={(mint) => {
               setSelectedTokenMint(mint);
               setActiveTab("send");
             }}
             onCreateNew={() => {
+              if (networkActionsDisabled) return;
               setActiveTab("create");
             }}
+            networkStatus={health?.status}
             loading={portfolioHook.refreshing}
-            error={portfolioHook.portfolioError}
+            error={safeTokenReadError(portfolioHook.portfolioError)}
           />
         }
         workspace={

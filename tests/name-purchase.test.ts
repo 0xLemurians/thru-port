@@ -21,6 +21,7 @@ import {
 import { deriveRegistrarConfigAddress } from "../lib/thru/name-service/derivation";
 import {
   PURCHASE_INSTRUCTION_HEADER_BYTES,
+  PURCHASE_PROGRESS_STAGES,
   PURCHASE_TRANSACTION_RESOURCES,
   PurchaseError,
   buildPurchaseAccountLayout,
@@ -31,6 +32,7 @@ import {
   derivePaymentTokenAccountAddress,
   preparePurchaseDomain,
   purchaseThruName,
+  quotePurchaseDomain,
   resolvePurchaseAccountIndexes,
   sortPubkeysLexicographically,
   validatePayerTokenAccount,
@@ -578,6 +580,46 @@ test("derives the current wallet payment account without creating it", async () 
   assert.equal(prepared.payerTokenAccount, expectedAddress);
 });
 
+test("read-only quotes retain exact price when payment is missing or insufficient", async () => {
+  const missing = await quotePurchaseDomain({
+    label: LABEL,
+    years: 1,
+    walletAddress: WALLET,
+    payerTokenAccountAddress: PAYER_TOKEN_ACCOUNT,
+    lookupName: async () => availableSnapshot(),
+    readTokenAccount: async (address) => ({
+      info:
+        address === TREASURER
+          ? paymentAccount({ owner: ROOT_REGISTRAR })
+          : null,
+      accountMetaOwner: TOKEN_PROGRAM,
+    }),
+  });
+  assert.equal(missing.price, PRICE_PER_YEAR);
+  assert.deepEqual(missing.payment, {
+    status: "missing",
+    code: "PAYER_TOKEN_ACCOUNT_NOT_FOUND",
+    message: "The wallet payment token account does not exist.",
+  });
+
+  const insufficient = await quotePurchaseDomain({
+    label: LABEL,
+    years: 1,
+    walletAddress: WALLET,
+    payerTokenAccountAddress: PAYER_TOKEN_ACCOUNT,
+    lookupName: async () => availableSnapshot(),
+    readTokenAccount: async (address) => ({
+      info:
+        address === TREASURER
+          ? paymentAccount({ owner: ROOT_REGISTRAR })
+          : paymentAccount({ amount: PRICE_PER_YEAR - 1n }),
+      accountMetaOwner: TOKEN_PROGRAM,
+    }),
+  });
+  assert.equal(insufficient.price, PRICE_PER_YEAR);
+  assert.equal(insufficient.payment.status, "insufficient");
+});
+
 function finalAccountsForBuild(options: BuildTransactionOptions): Pubkey[] {
   const sort = (values: NonNullable<typeof options.accounts>["readWrite"]) =>
     (values ?? [])
@@ -794,6 +836,26 @@ test("refetches config and availability immediately before signing", async () =>
     "send",
     "lookup-4",
   ]);
+});
+
+test("reports truthful purchase progress in transaction order", async () => {
+  const { dependencies } = happyDependencies();
+  const progress: string[] = [];
+  await purchaseThruName(
+    WALLET_ACCOUNT,
+    {
+      label: LABEL,
+      years: 1,
+      payerTokenAccountAddress: PAYER_TOKEN_ACCOUNT,
+    },
+    {
+      dependencies,
+      postStateIntervalMs: 0,
+      onProgress: (stage) => progress.push(stage),
+    },
+  );
+
+  assert.deepEqual(progress, PURCHASE_PROGRESS_STAGES);
 });
 
 test("rejects an existing name before proof generation", async () => {

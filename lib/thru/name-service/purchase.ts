@@ -37,6 +37,20 @@ export const PURCHASE_TRANSACTION_RESOURCES = Object.freeze({
   memoryUnits: 10_000,
 });
 
+export const PURCHASE_PROGRESS_STAGES = [
+  "checking-availability",
+  "refreshing-price",
+  "validating-payment-account",
+  "generating-state-proofs",
+  "waiting-wallet-signature",
+  "submitting-transaction",
+  "confirming-transaction",
+  "verifying-ownership",
+] as const;
+
+export type PurchaseProgressStage =
+  (typeof PURCHASE_PROGRESS_STAGES)[number];
+
 export type PurchaseErrorCode =
   | "INVALID_LABEL"
   | "INVALID_YEARS"
@@ -923,7 +937,22 @@ export interface PreparedPurchaseDomain {
   config: RegistrarConfigState;
 }
 
-export async function preparePurchaseDomain(
+export type PurchasePaymentReadiness =
+  | { status: "ready" }
+  | {
+      status: "missing" | "invalid" | "insufficient";
+      code:
+        | "PAYER_TOKEN_ACCOUNT_NOT_FOUND"
+        | "PAYER_TOKEN_ACCOUNT_INVALID"
+        | "INSUFFICIENT_PAYMENT_BALANCE";
+      message: string;
+    };
+
+export interface PurchaseDomainQuote extends PreparedPurchaseDomain {
+  payment: PurchasePaymentReadiness;
+}
+
+async function resolvePurchaseDomain(
   input: PreparePurchaseDomainInput,
 ): Promise<PreparedPurchaseDomain> {
   const validated = validatePurchaseLabel(input.label);
@@ -934,7 +963,6 @@ export async function preparePurchaseDomain(
     "TRANSACTION_BUILD_FAILED",
   ).address;
   const lookupName = input.lookupName ?? lookupThruName;
-  const readTokenAccount = input.readTokenAccount ?? defaultReadTokenAccount;
   const snapshot = await fetchPurchaseSnapshot(
     validated.label,
     lookupName,
@@ -954,20 +982,6 @@ export async function preparePurchaseDomain(
         tokenProgramId: config.tokenProgramId,
       });
 
-  await readAndValidatePaymentAccount({
-    address: payerTokenAccount,
-    walletAddress,
-    config,
-    requiredAmount: price,
-    readTokenAccount,
-    signal: input.signal,
-  });
-  await readAndValidateTreasurerAccount({
-    config,
-    readTokenAccount,
-    signal: input.signal,
-  });
-
   return {
     label: validated.label,
     years,
@@ -984,6 +998,95 @@ export async function preparePurchaseDomain(
     tokenProgram: config.tokenProgramId,
     config,
   };
+}
+
+async function validatePreparedPurchaseAccounts(input: {
+  prepared: PreparedPurchaseDomain;
+  readTokenAccount: PaymentTokenAccountReader;
+  signal?: AbortSignal;
+}): Promise<void> {
+  await readAndValidatePaymentAccount({
+    address: input.prepared.payerTokenAccount,
+    walletAddress: input.prepared.walletAddress,
+    config: input.prepared.config,
+    requiredAmount: input.prepared.price,
+    readTokenAccount: input.readTokenAccount,
+    signal: input.signal,
+  });
+  await readAndValidateTreasurerAccount({
+    config: input.prepared.config,
+    readTokenAccount: input.readTokenAccount,
+    signal: input.signal,
+  });
+}
+
+function paymentReadinessFromError(
+  error: PurchaseError,
+): Exclude<PurchasePaymentReadiness, { status: "ready" }> | null {
+  if (error.code === "PAYER_TOKEN_ACCOUNT_NOT_FOUND") {
+    return {
+      status: "missing",
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error.code === "PAYER_TOKEN_ACCOUNT_INVALID") {
+    return {
+      status: "invalid",
+      code: error.code,
+      message: error.message,
+    };
+  }
+  if (error.code === "INSUFFICIENT_PAYMENT_BALANCE") {
+    return {
+      status: "insufficient",
+      code: error.code,
+      message: error.message,
+    };
+  }
+  return null;
+}
+
+export async function quotePurchaseDomain(
+  input: PreparePurchaseDomainInput,
+): Promise<PurchaseDomainQuote> {
+  const prepared = await resolvePurchaseDomain(input);
+  const readTokenAccount = input.readTokenAccount ?? defaultReadTokenAccount;
+  let payment: PurchasePaymentReadiness = { status: "ready" };
+
+  try {
+    await readAndValidatePaymentAccount({
+      address: prepared.payerTokenAccount,
+      walletAddress: prepared.walletAddress,
+      config: prepared.config,
+      requiredAmount: prepared.price,
+      readTokenAccount,
+      signal: input.signal,
+    });
+  } catch (error) {
+    if (!(error instanceof PurchaseError)) throw error;
+    const readiness = paymentReadinessFromError(error);
+    if (!readiness) throw error;
+    payment = readiness;
+  }
+
+  await readAndValidateTreasurerAccount({
+    config: prepared.config,
+    readTokenAccount,
+    signal: input.signal,
+  });
+
+  return { ...prepared, payment };
+}
+
+export async function preparePurchaseDomain(
+  input: PreparePurchaseDomainInput,
+): Promise<PreparedPurchaseDomain> {
+  const { payment, ...prepared } = await quotePurchaseDomain(input);
+  if (payment.status !== "ready") {
+    throw new PurchaseError(payment.code, payment.message);
+  }
+  return prepared;
 }
 
 function purchaseAccounts(
@@ -1186,6 +1289,8 @@ async function submitAndTrackPurchase(input: {
   sendAndTrack: PurchaseTransactionSender;
   timeoutMs: number;
   signal?: AbortSignal;
+  onSubmitting?: () => void;
+  onConfirming?: () => void;
 }): Promise<string> {
   let wire: Uint8Array;
   try {
@@ -1197,7 +1302,9 @@ async function submitAndTrackPurchase(input: {
     );
   }
 
+  input.onSubmitting?.();
   let signature = "";
+  let confirmationReported = false;
   let finalized = false;
   let executionSucceeded = false;
   const updates = input
@@ -1215,6 +1322,10 @@ async function submitAndTrackPurchase(input: {
       if (update.signature?.value) {
         try {
           signature = Signature.from(update.signature.value).toThruFmt();
+          if (!confirmationReported) {
+            confirmationReported = true;
+            input.onConfirming?.();
+          }
         } catch {
           throw new PurchaseError(
             "TRANSACTION_REJECTED",
@@ -1476,6 +1587,7 @@ export interface PurchaseThruNameOptions {
   postStateMaxAttempts?: number;
   postStateIntervalMs?: number;
   signal?: AbortSignal;
+  onProgress?: (stage: PurchaseProgressStage) => void;
   dependencies?: PurchaseEngineDependencies;
 }
 
@@ -1487,6 +1599,17 @@ export interface PurchaseThruNameResult {
 }
 
 const ACTIVE_PURCHASES = new Set<string>();
+
+function reportPurchaseProgress(
+  onProgress: PurchaseThruNameOptions["onProgress"],
+  stage: PurchaseProgressStage,
+): void {
+  try {
+    onProgress?.(stage);
+  } catch {
+    // Progress observers must not be able to alter transaction safety.
+  }
+}
 
 export async function purchaseThruName(
   account: ThruAccount,
@@ -1529,10 +1652,19 @@ export async function purchaseThruName(
       signal: scope.signal,
     };
 
+    reportPurchaseProgress(options.onProgress, "checking-availability");
     await preparePurchaseDomain(preparationInput);
 
     // Fresh availability/config read immediately before proof generation.
-    const proofState = await preparePurchaseDomain(preparationInput);
+    reportPurchaseProgress(options.onProgress, "refreshing-price");
+    const proofState = await resolvePurchaseDomain(preparationInput);
+    reportPurchaseProgress(options.onProgress, "validating-payment-account");
+    await validatePreparedPurchaseAccounts({
+      prepared: proofState,
+      readTokenAccount,
+      signal: scope.signal,
+    });
+    reportPurchaseProgress(options.onProgress, "generating-state-proofs");
     const { leaseProof, domainProof } = await generateFreshProofs({
       prepared: proofState,
       generateCreationProof,
@@ -1553,6 +1685,7 @@ export async function purchaseThruName(
     const signingState = await preparePurchaseDomain(preparationInput);
     assertPreparedStateStable(proofState, signingState);
     throwIfAborted(scope.signal);
+    reportPurchaseProgress(options.onProgress, "waiting-wallet-signature");
     try {
       await abortable(transaction.sign(account.privateKey), scope.signal);
     } catch (error) {
@@ -1573,7 +1706,18 @@ export async function purchaseThruName(
       sendAndTrack,
       timeoutMs,
       signal: scope.signal,
+      onSubmitting: () =>
+        reportPurchaseProgress(
+          options.onProgress,
+          "submitting-transaction",
+        ),
+      onConfirming: () =>
+        reportPurchaseProgress(
+          options.onProgress,
+          "confirming-transaction",
+        ),
     });
+    reportPurchaseProgress(options.onProgress, "verifying-ownership");
     const postState = await verifyPurchasedDomain({
       label: signingState.label,
       expectedOwner: walletAddress,

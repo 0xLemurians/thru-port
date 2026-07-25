@@ -4,6 +4,7 @@ import type {
   DomainState,
 } from "@/lib/thru/name-service/account-types";
 import {
+  NAME_DOMAIN_INVALID_MESSAGE,
   NAME_NOT_FOUND_MESSAGE,
   NAME_SNAPSHOT_WARNING,
   nameExplorerAddressUrl,
@@ -66,7 +67,7 @@ function DomainResult({
   if (domain.status === "invalid") {
     return (
       <p className="token-error" role="alert">
-        {domain.error}
+        {NAME_DOMAIN_INVALID_MESSAGE}
       </p>
     );
   }

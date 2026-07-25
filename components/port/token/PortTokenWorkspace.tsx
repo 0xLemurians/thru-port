@@ -31,6 +31,7 @@ export default function PortTokenWorkspace({
           account={account}
           onBusyChange={onBusyChange}
           onSuccess={onTokenCreated}
+          networkStatus={health?.status}
         />
       )}
 

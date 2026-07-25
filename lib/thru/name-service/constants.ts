@@ -1,6 +1,8 @@
 export const ALPHANET_RPC_URL = "https://rpc.alphanet.thru.org";
 export const ALPHANET_EXPLORER_ADDRESS_BASE_URL =
   "https://scan.thru.org/address";
+export const ALPHANET_EXPLORER_TRANSACTION_BASE_URL =
+  "https://scan.thru.org/tx";
 
 /** Official AlphaNet base Name Service program from the Thru CLI defaults. */
 export const NAME_SERVICE_PROGRAM_ADDRESS =
@@ -21,8 +23,16 @@ export const NAME_NOT_FOUND_MESSAGE =
   "Not found on the latest AlphaNet snapshot.";
 export const NAME_SNAPSHOT_WARNING =
   "This is a snapshot only and does not reserve the name.";
+export const NAME_DOMAIN_INVALID_MESSAGE =
+  "The domain account data could not be verified safely.";
+export const NAME_LEASE_INVALID_MESSAGE =
+  "The lease account data could not be verified safely.";
 export const LEASE_TIMESTAMP_WARNING =
   "Timestamp unit not officially verified.";
+export const ALPHANET_RPC_UNAVAILABLE_MESSAGE =
+  "AlphaNet RPC is currently unavailable. Try again later.";
+export const ALPHANET_RPC_DEGRADED_MESSAGE =
+  "AlphaNet RPC is degraded. Reads may fail, and final checks remain authoritative.";
 
 export const NAME_SECURITY_MESSAGES = [
   "Names are case-sensitive.",
@@ -33,4 +43,8 @@ export const NAME_SECURITY_MESSAGES = [
 
 export function nameExplorerAddressUrl(address: string): string {
   return `${ALPHANET_EXPLORER_ADDRESS_BASE_URL}/${address}`;
+}
+
+export function nameExplorerTransactionUrl(signature: string): string {
+  return `${ALPHANET_EXPLORER_TRANSACTION_BASE_URL}/${signature}`;
 }

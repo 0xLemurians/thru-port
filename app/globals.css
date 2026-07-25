@@ -1089,6 +1089,237 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.name-register-panel,
+.name-register-form,
+.name-availability-card,
+.name-registration-success,
+.name-inspection-heading {
+  display: flex;
+  flex-direction: column;
+}
+
+.name-register-panel {
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid rgba(244, 122, 60, 0.3);
+  border-radius: 14px;
+  background:
+    linear-gradient(145deg, rgba(244, 122, 60, 0.07), transparent 55%),
+    var(--ink-raised);
+}
+
+.name-register-panel .panel-sub {
+  color: var(--ash);
+}
+
+.name-register-form,
+.name-availability-card,
+.name-registration-success {
+  gap: 14px;
+}
+
+.name-register-actions {
+  justify-content: flex-start;
+}
+
+.name-register-actions .btn:disabled,
+.name-lookup-form .name-lookup-action:disabled,
+.name-confirmation-actions .btn:disabled {
+  opacity: 0.58;
+  border-color: var(--border-soft);
+  background: var(--panel-strong);
+  color: var(--ash);
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.name-register-actions .btn:disabled:hover,
+.name-lookup-form .name-lookup-action:disabled:hover,
+.name-confirmation-actions .btn:disabled:hover {
+  border-color: var(--border-soft);
+  background: var(--panel-strong);
+  box-shadow: none;
+  transform: none;
+}
+
+.name-network-message {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(240, 168, 60, 0.3);
+  border-radius: 11px;
+  background: rgba(240, 168, 60, 0.08);
+  color: #f4c98a;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.name-network-offline {
+  border-color: rgba(255, 115, 115, 0.35);
+  background: rgba(255, 115, 115, 0.08);
+  color: #ffaaaa;
+}
+
+.name-availability-card {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--ink);
+  color: var(--ash);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.name-availability-card strong {
+  color: var(--parchment);
+  font-size: 15px;
+}
+
+.name-availability-available {
+  border-color: rgba(61, 220, 151, 0.34);
+  background: rgba(61, 220, 151, 0.07);
+}
+
+.name-availability-available strong {
+  color: var(--moss);
+}
+
+.name-availability-unavailable {
+  border-color: rgba(255, 115, 115, 0.3);
+  background: rgba(255, 115, 115, 0.07);
+}
+
+.name-availability-unavailable strong {
+  color: #ffaaaa;
+}
+
+.name-availability-card details {
+  padding-top: 4px;
+}
+
+.name-availability-card summary {
+  width: fit-content;
+  color: var(--ember-soft);
+  cursor: pointer;
+}
+
+.name-availability-card details[open] summary {
+  margin-bottom: 12px;
+}
+
+.name-registration-success {
+  padding: 18px;
+  border: 1px solid rgba(61, 220, 151, 0.4);
+  border-radius: 14px;
+  background: rgba(61, 220, 151, 0.08);
+}
+
+.name-registration-success h3,
+.name-inspection-heading h3 {
+  margin: 0;
+}
+
+.name-inspection-heading {
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.name-inspection-heading .hint {
+  margin: 0;
+}
+
+.name-confirmation-backdrop {
+  position: fixed;
+  z-index: 500;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow-y: auto;
+  background: rgba(8, 4, 7, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.name-confirmation-dialog {
+  display: flex;
+  width: min(680px, 100%);
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 24px;
+  border: 1px solid rgba(244, 122, 60, 0.42);
+  border-radius: 16px;
+  background: var(--ink-raised);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.62);
+}
+
+.name-confirmation-dialog h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.name-confirmation-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--border-soft);
+}
+
+.name-confirmation-grid > div {
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--ink);
+}
+
+.name-confirmation-grid > div:last-child {
+  grid-column: 1 / -1;
+}
+
+.name-confirmation-grid dt {
+  color: var(--ash);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.name-confirmation-grid dd {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.name-confirmation-warning {
+  padding: 12px 14px;
+  border: 1px solid rgba(240, 168, 60, 0.3);
+  border-radius: 11px;
+  background: rgba(240, 168, 60, 0.08);
+  color: #f4c98a;
+  font-size: 12.5px;
+}
+
+.name-confirmation-warning p {
+  margin: 0;
+}
+
+.name-confirmation-warning p + p {
+  margin-top: 6px;
+}
+
+.name-registration-progress {
+  grid-template-columns: 1fr 1fr;
+}
+
+.name-confirmation-actions {
+  justify-content: flex-end;
+}
+
 .name-results,
 .name-result-section {
   display: flex;
@@ -1391,8 +1622,23 @@ textarea:focus-visible {
 
   .name-security-notice ul,
   .name-detail-grid,
+  .name-confirmation-grid,
   .name-record {
     grid-template-columns: 1fr;
+  }
+
+  .name-confirmation-grid > div:last-child {
+    grid-column: auto;
+  }
+
+  .name-confirmation-backdrop {
+    align-items: start;
+    padding: 12px;
+  }
+
+  .name-confirmation-dialog {
+    max-height: calc(100vh - 24px);
+    padding: 18px;
   }
 
   .transaction-link {
@@ -1951,6 +2197,23 @@ textarea:focus-visible {
   height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+.pc-token-network-message {
+  width: min(1120px, calc(100% - 48px));
+  margin: 0 auto 16px;
+  box-sizing: border-box;
+}
+
+.pc-token-studio-root .token-network-action:disabled,
+.pc-token-studio-root .token-network-action:disabled:hover {
+  opacity: 0.58;
+  background: #26181D;
+  color: rgba(255, 226, 210, 0.62);
+  border: 1px solid rgba(255, 226, 210, 0.17);
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .pc-token-layout {
