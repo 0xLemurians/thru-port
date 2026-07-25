@@ -10,6 +10,11 @@ import {
   hexToBytes,
   isAccountNotFoundError,
 } from "@/lib/wallet/thru-wallet";
+import {
+  savePersistedWallet,
+  restorePersistedWallet,
+  removePersistedWallet,
+} from "@/lib/wallet/persistent-wallet";
 import { withdrawFromFaucet, FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
 import NameStudio from "./NameStudio";
 import TokenStudio from "./TokenStudio";
@@ -27,6 +32,9 @@ export default function AppFlow() {
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
+
+  const [restoreStatus, setRestoreStatus] = useState<"RESTORING" | "WALLET_READY" | "NO_SAVED_WALLET">("RESTORING");
+  const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
 
   const [faucetState, setFaucetState] = useState<"idle" | "requesting" | "success" | "error">("idle");
   const [faucetError, setFaucetError] = useState<string | null>(null);
@@ -67,6 +75,28 @@ export default function AppFlow() {
   );
 
   useEffect(() => {
+    let active = true;
+    restorePersistedWallet()
+      .then((restored) => {
+        if (!active) return;
+        if (restored) {
+          setAccount(restored);
+          setRestoreStatus("WALLET_READY");
+        } else {
+          setRestoreStatus("NO_SAVED_WALLET");
+        }
+      })
+      .catch((err) => {
+        if (!active) return;
+        setRestoreStatus("NO_SAVED_WALLET");
+        setWalletError(err instanceof Error ? err.message : "Could not restore saved wallet.");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (account) {
       setFaucetState("idle");
       setFaucetError(null);
@@ -82,9 +112,16 @@ export default function AppFlow() {
   async function handleCreateWallet() {
     setWalletBusy(true);
     setWalletError(null);
+    setPersistenceWarning(null);
     try {
       const acc = await createNewAccount(true);
       setAccount(acc);
+      setRestoreStatus("WALLET_READY");
+      try {
+        await savePersistedWallet(acc);
+      } catch {
+        setPersistenceWarning("Wallet created, but it could not be saved on this device. Keep your backup file safe.");
+      }
     } catch (err) {
       setWalletError(err instanceof Error ? err.message : "Couldn't create the account.");
     } finally {
@@ -95,6 +132,7 @@ export default function AppFlow() {
   async function handleImportWallet(kind: "mnemonic" | "hex", value: string) {
     setWalletBusy(true);
     setWalletError(null);
+    setPersistenceWarning(null);
     let importedPrivateKey: Uint8Array | null = null;
     try {
       let acc: ThruAccount;
@@ -106,6 +144,12 @@ export default function AppFlow() {
         acc = await accountFromPrivateKey(importedPrivateKey);
       }
       setAccount(acc);
+      setRestoreStatus("WALLET_READY");
+      try {
+        await savePersistedWallet(acc);
+      } catch {
+        setPersistenceWarning("Wallet imported, but it could not be saved on this device. Keep your backup file safe.");
+      }
     } catch (err) {
       setWalletError(
         err instanceof Error
@@ -169,10 +213,13 @@ export default function AppFlow() {
   }
 
   // Phase 2 disconnect
-  function forgetAccount() {
+  async function forgetAccount() {
+    await removePersistedWallet();
     faucetControllerRef.current?.abort();
     account?.privateKey.fill(0);
     setAccount(null);
+    setRestoreStatus("NO_SAVED_WALLET");
+    setPersistenceWarning(null);
     setStage("account");
   }
 
@@ -185,6 +232,7 @@ export default function AppFlow() {
       balance={balance}
       onStageChange={setStage}
       health={health}
+      onForgetAccount={forgetAccount}
     >
       {stage === "account" && (
         <PortDashboard
@@ -203,6 +251,8 @@ export default function AppFlow() {
           onRequestFaucet={handleFaucet}
           onCancelFaucet={cancelFaucet}
           onForgetAccount={forgetAccount}
+          restoreStatus={restoreStatus}
+          persistenceWarning={persistenceWarning}
         />
       )}
       {stage === "token" && account && (

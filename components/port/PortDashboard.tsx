@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { type ThruAccount, downloadBackupFile } from "@/lib/wallet/thru-wallet";
 import PortSafetyRail from "./PortSafetyRail";
 import type { AlphaNetHealth } from "./useAlphaNetHealth";
@@ -16,13 +16,15 @@ interface PortDashboardProps {
   onCreateWallet: () => void;
   onImportWallet: (kind: "mnemonic" | "hex", value: string) => void;
   health: AlphaNetHealth;
-  faucetState?: "idle" | "requesting" | "success" | "error";
+  faucetState?: "idle" | "requesting" | "confirming" | "success" | "error";
   faucetError?: string | null;
   retryInfo?: string | null;
   lastSignature?: string | null;
   onRequestFaucet?: () => void;
   onCancelFaucet?: () => void;
-  onForgetAccount?: () => void;
+  onForgetAccount?: () => void | Promise<void>;
+  restoreStatus?: "RESTORING" | "WALLET_READY" | "NO_SAVED_WALLET";
+  persistenceWarning?: string | null;
 }
 
 export default function PortDashboard({
@@ -41,12 +43,22 @@ export default function PortDashboard({
   onRequestFaucet = () => {},
   onCancelFaucet = () => {},
   onForgetAccount = () => {},
+  restoreStatus = "NO_SAVED_WALLET",
+  persistenceWarning = null,
 }: PortDashboardProps) {
   const [importMode, setImportMode] = useState<"hidden" | "mnemonic" | "hex">("hidden");
   const [importValue, setImportValue] = useState("");
   const [copied, setCopied] = useState(false);
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
   const [copyError, setCopyError] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDisconnectConfirm(false);
+    setRemoveError(null);
+    setRemoving(false);
+  }, [account?.address]);
 
   const handleImportSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,13 +78,16 @@ export default function PortDashboard({
     });
   };
 
-  const handleDisconnect = () => {
-    if (disconnectConfirm) {
-      setDisconnectConfirm(false);
-      onForgetAccount();
-    } else {
-      setDisconnectConfirm(true);
-      setTimeout(() => setDisconnectConfirm(false), 3000);
+  const handleConfirmRemoval = async () => {
+    if (removing) return;
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      await onForgetAccount();
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : "Failed to remove wallet from storage.");
+    } finally {
+      setRemoving(false);
     }
   };
 
@@ -99,7 +114,7 @@ export default function PortDashboard({
                   <h1 className="pc-hero-title">Create, test and explore on Thru</h1>
                   <p className="pc-hero-desc">
                     Generate or import a test account locally to unlock this workspace. 
-                    Private keys remain on your device and are cleared upon refresh.
+                    Private keys remain encrypted on your device and can be removed at any time.
                   </p>
                 </>
               ) : (
@@ -163,6 +178,10 @@ export default function PortDashboard({
                       </button>
                     </div>
                   </form>
+                ) : restoreStatus === "RESTORING" ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px", color: "#CEBAB0", fontSize: "14px", fontWeight: 500 }}>
+                    <div className="pc-spinner" /> Restoring wallet…
+                  </div>
                 ) : (
                   <>
                     <button className="pc-btn-primary" style={{ padding: "12px 24px", fontSize: "14px" }} onClick={onCreateWallet}>Create Wallet</button>
@@ -239,7 +258,7 @@ export default function PortDashboard({
                 </div>
                 <div className="pc-info-row">
                   <span className="pc-info-key">Secret storage</span>
-                  <span className="pc-info-val-mono">Memory only</span>
+                  <span className="pc-info-val-mono" style={{ color: "#3DDC97" }}>Saved on this device</span>
                 </div>
                 <div className="pc-info-row" style={{ borderBottom: "none" }}>
                   <span className="pc-info-key">Saved public assets</span>
@@ -301,10 +320,10 @@ export default function PortDashboard({
                 )}
                 <div className="pc-info-row pc-anim-bottom" style={{ borderBottom: "none", animationDelay: "250ms" }}>
                   <span className="pc-info-key">Secret storage</span>
-                  <span className="pc-info-val-mono">Memory only</span>
+                  <span className="pc-info-val-mono" style={{ color: "#3DDC97" }}>Saved on this device</span>
                 </div>
 
-                <div className="pc-anim-bottom" style={{ animationDelay: "300ms", display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: "8px", marginTop: "24px", paddingTop: "16px", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                <div className="pc-anim-bottom" style={{ animationDelay: "300ms", display: "grid", gridTemplateColumns: disconnectConfirm ? "1fr auto 1fr 1fr" : "1fr auto 1fr", gap: "8px", marginTop: "24px", paddingTop: "16px", borderTop: "1px solid rgba(255,255,255,0.05)" }}>
                   <button
                     type="button"
                     className="pc-btn-secondary"
@@ -321,18 +340,61 @@ export default function PortDashboard({
                   >
                     Download Backup
                   </button>
-                  <button
-                    type="button"
-                    className="pc-btn-secondary"
-                    style={{ padding: "8px", fontSize: "12px", gap: "6px", width: "100%", justifyContent: "center", color: disconnectConfirm ? "#ff8d8d" : "inherit", borderColor: disconnectConfirm ? "rgba(255,141,141,0.2)" : "rgba(255,255,255,0.1)" }}
-                    onClick={handleDisconnect}
-                  >
-                    {disconnectConfirm ? "Confirm?" : "Disconnect"}
-                  </button>
+                  {!disconnectConfirm ? (
+                    <button
+                      type="button"
+                      className="pc-btn-secondary"
+                      style={{ padding: "8px", fontSize: "12px", gap: "6px", width: "100%", justifyContent: "center" }}
+                      onClick={() => {
+                        setDisconnectConfirm(true);
+                        setRemoveError(null);
+                      }}
+                    >
+                      Remove from device
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="pc-btn-secondary"
+                        style={{ padding: "8px", fontSize: "12px", gap: "6px", width: "100%", justifyContent: "center", color: "#ff8d8d", borderColor: "rgba(255,141,141,0.2)" }}
+                        disabled={removing}
+                        onClick={handleConfirmRemoval}
+                      >
+                        {removing ? "Removing..." : "Confirm removal"}
+                      </button>
+                      <button
+                        type="button"
+                        className="pc-btn-secondary"
+                        style={{ padding: "8px", fontSize: "12px", gap: "6px", width: "100%", justifyContent: "center" }}
+                        disabled={removing}
+                        onClick={() => {
+                          setDisconnectConfirm(false);
+                          setRemoveError(null);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
                 </div>
                 {disconnectConfirm && (
                   <div className="pc-anim-mask" style={{ color: "#ff8d8d", fontSize: "12px", marginTop: "8px", textAlign: "center" }}>
-                    Disconnect this in-memory wallet?
+                    {removeError ? removeError : "This removes the saved wallet from this browser. Make sure you have your JSON backup."}
+                  </div>
+                )}
+                {persistenceWarning && (
+                  <div className="pc-anim-mask" style={{
+                    marginTop: "12px",
+                    padding: "10px 14px",
+                    background: "rgba(245, 158, 11, 0.08)",
+                    border: "1px solid rgba(245, 158, 11, 0.2)",
+                    borderRadius: "6px",
+                    color: "#f59e0b",
+                    fontSize: "12px",
+                    lineHeight: "1.4"
+                  }}>
+                    {persistenceWarning}
                   </div>
                 )}
               </>

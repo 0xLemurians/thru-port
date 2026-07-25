@@ -105,6 +105,7 @@ export interface TokenPortfolioAccount {
 export interface TokenPortfolioItem {
   mintAddress: string;
   label?: string;
+  walletAddress?: string;
   mint?: MintAccountInfo;
   error?: string;
   tokenAccounts: TokenPortfolioAccount[];
@@ -654,6 +655,7 @@ export async function fetchTokenPortfolioOnAlphaNet(
       return {
         mintAddress: record.mintAddress,
         ...(record.label ? { label: record.label } : {}),
+        ...(record.walletAddress ? { walletAddress: record.walletAddress } : {}),
         ...(mintResult.value
           ? { mint: mintResult.value }
           : { error: mintResult.error }),

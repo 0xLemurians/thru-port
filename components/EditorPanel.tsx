@@ -8,7 +8,7 @@ import Stepper from "./Stepper";
 interface EditorPanelProps {
   accountAddress: string;
   onBack: () => void;
-  onForgetAccount: () => void;
+  onForgetAccount: () => void | Promise<void>;
 }
 
 function shortAddress(address: string): string {

@@ -26,7 +26,7 @@ interface AccountPanelProps {
   account: ThruAccount | null;
   onAccountChange: (account: ThruAccount) => void;
   onContinue?: () => void;
-  onForgetAccount: () => void;
+  onForgetAccount: () => void | Promise<void>;
 }
 
 export default function AccountPanel({

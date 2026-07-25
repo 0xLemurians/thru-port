@@ -2,7 +2,7 @@ import type { AlphaNetHealth } from "./useAlphaNetHealth";
 import { FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
 
 interface PortFaucetPanelProps {
-  faucetState: "idle" | "requesting" | "success" | "error";
+  faucetState: "idle" | "requesting" | "confirming" | "success" | "error";
   faucetError: string | null;
   retryInfo: string | null;
   lastSignature: string | null;

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { downloadBackupFile } from "@/lib/wallet/thru-wallet";
 import type { AlphaNetHealth } from "./useAlphaNetHealth";
 import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
 import { formatRawAmount } from "@thru/programs/token";
@@ -11,14 +12,39 @@ interface PortWalletPopoverProps {
   account: ThruAccount;
   balance: bigint | null;
   health: AlphaNetHealth;
+  onForgetAccount?: () => void | Promise<void>;
 }
 
 export default function PortWalletPopover({
   account,
   balance,
   health,
+  onForgetAccount,
 }: PortWalletPopoverProps) {
   const [activeTab, setActiveTab] = useState<"none" | "send" | "receive">("none");
+  const [disconnectConfirm, setDisconnectConfirm] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDisconnectConfirm(false);
+    setRemoveError(null);
+    setRemoving(false);
+  }, [account?.address]);
+
+  const handleConfirmRemoval = async () => {
+    if (removing || !onForgetAccount) return;
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      await onForgetAccount();
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : "Failed to remove wallet from storage.");
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   const portfolioHook = useTokenPortfolio(account);
   const isLoading = !portfolioHook.storageReady || portfolioHook.refreshing;
 
@@ -73,8 +99,9 @@ export default function PortWalletPopover({
       }}
     >
       <div style={{ padding: "16px", borderBottom: "1px solid var(--border)" }}>
-        <div style={{ fontSize: "11px", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
-          Main wallet
+        <div style={{ fontSize: "11px", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.5px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Main wallet</span>
+          <span style={{ color: "#3DDC97", fontSize: "10px", fontWeight: 500, textTransform: "none" }}>Saved on this device</span>
         </div>
         <div style={{ marginTop: "4px" }}>
           <div style={{ fontSize: "12px", color: "var(--text-dim)" }}>Native balance</div>
@@ -179,6 +206,59 @@ export default function PortWalletPopover({
             </button>
           );
         })}
+
+        <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid var(--border)", display: "flex", gap: "8px" }}>
+          <button
+            type="button"
+            className="pc-btn-secondary"
+            style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
+            onClick={() => downloadBackupFile(account)}
+          >
+            Download Backup
+          </button>
+          {onForgetAccount && (!disconnectConfirm ? (
+            <button
+              type="button"
+              className="pc-btn-secondary"
+              style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
+              onClick={() => {
+                setDisconnectConfirm(true);
+                setRemoveError(null);
+              }}
+            >
+              Remove from device
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="pc-btn-secondary"
+                style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center", color: "#ff8d8d", borderColor: "rgba(255,141,141,0.2)" }}
+                disabled={removing}
+                onClick={handleConfirmRemoval}
+              >
+                {removing ? "Removing..." : "Confirm removal"}
+              </button>
+              <button
+                type="button"
+                className="pc-btn-secondary"
+                style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
+                disabled={removing}
+                onClick={() => {
+                  setDisconnectConfirm(false);
+                  setRemoveError(null);
+                }}
+              >
+                Cancel
+              </button>
+            </>
+          ))}
+        </div>
+        {disconnectConfirm && (
+          <div style={{ marginTop: "6px", color: "#ff8d8d", fontSize: "11px", textAlign: "center" }}>
+            {removeError ? removeError : "This removes the saved wallet from this browser. Make sure you have your JSON backup."}
+          </div>
+        )}
       </div>
     </div>
   );

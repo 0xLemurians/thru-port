@@ -18,6 +18,7 @@ interface PortHeaderProps {
   health: AlphaNetHealth;
   account?: ThruAccount | null;
   balance?: bigint | null;
+  onForgetAccount?: () => void | Promise<void>;
 }
 
 const ITEMS: Array<{ id: WorkspaceStage; label: string }> = [
@@ -35,6 +36,7 @@ export default function PortHeader({
   health,
   account,
   balance,
+  onForgetAccount,
 }: PortHeaderProps) {
   const [popoverOpen, setPopoverOpen] = React.useState(false);
   const shortAddress = publicAddress 
@@ -173,6 +175,7 @@ export default function PortHeader({
                 account={account}
                 balance={balance ?? null}
                 health={health}
+                onForgetAccount={onForgetAccount}
               />
             )}
           </div>
@@ -227,6 +230,7 @@ export default function PortHeader({
                account={account}
                balance={balance ?? null}
                health={health}
+               onForgetAccount={onForgetAccount}
              />
            )}
         </div>

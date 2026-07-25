@@ -26,7 +26,8 @@ export function useTokenPortfolio(account: ThruAccount | null) {
     setRefreshing(true);
     setPortfolioError(null);
     try {
-      const nextPortfolio = await fetchTokenPortfolioOnAlphaNet(next);
+      const filtered = next.filter(r => !r.walletAddress || r.walletAddress === account?.address);
+      const nextPortfolio = await fetchTokenPortfolioOnAlphaNet(filtered);
       if (!requestTrackerRef.current.isCurrent(request)) return;
       setPortfolio(nextPortfolio);
     } catch (error) {
@@ -39,7 +40,7 @@ export function useTokenPortfolio(account: ThruAccount | null) {
         setRefreshing(false);
       }
     }
-  }, []);
+  }, [account?.address]);
 
   const persistAndRefresh = useCallback(
     (next: KnownTokenRecord[]) => {
@@ -69,9 +70,10 @@ export function useTokenPortfolio(account: ThruAccount | null) {
       mintAddress,
       tokenAccountAddress,
       label,
+      walletAddress: account?.address,
     });
     persistAndRefresh(next);
-  }, [records, persistAndRefresh]);
+  }, [records, account?.address, persistAndRefresh]);
 
   const removeKnownToken = useCallback((mintAddress: string) => {
     const next = records.filter(r => r.mintAddress !== mintAddress);
@@ -80,6 +82,9 @@ export function useTokenPortfolio(account: ThruAccount | null) {
 
   const clearExternalAssets = useCallback((activeWalletAddress?: string) => {
     const externalMints = new Set(portfolio.filter(item => {
+      if (item.walletAddress && activeWalletAddress && item.walletAddress !== activeWalletAddress) {
+        return true;
+      }
       const hasActiveAccount = activeWalletAddress && item.tokenAccounts.some(acc => acc.state?.owner === activeWalletAddress);
       const isMintAuthority = activeWalletAddress && item.mint?.mintAuthority === activeWalletAddress;
       return !hasActiveAccount && !isMintAuthority;

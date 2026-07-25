@@ -9,6 +9,7 @@ const MAX_ACCOUNTS_PER_MINT = 128;
 export interface KnownTokenRecord {
   mintAddress: string;
   label?: string;
+  walletAddress?: string;
   tokenAccountAddresses: string[];
 }
 
@@ -40,6 +41,7 @@ export function upsertKnownToken(
     mintAddress: string;
     tokenAccountAddress?: string;
     label?: string;
+    walletAddress?: string;
   },
 ): KnownTokenRecord[] {
   const mintAddress = normalizeAddress(input.mintAddress, "Mint address");
@@ -56,11 +58,15 @@ export function upsertKnownToken(
     if (normalized.length >= MAX_KNOWN_MINTS) {
       throw new Error(`At most ${MAX_KNOWN_MINTS} known mints can be stored.`);
     }
+    const walletAddress = input.walletAddress?.trim()
+      ? normalizeAddress(input.walletAddress, "Wallet address")
+      : undefined;
     return [
       ...normalized,
       {
         mintAddress,
         ...(label ? { label } : {}),
+        ...(walletAddress ? { walletAddress } : {}),
         tokenAccountAddresses: tokenAccountAddress
           ? [tokenAccountAddress]
           : [],
@@ -80,9 +86,13 @@ export function upsertKnownToken(
       `At most ${MAX_ACCOUNTS_PER_MINT} token accounts can be stored per mint.`,
     );
   }
+  const walletAddress = input.walletAddress?.trim()
+    ? normalizeAddress(input.walletAddress, "Wallet address")
+    : existing.walletAddress;
   next[existingIndex] = {
     ...existing,
     ...(label ? { label } : {}),
+    ...(walletAddress ? { walletAddress } : {}),
     tokenAccountAddresses: accountAddresses,
   };
   return next;
@@ -97,6 +107,7 @@ export function normalizeKnownTokens(value: unknown): KnownTokenRecord[] {
     const raw = candidate as {
       mintAddress?: unknown;
       label?: unknown;
+      walletAddress?: unknown;
       tokenAccountAddresses?: unknown;
     };
     if (typeof raw.mintAddress !== "string") continue;
@@ -125,11 +136,21 @@ export function normalizeKnownTokens(value: unknown): KnownTokenRecord[] {
       }
     }
 
+    let walletAddress: string | undefined;
+    if (typeof raw.walletAddress === "string" && raw.walletAddress.trim()) {
+      try {
+        walletAddress = normalizeAddress(raw.walletAddress, "Wallet address");
+      } catch {
+        // Ignore malformed wallet reference.
+      }
+    }
+
     records.set(mintAddress, {
       mintAddress,
       ...(typeof raw.label === "string" && normalizeLabel(raw.label)
         ? { label: normalizeLabel(raw.label) }
         : {}),
+      ...(walletAddress ? { walletAddress } : {}),
       tokenAccountAddresses: Array.from(new Set(accountAddresses)),
     });
   }
@@ -178,6 +199,10 @@ export function classifyPortfolio(
   const externalAssets = [];
 
   for (const item of portfolio) {
+    if (item.walletAddress && activeWalletAddress && item.walletAddress !== activeWalletAddress) {
+      externalAssets.push(item);
+      continue;
+    }
     const isOwner = activeWalletAddress && item.tokenAccounts.some((acc) => acc.state?.owner === activeWalletAddress);
     const isMintAuthority = activeWalletAddress && item.mint?.mintAuthority === activeWalletAddress;
 

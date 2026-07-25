@@ -14,6 +14,7 @@ interface PortShellProps {
   health: AlphaNetHealth;
   account?: import("@/lib/wallet/thru-wallet").ThruAccount | null;
   balance?: bigint | null;
+  onForgetAccount?: () => void | Promise<void>;
   children: React.ReactNode;
 }
 
@@ -25,6 +26,7 @@ export default function PortShell({
   health,
   account,
   balance,
+  onForgetAccount,
   children,
 }: PortShellProps) {
   const [displayStage, setDisplayStage] = useState<WorkspaceStage>(currentStage);
@@ -93,6 +95,7 @@ export default function PortShell({
           health={health}
           account={account}
           balance={balance}
+          onForgetAccount={onForgetAccount}
         />
 
         <main className="pc-workspace">
