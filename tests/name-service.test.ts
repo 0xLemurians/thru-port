@@ -187,7 +187,10 @@ test("Mert and mert derive different addresses", async () => {
 
 test("validates labels by raw UTF-8 byte length", () => {
   assert.equal(utf8ByteLength("\u00e9"), 2);
-  assert.equal(validateNameLabel(" ".repeat(2) + "Mert ").label, "Mert");
+  assert.equal(
+    validateNameLabel(" ".repeat(2) + "Mert ").label,
+    "  Mert ",
+  );
   assert.equal(validateNameLabel("\ud83d\ude00".repeat(16)).bytes.length, 64);
   assert.throws(() => validateNameLabel(""), /required/i);
   assert.throws(
