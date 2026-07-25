@@ -17,10 +17,37 @@ export default function PortFooter() {
         }
         .pc-footer-center {
           display: flex;
+          flex-direction: row;
           align-items: center;
           justify-content: center;
-          flex-wrap: wrap;
+          flex-wrap: nowrap;
+          white-space: nowrap;
           gap: 4px;
+        }
+        @media (min-width: 901px) {
+          .pc-footer-content {
+            flex-wrap: nowrap !important;
+            white-space: nowrap !important;
+            align-items: center !important;
+            max-width: 1200px !important;
+            font-size: 11px !important;
+            gap: 12px !important;
+          }
+          .pc-footer-left,
+          .pc-footer-center,
+          .pc-footer-right {
+            white-space: nowrap !important;
+            flex-shrink: 0;
+          }
+          .pc-footer-right {
+            gap: 16px !important;
+          }
+        }
+        @media (max-width: 900px) {
+          .pc-footer-center {
+            flex-wrap: wrap;
+            white-space: normal;
+          }
         }
       `}</style>
       <div className="pc-footer-content">
