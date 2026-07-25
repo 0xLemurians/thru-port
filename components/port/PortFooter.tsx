@@ -10,7 +10,7 @@ export default function PortFooter() {
           PORT <span className="pc-footer-slash">{"//"}</span> Browser-native tools for Thru AlphaNet
         </div>
         <div className="pc-footer-center">
-          Designed & built by 0xLemurians
+          Designed & built by 0xLemurians <span className="pc-footer-slash">{"//"}</span> Falcon Moon icon by Lorc — CC BY 3.0
         </div>
         <div className="pc-footer-right">
           <a href="https://docs.thru.org" target="_blank" rel="noopener noreferrer" aria-label="Documentation">Documentation ↗</a>
