@@ -121,7 +121,7 @@ export default function PortDashboard({
                 <>
                   <h1 className="pc-hero-title" style={{ color: "#3DDC97" }}>Workspace unlocked</h1>
                   <p className="pc-hero-desc">
-                    Use the navigation above to continue to Tokens, Identity or Developer tools.
+                    Use the navigation above to continue to Tokens or Identity.
                   </p>
                 </>
               )}

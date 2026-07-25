@@ -10,8 +10,8 @@ export default function PortSafetyRail() {
         <span className="pc-sr-desc">Experimental network</span>
       </div>
       <div className="pc-sr-item pc-anim-mask" style={{ animationDelay: "170ms" }}>
-        <span className="pc-sr-title">KEYS STAY ON DEVICE</span>
-        <span className="pc-sr-desc">Secret material remains in browser memory</span>
+        <span className="pc-sr-title">ENCRYPTED ON THIS DEVICE</span>
+        <span className="pc-sr-desc">Wallet material is stored encrypted in this browser</span>
       </div>
       <div className="pc-sr-item pc-anim-mask" style={{ animationDelay: "240ms" }}>
         <span className="pc-sr-title">NO MONETARY VALUE</span>

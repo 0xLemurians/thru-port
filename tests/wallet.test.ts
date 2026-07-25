@@ -16,7 +16,7 @@ test("hexToBytes accepts a 32-byte key with either prefix casing", () => {
 
 test("hexToBytes rejects invalid length and non-hex characters", () => {
   assert.throws(() => hexToBytes("ab"), /64 hex/);
-  assert.throws(() => hexToBytes("zz".repeat(32)), /0-9 ve a-f/);
+  assert.throws(() => hexToBytes("zz".repeat(32)), /0-9, a-f/);
 });
 
 test("account-not-found detection accepts SDK code and message variants", () => {

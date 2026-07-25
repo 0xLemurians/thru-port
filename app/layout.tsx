@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "thru-web — AlphaNet Onboarding & C Editor",
+  title: "Thru Port — AlphaNet Wallet & Token Studio",
   description:
-    "Browser-native Thru AlphaNet account onboarding, faucet access, and C template editing.",
+    "Create a Thru AlphaNet wallet, manage tokens, and send testnet assets directly from your browser.",
 };
 
 export default function RootLayout({

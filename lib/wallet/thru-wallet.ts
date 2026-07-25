@@ -81,7 +81,7 @@ export async function createNewAccount(
  */
 export async function accountFromMnemonic(mnemonic: string): Promise<ThruAccount> {
   if (!MnemonicGenerator.validate(mnemonic)) {
-    throw new Error("Geçersiz kurtarma ifadesi (mnemonic).");
+    throw new Error("Invalid recovery phrase (mnemonic).");
   }
 
   const seed = MnemonicGenerator.toSeed(mnemonic);
@@ -105,7 +105,7 @@ export async function accountFromPrivateKey(
   privateKey: Uint8Array,
 ): Promise<ThruAccount> {
   if (privateKey.length !== 32) {
-    throw new Error("Private key tam olarak 32 byte (64 hex karakter) olmalıdır.");
+    throw new Error("Private key must be exactly 32 bytes (64 hex characters).");
   }
 
   // Caller-owned buffer ile account state'inin aynı mutable byte dizisini
@@ -231,8 +231,8 @@ export async function getBalance(address: string): Promise<bigint> {
 export function downloadBackupFile(account: ThruAccount): void {
   const payload = {
     warning:
-      "BU DOSYAYI KİMSEYLE PAYLAŞMAYIN. Bu dosyayı gören/ele geçiren herkes " +
-      "hesabınızı tam olarak kontrol eder. Şifre sıfırlama YOKTUR.",
+      "DO NOT SHARE THIS FILE WITH ANYONE. Anyone with access to this file " +
+      "has full control of your account. There is NO password reset.",
     network: "thru-alphanet-testnet",
     address: account.address,
     privateKeyHex: bytesToHex(account.privateKey),
@@ -262,10 +262,10 @@ export function bytesToHex(bytes: Uint8Array): string {
 export function hexToBytes(hex: string): Uint8Array {
   const clean = hex.trim().replace(/^0x/i, "");
   if (clean.length !== 64) {
-    throw new Error("Private key tam olarak 64 hex karakter olmalıdır.");
+    throw new Error("Private key must be exactly 64 hex characters.");
   }
   if (!/^[0-9a-f]+$/i.test(clean)) {
-    throw new Error("Private key yalnızca 0-9 ve a-f hex karakterlerini içerebilir.");
+    throw new Error("Private key can only contain hex characters (0-9, a-f).");
   }
   const out = new Uint8Array(32);
   for (let i = 0; i < out.length; i++) {

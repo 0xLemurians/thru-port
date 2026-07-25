@@ -38,7 +38,7 @@ export default function NameLookupForm({
             value={label}
             onChange={(event) => onLabelChange(event.target.value)}
             disabled={busy}
-            placeholder="mert"
+            placeholder="Enter label"
             autoComplete="off"
             autoCapitalize="none"
             spellCheck={false}
