@@ -16,6 +16,7 @@ import {
   type PurchaseProgressStage,
   type PurchaseThruNameResult,
 } from "@/lib/thru/name-service/purchase";
+import { SAFE_TRANSACTION_UNCERTAIN_MESSAGE } from "@/lib/thru/transactions";
 
 export const REGISTRATION_AVAILABILITY_STATES = [
   "idle",
@@ -197,7 +198,9 @@ export function safeRegistrationErrorMessage(error: unknown): string {
     case "TRANSACTION_REJECTED":
       return "The registration transaction was rejected.";
     case "TRANSACTION_TIMEOUT":
-      return "The registration did not finish before the safety timeout.";
+      return error.signature
+        ? `${SAFE_TRANSACTION_UNCERTAIN_MESSAGE} Transaction signature: ${error.signature}`
+        : "The registration did not finish before the safety timeout.";
     case "POST_STATE_MISMATCH":
       return "Final ownership could not be verified for your wallet.";
     case "OPERATION_ABORTED":

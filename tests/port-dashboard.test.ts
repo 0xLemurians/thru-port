@@ -5,7 +5,10 @@ import path from "node:path";
 import type { NetworkStatus } from "../lib/network/alphanet-health";
 import {
   SAFE_FAUCET_ERROR_MESSAGE,
+  SAFE_FAUCET_UNCERTAIN_MESSAGE,
+  faucetFailureRequiresManualCheck,
   isFaucetActionDisabled,
+  safeFaucetDisplayMessage,
   type FaucetUiState,
 } from "../lib/wallet/faucet-safety";
 
@@ -170,8 +173,32 @@ test("Faucet errors are always rendered as the safe approved message", () => {
     SAFE_FAUCET_ERROR_MESSAGE,
     "The faucet request could not be completed. Try again when AlphaNet is available.",
   );
-  assert.match(source, /\{SAFE_FAUCET_ERROR_MESSAGE\}/);
-  assert.doesNotMatch(source, /\{faucetError\}/);
+  assert.equal(
+    SAFE_FAUCET_UNCERTAIN_MESSAGE,
+    "The transaction was submitted, but final confirmation is still unavailable. Check the Explorer before trying again.",
+  );
+  assert.equal(
+    safeFaucetDisplayMessage("invalid transaction signature gRPC"),
+    SAFE_FAUCET_ERROR_MESSAGE,
+  );
+  assert.equal(
+    safeFaucetDisplayMessage(SAFE_FAUCET_UNCERTAIN_MESSAGE),
+    SAFE_FAUCET_UNCERTAIN_MESSAGE,
+  );
+  assert.equal(
+    faucetFailureRequiresManualCheck(SAFE_FAUCET_UNCERTAIN_MESSAGE),
+    true,
+  );
+  assert.equal(
+    faucetFailureRequiresManualCheck(SAFE_FAUCET_ERROR_MESSAGE),
+    false,
+  );
+  assert.match(source, /safeFaucetDisplayMessage\(faucetError\)/);
+  assert.match(
+    source,
+    /requiresManualVerification\s*\|\|\s*isFaucetActionDisabled/,
+  );
+  assert.match(source, /disabled=\{isRequestDisabled\}/);
   assert.doesNotMatch(source, /invalid transaction signature|invalid_argument|gRPC|VM|proxy|transport/i);
 });
 
@@ -183,6 +210,10 @@ test("Faucet production handler requires Online and prevents duplicate requests"
   assert.match(source, /health\.status !== "Online"/);
   assert.match(source, /faucetControllerRef\.current/);
   assert.doesNotMatch(source, /setFaucetError\(result\.failureReason\)/);
+  assert.match(
+    source,
+    /setFaucetError\(safeFaucetDisplayMessage\(result\.failureReason\)\)/,
+  );
 });
 
 test("Faucet engine performs only one submission attempt", () => {

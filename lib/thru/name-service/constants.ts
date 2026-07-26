@@ -1,4 +1,4 @@
-export const ALPHANET_RPC_URL = "https://rpc.alphanet.thru.org";
+export { ALPHANET_RPC_URL } from "../client";
 export const ALPHANET_EXPLORER_ADDRESS_BASE_URL =
   "https://scan.thru.org/address";
 export const ALPHANET_EXPLORER_TRANSACTION_BASE_URL =

@@ -1,8 +1,9 @@
 import type { AlphaNetHealth } from "./useAlphaNetHealth";
 import { FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
 import {
-  SAFE_FAUCET_ERROR_MESSAGE,
+  faucetFailureRequiresManualCheck,
   isFaucetActionDisabled,
+  safeFaucetDisplayMessage,
 } from "@/lib/wallet/faucet-safety";
 
 interface PortFaucetPanelProps {
@@ -26,10 +27,11 @@ export default function PortFaucetPanel({
 }: PortFaucetPanelProps) {
   const isRpcOffline = health.status === "Offline";
   const isRpcChecking = health.status === "Checking";
-  const isRequestDisabled = isFaucetActionDisabled(
-    health.status,
-    faucetState,
-  );
+  const requiresManualVerification =
+    faucetFailureRequiresManualCheck(faucetError);
+  const isRequestDisabled =
+    requiresManualVerification ||
+    isFaucetActionDisabled(health.status, faucetState);
 
   return (
     <div className="panel" style={{ marginTop: 24 }}>
@@ -101,12 +103,25 @@ export default function PortFaucetPanel({
 
         {faucetState === "error" && faucetError && (
           <div className="stack">
-            <p className="error">{SAFE_FAUCET_ERROR_MESSAGE}</p>
+            <p className="error">
+              {safeFaucetDisplayMessage(faucetError)}
+            </p>
+            {lastSignature && (
+              <a
+                className="mono"
+                href={`https://scan.thru.org/tx/${lastSignature}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Check transaction on Explorer ↗
+              </a>
+            )}
             <button
               className="btn btn-ghost"
               type="button"
               onClick={onRequest}
               disabled={isRequestDisabled}
+              aria-disabled={isRequestDisabled}
             >
               Retry
             </button>

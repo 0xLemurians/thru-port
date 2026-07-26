@@ -26,8 +26,18 @@
 
 import { ConsensusStatus, Signature } from "@thru/sdk";
 import { encodeAddress } from "@thru/sdk/helpers";
+import {
+  buildTransactionForSigning,
+  signTransactionForSubmission,
+  SubmittedTransactionUncertainError,
+  TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS,
+  verifySubmittedTransaction,
+} from "../thru/transactions";
 import { thru, type ThruAccount, getBalance, ensureAccountExists } from "./thru-wallet";
-import { SAFE_FAUCET_ERROR_MESSAGE } from "./faucet-safety";
+import {
+  SAFE_FAUCET_ERROR_MESSAGE,
+  SAFE_FAUCET_UNCERTAIN_MESSAGE,
+} from "./faucet-safety";
 
 export const FAUCET_ACCOUNT_ADDRESS =
   "taxoImN8fTEOxXYnvgC6JZ0lN0n0qvZERwz_vlOjX3MkIn";
@@ -103,6 +113,14 @@ export async function withdrawFromFaucet(
     await ensureAccountExists(account, { timeoutMs, signal });
   } catch (error) {
     if (signal?.aborted) throw error;
+    if (error instanceof SubmittedTransactionUncertainError) {
+      return {
+        signature: error.signature,
+        finalized: false,
+        failureReason: SAFE_FAUCET_UNCERTAIN_MESSAGE,
+        attempts: 0,
+      };
+    }
     throw new Error(SAFE_FAUCET_ERROR_MESSAGE);
   }
 
@@ -114,27 +132,78 @@ export async function withdrawFromFaucet(
       timeoutMs,
       signal,
     );
-    if (!result.failureReason) {
-      const confirmedBalance = await waitForBalanceIncrease(
-        account.address,
-        balanceBefore,
-        signal,
-      );
-      if (confirmedBalance !== null) {
-        return {
-          ...result,
-          finalized: true,
-          attempts: 1,
-        };
+    if (result.failureReason) {
+      return {
+        ...result,
+        failureReason: SAFE_FAUCET_ERROR_MESSAGE,
+        attempts: 1,
+      };
+    }
+
+    let postStateConfirmed = false;
+    if (!result.finalized && result.signature) {
+      try {
+        const verification = await verifySubmittedTransaction({
+          signature: result.signature,
+          verifyExpectedState: async () =>
+            (await getBalance(account.address)) > balanceBefore,
+          signal,
+          timeoutMs: Math.min(
+            timeoutMs,
+            TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS,
+          ),
+        });
+        if (verification.outcome === "failure") {
+          return {
+            ...result,
+            finalized: false,
+            failureReason: SAFE_FAUCET_ERROR_MESSAGE,
+            attempts: 1,
+          };
+        }
+        postStateConfirmed = verification.source === "post-state";
+      } catch (error) {
+        if (error instanceof SubmittedTransactionUncertainError) {
+          return {
+            signature: error.signature,
+            finalized: false,
+            failureReason: SAFE_FAUCET_UNCERTAIN_MESSAGE,
+            attempts: 1,
+          };
+        }
+        throw error;
       }
-      if (result.signature || result.finalized) {
-        return {
-          ...result,
-          finalized: false,
-          failureReason: SAFE_FAUCET_ERROR_MESSAGE,
-          attempts: 1,
-        };
-      }
+    }
+
+    if (postStateConfirmed) {
+      return {
+        signature: result.signature,
+        finalized: true,
+        attempts: 1,
+      };
+    }
+
+    const confirmedBalance = await waitForBalanceIncrease(
+      account.address,
+      balanceBefore,
+      signal,
+    );
+    if (confirmedBalance !== null) {
+      return {
+        signature: result.signature,
+        finalized: true,
+        attempts: 1,
+      };
+    }
+    if (result.signature || result.finalized) {
+      return {
+        ...result,
+        finalized: false,
+        failureReason: result.finalized
+          ? SAFE_FAUCET_ERROR_MESSAGE
+          : SAFE_FAUCET_UNCERTAIN_MESSAGE,
+        attempts: 1,
+      };
     }
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -155,10 +224,10 @@ async function attemptFaucetWithdraw(
   signal?: AbortSignal,
 ): Promise<Omit<FaucetWithdrawResult, "attempts">> {
   const programAddress = await faucetProgramAddress();
-  const { rawTransaction } = await thru.transactions.buildAndSign({
+  signal?.throwIfAborted();
+  const transaction = await buildTransactionForSigning({
     feePayer: {
       publicKey: account.publicKey,
-      privateKey: account.privateKey,
     },
     program: programAddress,
     accounts: {
@@ -177,33 +246,63 @@ async function attemptFaucetWithdraw(
         getAccountIndex(account.publicKey),
         amount,
       ),
-  });
+  }, signal);
+  await signTransactionForSubmission(
+    transaction,
+    account.privateKey,
+    signal,
+  );
+  const rawTransaction = transaction.toWire();
+  signal?.throwIfAborted();
 
   let signature = "";
+  let finalConsensus = false;
+  let executionSucceeded = false;
   let finalized = false;
   let failureReason: string | undefined;
+  let definitiveTrackingFailure = false;
 
-  for await (const update of thru.transactions.sendAndTrack(rawTransaction, {
-    timeoutMs,
-    signal,
-  })) {
-    if (update.signature?.value) {
-      signature = Signature.from(update.signature.value).toThruFmt();
-    }
-
-    if (update.executionResult) {
-      const { vmError, userErrorCode } = update.executionResult;
-      if (vmError !== 0 || userErrorCode !== 0n) {
-        failureReason = `Execution failed (vmError: ${vmError}, userErrorCode: ${userErrorCode})`;
+  signature = transaction.getSignature()?.toThruFmt() ?? "";
+  try {
+    for await (const update of thru.transactions.sendAndTrack(rawTransaction, {
+      timeoutMs,
+      signal,
+    })) {
+      if (update.signature?.value) {
+        const trackedSignature = Signature.from(
+          update.signature.value,
+        ).toThruFmt();
+        if (signature && trackedSignature !== signature) {
+          definitiveTrackingFailure = true;
+          throw new Error(
+            "The tracked faucet transaction signature does not match.",
+          );
+        }
+        signature = trackedSignature;
       }
-      finalized = true;
-      break;
-    }
 
-    if (update.consensusStatus === ConsensusStatus.FINALIZED) {
-      finalized = true;
-      break;
+      if (update.executionResult) {
+        const { vmError, userErrorCode } = update.executionResult;
+        if (vmError !== 0 || userErrorCode !== 0n) {
+          failureReason =
+            "The faucet transaction was rejected during execution.";
+        } else {
+          executionSucceeded = true;
+        }
+      }
+
+      if (update.consensusStatus === ConsensusStatus.FINALIZED) {
+        finalConsensus = true;
+      }
+      finalized = executionSucceeded && finalConsensus;
+      if (failureReason || finalized) break;
     }
+  } catch (error) {
+    if (signal?.aborted || definitiveTrackingFailure || !signature) {
+      throw error;
+    }
+    // The signed request has already been submitted. The caller performs
+    // read-only finalization and exact balance verification without retrying.
   }
 
   return { signature, finalized, failureReason };

@@ -13,6 +13,14 @@ import {
 } from "@thru/programs/token";
 import { deriveDestinationTokenAccount } from "../../token/destination-account";
 import { TOKEN_AMOUNT_MAX_RAW } from "../../token/validation";
+import {
+  buildTransactionForSigning,
+  SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
+  signTransactionForSubmission,
+  SubmittedTransactionUncertainError,
+  TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS,
+  verifySubmittedTransaction,
+} from "../transactions";
 import { thru, type ThruAccount } from "../../wallet/thru-wallet";
 import type {
   NameLookupSnapshot,
@@ -70,11 +78,17 @@ export type PurchaseErrorCode =
 
 export class PurchaseError extends Error {
   readonly code: PurchaseErrorCode;
+  readonly signature?: string;
 
-  constructor(code: PurchaseErrorCode, message: string) {
+  constructor(
+    code: PurchaseErrorCode,
+    message: string,
+    signature?: string,
+  ) {
     super(message);
     this.name = "PurchaseError";
     this.code = code;
+    this.signature = signature;
   }
 }
 
@@ -577,10 +591,12 @@ export type CreationProofGenerator = (
 export interface PurchaseTransaction {
   sign(privateKey: Uint8Array): Promise<unknown>;
   toWire(): Uint8Array;
+  getSignature?(): { toThruFmt(): string } | undefined;
 }
 
 export type PurchaseTransactionBuilder = (
   options: BuildTransactionOptions,
+  signal?: AbortSignal,
 ) => Promise<PurchaseTransaction>;
 
 export type PurchaseTransactionSender = (
@@ -693,8 +709,8 @@ async function defaultGenerateCreationProof(
   }
 }
 
-const defaultBuildTransaction: PurchaseTransactionBuilder = (options) =>
-  thru.transactions.build(options);
+const defaultBuildTransaction: PurchaseTransactionBuilder = (options, signal) =>
+  buildTransactionForSigning(options, signal);
 
 const defaultSendAndTrack: PurchaseTransactionSender = (transaction, options) =>
   thru.transactions.sendAndTrack(transaction, options);
@@ -1143,6 +1159,7 @@ export interface BuildPurchaseTransactionInput {
   leaseProof: Uint8Array;
   domainProof: Uint8Array;
   buildTransaction?: PurchaseTransactionBuilder;
+  signal?: AbortSignal;
 }
 
 export async function buildPurchaseTransaction(
@@ -1199,7 +1216,7 @@ export async function buildPurchaseTransaction(
           domainProof: input.domainProof,
         });
       },
-    });
+    }, input.signal);
   } catch (error) {
     if (error instanceof PurchaseError) throw error;
     throw new PurchaseError(
@@ -1291,7 +1308,10 @@ async function submitAndTrackPurchase(input: {
   signal?: AbortSignal;
   onSubmitting?: () => void;
   onConfirming?: () => void;
-}): Promise<string> {
+}): Promise<{
+  signature: string;
+  trackingConfirmed: boolean;
+}> {
   let wire: Uint8Array;
   try {
     wire = input.transaction.toWire();
@@ -1303,7 +1323,7 @@ async function submitAndTrackPurchase(input: {
   }
 
   input.onSubmitting?.();
-  let signature = "";
+  let signature = input.transaction.getSignature?.()?.toThruFmt() ?? "";
   let confirmationReported = false;
   let finalized = false;
   let executionSucceeded = false;
@@ -1321,12 +1341,22 @@ async function submitAndTrackPurchase(input: {
       throwIfAborted(input.signal);
       if (update.signature?.value) {
         try {
-          signature = Signature.from(update.signature.value).toThruFmt();
+          const trackedSignature = Signature.from(
+            update.signature.value,
+          ).toThruFmt();
+          if (signature && trackedSignature !== signature) {
+            throw new PurchaseError(
+              "TRANSACTION_REJECTED",
+              "The tracked purchase signature does not match.",
+            );
+          }
+          signature = trackedSignature;
           if (!confirmationReported) {
             confirmationReported = true;
             input.onConfirming?.();
           }
-        } catch {
+        } catch (error) {
+          if (error instanceof PurchaseError) throw error;
           throw new PurchaseError(
             "TRANSACTION_REJECTED",
             "The network returned an invalid transaction signature.",
@@ -1346,14 +1376,24 @@ async function submitAndTrackPurchase(input: {
         executionSucceeded = true;
       }
       if (isFinalConsensus(update.consensusStatus)) finalized = true;
-      if (signature && finalized && executionSucceeded) return signature;
+      if (signature && finalized && executionSucceeded) {
+        return { signature, trackingConfirmed: true };
+      }
     }
   } catch (error) {
-    if (error instanceof PurchaseError) throw error;
-    throw new PurchaseError(
-      "TRANSACTION_TIMEOUT",
-      "Transaction submission or tracking did not complete.",
-    );
+    if (
+      error instanceof PurchaseError &&
+      (error.code === "TRANSACTION_REJECTED" ||
+        error.code === "OPERATION_ABORTED")
+    ) {
+      throw error;
+    }
+    if (!signature) {
+      throw new PurchaseError(
+        "TRANSACTION_TIMEOUT",
+        "Transaction submission or tracking did not complete.",
+      );
+    }
   } finally {
     await updates.return?.().catch(() => undefined);
   }
@@ -1365,12 +1405,13 @@ async function submitAndTrackPurchase(input: {
     );
   }
   if (!finalized || !executionSucceeded) {
-    throw new PurchaseError(
-      "TRANSACTION_TIMEOUT",
-      "The transaction did not reach finalized successful execution in time.",
-    );
+    if (!confirmationReported) {
+      confirmationReported = true;
+      input.onConfirming?.();
+    }
+    return { signature, trackingConfirmed: false };
   }
-  return signature;
+  return { signature, trackingConfirmed: true };
 }
 
 export interface VerifyPurchasedDomainInput {
@@ -1450,10 +1491,51 @@ function assertPostStateRelationships(
   }
 }
 
+async function observePurchasedDomain(
+  input: VerifyPurchasedDomainInput,
+): Promise<NameLookupSnapshot | null> {
+  const lookupName = input.lookupName ?? lookupThruName;
+  const snapshot = await abortable(
+    lookupName(input.label, { signal: input.signal }),
+    input.signal,
+  );
+
+  try {
+    validateRegistrarSnapshot(snapshot);
+  } catch (error) {
+    if (error instanceof PurchaseError) {
+      throw new PurchaseError(
+        "POST_STATE_MISMATCH",
+        "The finalized registrar configuration is invalid.",
+      );
+    }
+    throw error;
+  }
+
+  if (
+    snapshot.domain.status === "invalid" ||
+    snapshot.lease.status === "invalid"
+  ) {
+    throw new PurchaseError(
+      "POST_STATE_MISMATCH",
+      "The finalized domain or lease account is invalid.",
+    );
+  }
+
+  if (
+    snapshot.domain.status !== "found" ||
+    snapshot.lease.status !== "found"
+  ) {
+    return null;
+  }
+
+  assertPostStateRelationships(snapshot, input);
+  return snapshot;
+}
+
 export async function verifyPurchasedDomain(
   input: VerifyPurchasedDomainInput,
 ): Promise<NameLookupSnapshot> {
-  const lookupName = input.lookupName ?? lookupThruName;
   const sleep = input.sleep ?? defaultSleep;
   const maxAttempts = input.maxAttempts ?? 15;
   const intervalMs = input.intervalMs ?? 1_000;
@@ -1466,16 +1548,19 @@ export async function verifyPurchasedDomain(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfAborted(input.signal);
-    let snapshot: NameLookupSnapshot;
+    let snapshot: NameLookupSnapshot | null;
     try {
-      snapshot = await abortable(
-        lookupName(input.label, { signal: input.signal }),
-        input.signal,
-      );
+      snapshot = await observePurchasedDomain(input);
     } catch (error) {
       if (
         error instanceof PurchaseError &&
         error.code === "OPERATION_ABORTED"
+      ) {
+        throw error;
+      }
+      if (
+        error instanceof PurchaseError &&
+        error.code === "POST_STATE_MISMATCH"
       ) {
         throw error;
       }
@@ -1489,35 +1574,7 @@ export async function verifyPurchasedDomain(
       continue;
     }
 
-    try {
-      validateRegistrarSnapshot(snapshot);
-    } catch (error) {
-      if (error instanceof PurchaseError) {
-        throw new PurchaseError(
-          "POST_STATE_MISMATCH",
-          "The finalized registrar configuration is invalid.",
-        );
-      }
-      throw error;
-    }
-
-    if (
-      snapshot.domain.status === "invalid" ||
-      snapshot.lease.status === "invalid"
-    ) {
-      throw new PurchaseError(
-        "POST_STATE_MISMATCH",
-        "The finalized domain or lease account is invalid.",
-      );
-    }
-
-    if (
-      snapshot.domain.status === "found" &&
-      snapshot.lease.status === "found"
-    ) {
-      assertPostStateRelationships(snapshot, input);
-      return snapshot;
-    }
+    if (snapshot) return snapshot;
 
     if (attempt === maxAttempts) {
       throw new PurchaseError(
@@ -1677,6 +1734,7 @@ export async function purchaseThruName(
         leaseProof,
         domainProof,
         buildTransaction,
+        signal: scope.signal,
       }),
       scope.signal,
     );
@@ -1687,7 +1745,10 @@ export async function purchaseThruName(
     throwIfAborted(scope.signal);
     reportPurchaseProgress(options.onProgress, "waiting-wallet-signature");
     try {
-      await abortable(transaction.sign(account.privateKey), scope.signal);
+      await abortable(
+        signTransactionForSubmission(transaction, account.privateKey),
+        scope.signal,
+      );
     } catch (error) {
       if (
         error instanceof PurchaseError &&
@@ -1701,7 +1762,7 @@ export async function purchaseThruName(
       );
     }
 
-    const signature = await submitAndTrackPurchase({
+    const submission = await submitAndTrackPurchase({
       transaction,
       sendAndTrack,
       timeoutMs,
@@ -1717,20 +1778,79 @@ export async function purchaseThruName(
           "confirming-transaction",
         ),
     });
+    let fallbackPostState: NameLookupSnapshot | null = null;
+    if (!submission.trackingConfirmed) {
+      try {
+        const verification = await verifySubmittedTransaction({
+          signature: submission.signature,
+          verifyExpectedState: async () => {
+            try {
+              fallbackPostState = await observePurchasedDomain({
+                label: signingState.label,
+                expectedOwner: walletAddress,
+                expected: signingState,
+                lookupName,
+                signal: scope?.signal,
+              });
+              return fallbackPostState !== null;
+            } catch (error) {
+              if (
+                error instanceof PurchaseError &&
+                error.code === "POST_STATE_MISMATCH"
+              ) {
+                throw error;
+              }
+              return false;
+            }
+          },
+          classifyExpectedStateError: (error) =>
+            error instanceof PurchaseError &&
+            error.code === "POST_STATE_MISMATCH"
+              ? "failure"
+              : "pending",
+          signal: scope.signal,
+          timeoutMs: Math.min(
+            TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS,
+            Math.max(1, Math.floor(timeoutMs / 2)),
+          ),
+        });
+        if (verification.outcome === "failure") {
+          throw new PurchaseError(
+            verification.source === "post-state"
+              ? "POST_STATE_MISMATCH"
+              : "TRANSACTION_REJECTED",
+            verification.source === "post-state"
+              ? "Final ownership could not be verified for the current wallet."
+              : "The purchase transaction was rejected.",
+          );
+        }
+      } catch (error) {
+        if (error instanceof SubmittedTransactionUncertainError) {
+          throw new PurchaseError(
+            "TRANSACTION_TIMEOUT",
+            SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
+            error.signature,
+          );
+        }
+        throw error;
+      }
+    }
     reportPurchaseProgress(options.onProgress, "verifying-ownership");
-    const postState = await verifyPurchasedDomain({
-      label: signingState.label,
-      expectedOwner: walletAddress,
-      expected: signingState,
-      maxAttempts: options.postStateMaxAttempts,
-      intervalMs: options.postStateIntervalMs,
-      lookupName,
-      sleep,
-      signal: scope.signal,
-    });
+    const postState =
+      fallbackPostState ??
+      (await verifyPurchasedDomain({
+        label: signingState.label,
+        expectedOwner: walletAddress,
+        expected: signingState,
+        maxAttempts: options.postStateMaxAttempts,
+        intervalMs: options.postStateIntervalMs,
+        lookupName,
+        sleep,
+        signal: scope.signal,
+      }));
 
     return {
-      signature,
+      signature: submission.signature,
       price: signingState.price,
       payerTokenAccountAddress: signingState.payerTokenAccount,
       postState,

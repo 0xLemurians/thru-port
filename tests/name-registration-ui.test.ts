@@ -698,6 +698,19 @@ test("uncertain post-submission failures block immediate retry", () => {
   );
 });
 
+test("uncertain registration shows only the safe message and public signature", () => {
+  const message = safeRegistrationErrorMessage(
+    new PurchaseError(
+      "TRANSACTION_TIMEOUT",
+      "upstream gRPC transport refused",
+      "public-transaction-signature",
+    ),
+  );
+  assert.match(message, /final confirmation is still unavailable/i);
+  assert.match(message, /public-transaction-signature/);
+  assert.doesNotMatch(message, /grpc|transport|refused/i);
+});
+
 test("the existing read-only lookup remains on the same Identity screen", () => {
   assert.match(STUDIO_SOURCE, /<NameRegisterForm/);
   assert.match(STUDIO_SOURCE, /<NameLookupForm/);

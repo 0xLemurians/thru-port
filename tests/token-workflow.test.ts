@@ -9,7 +9,10 @@ import {
   type TokenCreationProgress,
   type TokenMutationProgress,
 } from "../lib/token/workflow";
-import { TransactionStatusUncertainError } from "../lib/token/transaction-status";
+import {
+  SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
+  TransactionStatusUncertainError,
+} from "../lib/token/transaction-status";
 
 function successfulOperations(): TokenCreationOperations {
   return {
@@ -183,7 +186,7 @@ test("unconfirmed transaction status is reported as uncertain, not failed", asyn
   assert.deepEqual(updates.at(-1), {
     stage: "uncertain",
     uncertainAt: "waiting-mint-finalization",
-    error: "Transaction submitted but final status could not be confirmed",
+    error: SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
     signature: "mint-signature",
     expectedStateObserved: true,
   });

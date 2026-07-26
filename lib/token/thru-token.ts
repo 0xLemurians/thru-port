@@ -24,6 +24,12 @@ import {
   type ThruAccount,
 } from "@/lib/wallet/thru-wallet";
 import {
+  buildTransactionForSigning,
+  signTransactionForSubmission,
+  SubmittedTransactionUncertainError,
+  verifySubmittedTransaction,
+} from "@/lib/thru/transactions";
+import {
   runTokenCreationWorkflow,
   runTokenMutationWorkflow,
   type TokenCreationProgress,
@@ -59,7 +65,6 @@ import {
   TRANSACTION_VISIBILITY_TIMEOUT_MS,
   TransactionStatusUncertainError,
   isTransactionNotFoundError,
-  waitForTransactionVisibility,
 } from "./transaction-status";
 
 export const TOKEN_PROGRAM_ADDRESS =
@@ -394,7 +399,7 @@ export async function createTokenOnAlphaNet(
         });
         signal?.throwIfAborted();
 
-        const transaction = await thru.transactions.build({
+        const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
           accounts: {
@@ -409,9 +414,13 @@ export async function createTokenOnAlphaNet(
             seedHex: current.mintSeedHex,
             stateProof: stateProof.proof,
           }),
-        });
+        }, signal);
 
-        await transaction.sign(account.privateKey);
+        await signTransactionForSubmission(
+          transaction,
+          account.privateKey,
+          signal,
+        );
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
           onSubmitted,
@@ -460,7 +469,7 @@ export async function createTokenOnAlphaNet(
         });
         signal?.throwIfAborted();
 
-        const transaction = await thru.transactions.build({
+        const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
           accounts: {
@@ -474,9 +483,13 @@ export async function createTokenOnAlphaNet(
             seedBytes: current.tokenAccountSeed,
             stateProof: stateProof.proof,
           }),
-        });
+        }, signal);
 
-        await transaction.sign(account.privateKey);
+        await signTransactionForSubmission(
+          transaction,
+          account.privateKey,
+          signal,
+        );
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
           onSubmitted,
@@ -512,7 +525,7 @@ export async function createTokenOnAlphaNet(
       mintInitialSupply: async (onSubmitted) => {
         signal?.throwIfAborted();
         const current = getContext();
-        const transaction = await thru.transactions.build({
+        const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
           accounts: {
@@ -527,9 +540,13 @@ export async function createTokenOnAlphaNet(
             authorityAccountBytes: account.publicKey,
             amount: current.validated.initialSupplyRaw,
           }),
-        });
+        }, signal);
 
-        await transaction.sign(account.privateKey);
+        await signTransactionForSubmission(
+          transaction,
+          account.privateKey,
+          signal,
+        );
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
           onSubmitted,
@@ -743,7 +760,7 @@ export async function resumeTokenSetupOnAlphaNet(
           proofType: StateProofType.CREATING,
         });
         signal?.throwIfAborted();
-        const transaction = await thru.transactions.build({
+        const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
           accounts: {
@@ -757,8 +774,12 @@ export async function resumeTokenSetupOnAlphaNet(
             seedBytes: tokenAccountSeed,
             stateProof: stateProof.proof,
           }),
-        });
-        await transaction.sign(account.privateKey);
+        }, signal);
+        await signTransactionForSubmission(
+          transaction,
+          account.privateKey,
+          signal,
+        );
         tokenAccountSignature = await submitAndRequireFinalizedExecution(
           transaction,
           (signature) => {
@@ -816,7 +837,7 @@ export async function resumeTokenSetupOnAlphaNet(
       const rawAmount = requireValue(initialSupplyRaw, "Initial supply");
       const beforeMint = mint;
       const beforeTokenAccount = tokenAccount;
-      const transaction = await thru.transactions.build({
+      const transaction = await buildTransactionForSigning({
         feePayer: { publicKey: account.publicKey },
         program: TOKEN_PROGRAM_ADDRESS,
         accounts: {
@@ -828,8 +849,12 @@ export async function resumeTokenSetupOnAlphaNet(
           authorityAccountBytes: account.publicKey,
           amount: rawAmount,
         }),
-      });
-      await transaction.sign(account.privateKey);
+      }, signal);
+      await signTransactionForSubmission(
+        transaction,
+        account.privateKey,
+        signal,
+      );
       initialSupplySignature = await submitAndRequireFinalizedExecution(
         transaction,
         (signature) => {
@@ -993,7 +1018,7 @@ export async function createDestinationTokenAccountOnAlphaNet(
             proofType: StateProofType.CREATING,
           });
           signal?.throwIfAborted();
-          const transaction = await thru.transactions.build({
+          const transaction = await buildTransactionForSigning({
             feePayer: { publicKey: account.publicKey },
             program: TOKEN_PROGRAM_ADDRESS,
             accounts: {
@@ -1009,8 +1034,12 @@ export async function createDestinationTokenAccountOnAlphaNet(
                 stateProof: stateProof.proof,
               }),
             ),
-          });
-          await transaction.sign(account.privateKey);
+          }, signal);
+          await signTransactionForSubmission(
+            transaction,
+            account.privateKey,
+            signal,
+          );
           return submitAndRequireFinalizedExecution(
             transaction,
             (signature) => {
@@ -1129,7 +1158,7 @@ export async function mintAdditionalSupplyOnAlphaNet(
       execute: async (callbacks) => {
         signal?.throwIfAborted();
         const rawAmount = requireValue(amountRaw, "Mint amount");
-        const transaction = await thru.transactions.build({
+        const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
           accounts: {
@@ -1141,8 +1170,12 @@ export async function mintAdditionalSupplyOnAlphaNet(
             authorityAccountBytes: account.publicKey,
             amount: rawAmount,
           }),
-        });
-        await transaction.sign(account.privateKey);
+        }, signal);
+        await signTransactionForSubmission(
+          transaction,
+          account.privateKey,
+          signal,
+        );
         callbacks.onAwaitingFinalConsensus();
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
@@ -1279,7 +1312,7 @@ export async function transferTokensOnAlphaNet(
       execute: async (callbacks) => {
         signal?.throwIfAborted();
         const rawAmount = requireValue(amountRaw, "Transfer amount");
-        const transaction = await thru.transactions.build({
+        const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
           accounts: {
@@ -1290,8 +1323,12 @@ export async function transferTokensOnAlphaNet(
             destinationAccountBytes: Pubkey.from(destinationAddress).toBytes(),
             amount: rawAmount,
           }),
-        });
-        await transaction.sign(account.privateKey);
+        }, signal);
+        await signTransactionForSubmission(
+          transaction,
+          account.privateKey,
+          signal,
+        );
         callbacks.onAwaitingFinalConsensus();
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
@@ -1453,11 +1490,12 @@ async function submitAndRequireFinalizedExecution(
     onFinalConsensus,
     verifyExpectedState,
   } = tracking;
-  let signature = "";
+  let signature = transaction.getSignature()?.toThruFmt() ?? "";
   let submittedNotified = false;
   let finalized = false;
   let executionSucceeded = false;
   let finalConsensusNotified = false;
+  let definitiveTrackingFailure = false;
   let latestExecution:
     | {
         vmError: number;
@@ -1485,7 +1523,16 @@ async function submitAndRequireFinalizedExecution(
       signal?.throwIfAborted();
 
       if (update.signature?.value) {
-        signature = Signature.from(update.signature.value).toThruFmt();
+        const trackedSignature = Signature.from(
+          update.signature.value,
+        ).toThruFmt();
+        if (signature && trackedSignature !== signature) {
+          definitiveTrackingFailure = true;
+          throw new Error(
+            "The tracked token transaction signature does not match.",
+          );
+        }
+        signature = trackedSignature;
         if (!submittedNotified) {
           submittedNotified = true;
           onSubmitted(signature);
@@ -1502,32 +1549,71 @@ async function submitAndRequireFinalizedExecution(
 
       verifyCompletedExecution();
       if (signature && finalized && executionSucceeded) {
+        if (!submittedNotified) {
+          submittedNotified = true;
+          onSubmitted(signature);
+        }
         return signature;
       }
     }
   } catch (error) {
-    if (!signature || !isTransactionNotFoundError(error)) throw error;
+    if (signal?.aborted || definitiveTrackingFailure || !signature) {
+      throw error;
+    }
   }
 
   if (!signature) {
     throw new Error("The transaction ended without a signature.");
   }
 
-  await waitForTransactionVisibility({
-    signature,
-    readStatus: () => thru.transactions.getStatus(signature),
-    isFinalConsensus: isRequiredConsensus,
-    assertExecutionSucceeded,
-    verifyExpectedState,
-    onFinalConsensus: () => {
-      if (finalConsensusNotified) return;
-      finalConsensusNotified = true;
-      onFinalConsensus?.();
-    },
-    signal,
-    timeoutMs: Math.min(timeoutMs, TRANSACTION_VISIBILITY_TIMEOUT_MS),
-  });
+  try {
+    const verification = await verifySubmittedTransaction({
+      signature,
+      verifyExpectedState,
+      classifyExpectedStateError: classifyTokenPostStateError,
+      signal,
+      timeoutMs: Math.min(
+        timeoutMs,
+        TRANSACTION_VISIBILITY_TIMEOUT_MS,
+      ),
+    });
+    if (verification.outcome === "failure") {
+      throw new Error(
+        "Token transaction execution or post-state verification failed.",
+      );
+    }
+  } catch (error) {
+    if (error instanceof SubmittedTransactionUncertainError) {
+      throw new TransactionStatusUncertainError(
+        error.signature,
+        error.expectedStateObserved,
+      );
+    }
+    throw error;
+  }
+  if (!submittedNotified) {
+    submittedNotified = true;
+    onSubmitted(signature);
+  }
+  if (!finalConsensusNotified) {
+    finalConsensusNotified = true;
+    onFinalConsensus?.();
+  }
   return signature;
+}
+
+function classifyTokenPostStateError(
+  error: unknown,
+): "pending" | "failure" {
+  if (isAccountNotFoundError(error) || isTransactionNotFoundError(error)) {
+    return "pending";
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(?:rpc|grpc|proxy|upstream|transport|connection|disconnect|reset|refused|unavailable|socket|network|timeout|fetch)\b/i.test(
+    message,
+  )
+    ? "pending"
+    : "failure";
 }
 
 function isFinalConsensus(status: number): boolean {

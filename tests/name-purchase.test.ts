@@ -46,6 +46,7 @@ import {
   type PurchaseTransaction,
 } from "../lib/thru/name-service/purchase";
 import type { ThruAccount } from "../lib/wallet/thru-wallet";
+import { thru } from "../lib/thru/client";
 
 function fakeAddress(marker: number): string {
   const bytes = new Uint8Array(32);
@@ -836,6 +837,48 @@ test("refetches config and availability immediately before signing", async () =>
     "send",
     "lookup-4",
   ]);
+});
+
+test("verified .thru ownership resolves a tracker that ends before FINALIZED", async (t) => {
+  const events: string[] = [];
+  const { dependencies, counters } = happyDependencies(events);
+  let sends = 0;
+  dependencies.sendAndTrack = async function* () {
+    sends += 1;
+    const signature = new Uint8Array(64);
+    signature[0] = 1;
+    yield {
+      status: SubmissionStatus.ACCEPTED,
+      signature: { value: signature },
+      consensusStatus: ConsensusStatus.OBSERVED,
+      executionResult: {
+        vmError: 0,
+        consumedComputeUnits: 1,
+        userErrorCode: 0n,
+      },
+    };
+  };
+  t.mock.method(thru.transactions, "get", async () => {
+    throw new Error("Finalized transaction lookup unavailable");
+  });
+
+  const result = await purchaseThruName(
+    WALLET_ACCOUNT,
+    {
+      label: LABEL,
+      years: 1,
+      payerTokenAccountAddress: PAYER_TOKEN_ACCOUNT,
+    },
+    {
+      dependencies,
+      postStateIntervalMs: 0,
+    },
+  );
+
+  assert.equal(result.postState.domain.status, "found");
+  assert.equal(result.postState.lease.status, "found");
+  assert.equal(counters.lookups, 4);
+  assert.equal(sends, 1);
 });
 
 test("reports truthful purchase progress in transaction order", async () => {

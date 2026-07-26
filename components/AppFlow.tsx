@@ -24,7 +24,11 @@ import {
   readEncryptedBackupFile,
 } from "@/lib/wallet/wallet-backup";
 import { withdrawFromFaucet, FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
-import { SAFE_FAUCET_ERROR_MESSAGE } from "@/lib/wallet/faucet-safety";
+import {
+  SAFE_FAUCET_ERROR_MESSAGE,
+  faucetFailureRequiresManualCheck,
+  safeFaucetDisplayMessage,
+} from "@/lib/wallet/faucet-safety";
 import NameStudio from "./NameStudio";
 import TokenStudio from "./TokenStudio";
 import type { WorkspaceStage } from "./port/PortHeader";
@@ -289,7 +293,8 @@ export default function AppFlow() {
     if (
       !account ||
       health.status !== "Online" ||
-      faucetControllerRef.current
+      faucetControllerRef.current ||
+      faucetFailureRequiresManualCheck(faucetError)
     ) {
       return;
     }
@@ -305,7 +310,8 @@ export default function AppFlow() {
       setRetryInfo(null);
       if (result.failureReason) {
         setFaucetState("error");
-        setFaucetError(SAFE_FAUCET_ERROR_MESSAGE);
+        setFaucetError(safeFaucetDisplayMessage(result.failureReason));
+        setLastSignature(result.signature || null);
       } else {
         setFaucetState("success");
         setLastSignature(result.signature || null);

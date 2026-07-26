@@ -1,3 +1,8 @@
+import {
+  SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
+  SubmittedTransactionUncertainError,
+} from "../thru/transactions";
+
 export const TRANSACTION_VISIBILITY_TIMEOUT_MS = 45_000;
 
 export interface TransactionExecutionResultLike {
@@ -13,19 +18,16 @@ export interface TransactionStatusLike {
 }
 
 export interface TransactionVisibilityResult<TStatus> {
-  status: TStatus;
+  status?: TStatus;
   expectedStateObserved: boolean;
+  source: "transaction-status" | "post-state";
 }
 
-export class TransactionStatusUncertainError extends Error {
-  readonly signature: string;
-  readonly expectedStateObserved: boolean;
-
+export class TransactionStatusUncertainError
+  extends SubmittedTransactionUncertainError {
   constructor(signature: string, expectedStateObserved: boolean) {
-    super("Transaction submitted but final status could not be confirmed");
+    super(signature, expectedStateObserved);
     this.name = "TransactionStatusUncertainError";
-    this.signature = signature;
-    this.expectedStateObserved = expectedStateObserved;
   }
 }
 
@@ -90,12 +92,23 @@ export async function waitForTransactionVisibility<
         isFinalConsensus(status.statusCode)
       ) {
         onFinalConsensus?.();
-        return { status, expectedStateObserved };
+        return {
+          status,
+          expectedStateObserved,
+          source: "transaction-status",
+        };
       }
     }
 
-    if (!expectedStateObserved && verifyExpectedState) {
+    if (verifyExpectedState) {
       expectedStateObserved = await verifyExpectedState();
+      if (expectedStateObserved) {
+        return {
+          status,
+          expectedStateObserved,
+          source: "post-state",
+        };
+      }
     }
 
     const elapsedMs = now() - startedAt;
@@ -124,6 +137,8 @@ export function isTransactionNotFoundError(error: unknown): boolean {
     /transaction\s+not\s+found/i.test(message)
   );
 }
+
+export { SAFE_TRANSACTION_UNCERTAIN_MESSAGE };
 
 function abortableDelay(
   delayMs: number,

@@ -8,7 +8,7 @@
  * @noble/ed25519 + @noble/hashes + @scure/bip39 tabanlı) kodu ile,
  * bu sekmenin belleğinde gerçekleşir.
  *
- * Bu modül @thru/sdk@0.2.39 üzerinde, npm registry'den indirilip
+ * Bu modül @thru/sdk@0.3.0 üzerinde, npm registry'den indirilip
  * `dist/*.d.ts` dosyaları incelenerek doğrulanmış gerçek API'ye göre yazıldı:
  *   - thru.keys.generateKeyPair()
  *   - thru.keys.fromPrivateKey(privateKey)
@@ -16,20 +16,30 @@
  *   - ThruHDWallet (@thru/sdk/crypto)
  */
 
-import { createThruClient, type GeneratedKeyPair } from "@thru/sdk";
+import {
+  ConsensusStatus,
+  Signature,
+  type GeneratedKeyPair,
+} from "@thru/sdk";
 import { MnemonicGenerator, ThruHDWallet } from "@thru/sdk/crypto";
+import {
+  ALPHANET_RPC_URL,
+  thru,
+} from "../thru/client";
+import {
+  assertUsableTransactionContext,
+  readFreshChainId,
+  signTransactionForSubmission,
+  SubmittedTransactionUncertainError,
+  verifySubmittedTransaction,
+} from "../thru/transactions";
 
-// Thru AlphaNet resmi RPC endpoint'i (@thru/sdk README'sinde belirtilen adres)
-export const ALPHANET_RPC_URL = "https://rpc.alphanet.thru.org";
+export { ALPHANET_RPC_URL, thru };
 
 // Resmi Thru block explorer'ı (scan.thru.org) — adres sayfası deseni doğrulandı.
 export function explorerAddressUrl(address: string): string {
   return `https://scan.thru.org/address/${address}`;
 }
-
-export const thru = createThruClient({
-  baseUrl: ALPHANET_RPC_URL,
-});
 
 export interface ThruAccount {
   address: string;
@@ -182,8 +192,12 @@ async function addressFromPublicKey(publicKey: Uint8Array): Promise<string> {
  */
 export interface EnsureAccountOptions {
   timeoutMs?: number;
+  verificationTimeoutMs?: number;
   signal?: AbortSignal;
 }
+
+const ACTIVE_ACCOUNT_CREATIONS = new Set<string>();
+const UNCERTAIN_ACCOUNT_CREATIONS = new Map<string, string>();
 
 async function waitForAccountVisibility(
   address: string,
@@ -193,7 +207,14 @@ async function waitForAccountVisibility(
   for (let attempt = 0; attempt < 6; attempt++) {
     signal?.throwIfAborted();
     try {
-      await thru.accounts.get(address);
+      const account = await thru.accounts.get(address, {
+        minConsensus: ConsensusStatus.FINALIZED,
+      });
+      if (account.address.toThruFmt() !== address) {
+        throw new Error(
+          "The finalized account does not match the active wallet.",
+        );
+      }
       return;
     } catch (err) {
       lastError = err;
@@ -224,35 +245,153 @@ export async function ensureAccountExists(
   account: ThruAccount,
   options: EnsureAccountOptions = {},
 ): Promise<boolean> {
-  const { timeoutMs = 30_000, signal } = options;
+  const {
+    timeoutMs = 30_000,
+    verificationTimeoutMs = Math.min(timeoutMs, 45_000),
+    signal,
+  } = options;
   signal?.throwIfAborted();
   try {
     await thru.accounts.get(account.address);
+    UNCERTAIN_ACCOUNT_CREATIONS.delete(account.address);
     return false; // zaten vardı, oluşturmaya gerek yoktu
   } catch (err) {
     if (!isAccountNotFoundError(err)) throw err;
+  }
 
-    const createTx = await thru.accounts.create({ publicKey: account.publicKey });
-    await createTx.sign(account.privateKey);
-    let executionFailure: string | null = null;
-    for await (const update of thru.transactions.sendAndTrack(createTx.toWire(), {
-      timeoutMs,
+  const uncertainSignature = UNCERTAIN_ACCOUNT_CREATIONS.get(account.address);
+  if (uncertainSignature) {
+    throw new SubmittedTransactionUncertainError(
+      uncertainSignature,
+    );
+  }
+  if (ACTIVE_ACCOUNT_CREATIONS.has(account.address)) {
+    throw new Error("Account creation is already in progress.");
+  }
+
+  ACTIVE_ACCOUNT_CREATIONS.add(account.address);
+  let submitted = false;
+  let submittedSignature = "";
+  let definitiveExecutionFailure = false;
+  try {
+    const chainId = await readFreshChainId(signal);
+    const createTx = await thru.accounts.create({
+      publicKey: account.publicKey,
+      header: { chainId },
+    });
+    signal?.throwIfAborted();
+    assertUsableTransactionContext(createTx);
+    await signTransactionForSubmission(
+      createTx,
+      account.privateKey,
       signal,
-    })) {
-      if (!update.executionResult) continue;
-      const { vmError, userErrorCode } = update.executionResult;
-      if (vmError !== 0 || userErrorCode !== 0n) {
-        executionFailure =
-          `Account creation failed (vmError: ${vmError}, ` +
-          `userErrorCode: ${userErrorCode}).`;
+    );
+    let signature = createTx.getSignature()?.toThruFmt() ?? "";
+    submittedSignature = signature;
+
+    let executionFailure: string | null = null;
+    let executionSucceeded = false;
+    let finalized = false;
+    const signedTransaction = createTx.toWire();
+    signal?.throwIfAborted();
+    submitted = true;
+    try {
+      for await (const update of thru.transactions.sendAndTrack(
+        signedTransaction,
+        {
+          timeoutMs,
+          signal,
+        },
+      )) {
+        if (update.executionResult) {
+          const { vmError, userErrorCode } = update.executionResult;
+          if (vmError !== 0 || userErrorCode !== 0n) {
+            executionFailure =
+              `Account creation failed (vmError: ${vmError}, ` +
+              `userErrorCode: ${userErrorCode}).`;
+            definitiveExecutionFailure = true;
+          } else {
+            executionSucceeded = true;
+          }
+        }
+        if (update.signature?.value) {
+          const trackedSignature = Signature.from(
+            update.signature.value,
+          ).toThruFmt();
+          if (signature && trackedSignature !== signature) {
+            definitiveExecutionFailure = true;
+            throw new Error(
+              "The tracked account-creation signature does not match.",
+            );
+          }
+          signature = trackedSignature;
+          submittedSignature = trackedSignature;
+        }
+        if (update.consensusStatus === ConsensusStatus.FINALIZED) {
+          finalized = true;
+        }
+        if (executionFailure || (executionSucceeded && finalized)) break;
       }
-      break;
+    } catch (error) {
+      if (signal?.aborted || definitiveExecutionFailure || !signature) {
+        throw error;
+      }
+      // The original signed transaction is already submitted. Continue with
+      // bounded read-only verification; never rebuild, sign, or send again.
     }
     if (executionFailure) {
       throw new Error(executionFailure);
     }
+    if (!executionSucceeded || !finalized) {
+      const verification = await verifySubmittedTransaction({
+        signature,
+        verifyExpectedState: async () => {
+          try {
+            const createdAccount = await thru.accounts.get(account.address, {
+              minConsensus: ConsensusStatus.FINALIZED,
+            });
+            if (createdAccount.address.toThruFmt() !== account.address) {
+              throw new Error(
+                "The finalized account does not match the active wallet.",
+              );
+            }
+            return true;
+          } catch (error) {
+            if (isAccountNotFoundError(error)) return false;
+            throw error;
+          }
+        },
+        classifyExpectedStateError: (error) =>
+          error instanceof Error &&
+          /does not match the active wallet/i.test(error.message)
+            ? "failure"
+            : "pending",
+        signal,
+        timeoutMs: verificationTimeoutMs,
+      });
+      if (verification.outcome === "failure") {
+        definitiveExecutionFailure = true;
+        throw new Error(
+          "Account creation could not be verified for the active wallet.",
+        );
+      }
+    }
+
     await waitForAccountVisibility(account.address, signal);
+    UNCERTAIN_ACCOUNT_CREATIONS.delete(account.address);
     return true; // yeni oluşturuldu
+  } catch (error) {
+    if (submitted && !definitiveExecutionFailure) {
+      if (submittedSignature) {
+        UNCERTAIN_ACCOUNT_CREATIONS.set(
+          account.address,
+          submittedSignature,
+        );
+      }
+    }
+    throw error;
+  } finally {
+    ACTIVE_ACCOUNT_CREATIONS.delete(account.address);
   }
 }
 

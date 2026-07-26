@@ -38,7 +38,7 @@ export function isUsableAlphaNetHeightSnapshot(
     return false;
   }
 
-  // @thru/sdk 0.2.39 maps omitted protobuf height fields to 0n. A positive
+  // @thru/sdk maps omitted protobuf height fields to 0n. A positive
   // finalized height and execution heights at least as recent are therefore
   // required before the response is usable network state rather than merely
   // a successful transport response.

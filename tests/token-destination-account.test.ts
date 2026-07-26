@@ -11,7 +11,6 @@ import {
 } from "../lib/token/destination-account";
 import { upsertKnownToken } from "../lib/token/portfolio";
 import {
-  TransactionStatusUncertainError,
   waitForTransactionVisibility,
 } from "../lib/token/transaction-status";
 
@@ -306,34 +305,28 @@ test("transient NOT_FOUND polling confirms destination account transaction", asy
   });
 
   assert.equal(reads, 2);
-  assert.equal(result.status.statusCode, 5);
+  assert.equal(result.status?.statusCode, 5);
 });
 
-test("visibility timeout remains uncertain when expected account is observed", async () => {
+test("expected destination account post-state resolves missing status", async () => {
   let clock = 0;
-  await assert.rejects(
-    () =>
-      waitForTransactionVisibility({
-        signature: "destination-account-signature",
-        readStatus: async () => {
-          throw new Error("transaction not found");
-        },
-        verifyExpectedState: async () => true,
-        isFinalConsensus: (status) => status === 5,
-        assertExecutionSucceeded: () => true,
-        timeoutMs: 10,
-        initialBackoffMs: 10,
-        now: () => clock,
-        sleep: async (delay) => {
-          clock += delay;
-        },
-      }),
-    (error: unknown) => {
-      assert.ok(error instanceof TransactionStatusUncertainError);
-      assert.equal(error.expectedStateObserved, true);
-      return true;
+  const result = await waitForTransactionVisibility({
+    signature: "destination-account-signature",
+    readStatus: async () => {
+      throw new Error("transaction not found");
     },
-  );
+    verifyExpectedState: async () => true,
+    isFinalConsensus: (status) => status === 5,
+    assertExecutionSucceeded: () => true,
+    timeoutMs: 10,
+    initialBackoffMs: 10,
+    now: () => clock,
+    sleep: async (delay) => {
+      clock += delay;
+    },
+  });
+  assert.equal(result.source, "post-state");
+  assert.equal(result.expectedStateObserved, true);
 });
 
 test("a verified destination account is added to known public accounts", () => {

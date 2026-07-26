@@ -16,7 +16,11 @@ import {
   withdrawFromFaucet,
   FAUCET_WITHDRAW_LIMIT,
 } from "@/lib/wallet/faucet";
-import { SAFE_FAUCET_ERROR_MESSAGE } from "@/lib/wallet/faucet-safety";
+import {
+  SAFE_FAUCET_ERROR_MESSAGE,
+  faucetFailureRequiresManualCheck,
+  safeFaucetDisplayMessage,
+} from "@/lib/wallet/faucet-safety";
 import Stepper from "./Stepper";
 import WalletBackupDialog from "./port/WalletBackupDialog";
 
@@ -171,7 +175,13 @@ export default function AccountPanel({
   const [retryInfo, setRetryInfo] = useState<string | null>(null);
 
   async function handleFaucet() {
-    if (!account || faucetControllerRef.current) return;
+    if (
+      !account ||
+      faucetControllerRef.current ||
+      faucetFailureRequiresManualCheck(faucetError)
+    ) {
+      return;
+    }
     const controller = new AbortController();
     faucetControllerRef.current = controller;
     setFaucetState("requesting");
@@ -184,7 +194,8 @@ export default function AccountPanel({
       setRetryInfo(null);
       if (result.failureReason) {
         setFaucetState("error");
-        setFaucetError(SAFE_FAUCET_ERROR_MESSAGE);
+        setFaucetError(safeFaucetDisplayMessage(result.failureReason));
+        setLastSignature(result.signature || null);
       } else {
         setFaucetState("success");
         setLastSignature(result.signature || null);
@@ -431,7 +442,10 @@ export default function AccountPanel({
               className="btn btn-primary"
               type="button"
               onClick={handleFaucet}
-              disabled={faucetState === "requesting"}
+              disabled={
+                faucetState === "requesting" ||
+                faucetFailureRequiresManualCheck(faucetError)
+              }
             >
               {faucetState === "requesting"
                 ? "Requesting tokens…"
@@ -445,7 +459,23 @@ export default function AccountPanel({
                 Cancel request
               </button>
             )}
-            {faucetState === "error" && faucetError && <p className="error">{faucetError}</p>}
+            {faucetState === "error" && faucetError && (
+              <div className="stack">
+                <p className="error">
+                  {safeFaucetDisplayMessage(faucetError)}
+                </p>
+                {lastSignature && (
+                  <a
+                    className="mono"
+                    href={`https://scan.thru.org/tx/${lastSignature}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Check transaction on Explorer ↗
+                  </a>
+                )}
+              </div>
+            )}
           </div>
         )}
 

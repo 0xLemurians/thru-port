@@ -106,7 +106,7 @@ test("visibility timeout reports an uncertain status instead of failure", async 
       assert.equal(error.expectedStateObserved, false);
       assert.equal(
         error.message,
-        "Transaction submitted but final status could not be confirmed",
+        "The transaction was submitted, but final confirmation is still unavailable. Check the Explorer before trying again.",
       );
       return true;
     },
@@ -139,38 +139,32 @@ test("visibility polling can be cancelled with AbortSignal", async () => {
   );
 });
 
-test("uncertain status retains evidence that the expected account exists", async () => {
+test("authoritative expected account state resolves a missing status as success", async () => {
   let clock = 0;
   let accountVerifications = 0;
 
-  await assert.rejects(
-    () =>
-      waitForTransactionVisibility({
-        signature: "state-observed-signature",
-        readStatus: async () => {
-          throw new Error("transaction not found");
-        },
-        isFinalConsensus,
-        assertExecutionSucceeded,
-        verifyExpectedState: async () => {
-          accountVerifications += 1;
-          return true;
-        },
-        timeoutMs: 10,
-        initialBackoffMs: 10,
-        now: () => clock,
-        sleep: async (delay) => {
-          clock += delay;
-        },
-      }),
-    (error: unknown) => {
-      assert.ok(error instanceof TransactionStatusUncertainError);
-      assert.equal(error.expectedStateObserved, true);
+  const result = await waitForTransactionVisibility({
+    signature: "state-observed-signature",
+    readStatus: async () => {
+      throw new Error("transaction not found");
+    },
+    isFinalConsensus,
+    assertExecutionSucceeded,
+    verifyExpectedState: async () => {
+      accountVerifications += 1;
       return true;
     },
-  );
+    timeoutMs: 10,
+    initialBackoffMs: 10,
+    now: () => clock,
+    sleep: async (delay) => {
+      clock += delay;
+    },
+  });
 
   assert.equal(accountVerifications, 1);
+  assert.equal(result.expectedStateObserved, true);
+  assert.equal(result.source, "post-state");
 });
 
 test("stale read behavior: verifyExpectedState returns false initially, then true, polling continues successfully without resubmitting", async () => {
@@ -204,6 +198,7 @@ test("stale read behavior: verifyExpectedState returns false initially, then tru
   });
 
   assert.equal(verifications, 2);
-  assert.equal(statusReads, 3);
+  assert.equal(statusReads, 2);
   assert.equal(result.expectedStateObserved, true);
+  assert.equal(result.source, "post-state");
 });

@@ -1,4 +1,5 @@
-import { createThruClient, type Account } from "@thru/sdk";
+import type { Account } from "@thru/sdk";
+import { thru } from "../client";
 import {
   accountDataBytes,
   assertAccountOwnedBy,
@@ -14,7 +15,6 @@ import type {
   SnapshotAccount,
 } from "./account-types";
 import {
-  ALPHANET_RPC_URL,
   NAME_SERVICE_PROGRAM_ADDRESS,
   REGISTRAR_PROGRAM_ADDRESS,
 } from "./constants";
@@ -24,10 +24,6 @@ import {
   deriveRegistrarConfigAddress,
 } from "./derivation";
 import { validateNameLabel } from "./validation";
-
-const nameServiceClient = createThruClient({
-  baseUrl: ALPHANET_RPC_URL,
-});
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("Aborted", "AbortError");
@@ -59,7 +55,7 @@ async function abortable<T>(
 export const alphaNetReadonlyAccountReader: ReadonlyAccountReader = {
   async get(address, signal) {
     return abortable<Account>(
-      nameServiceClient.accounts.get(address),
+      thru.accounts.get(address),
       signal,
     );
   },
