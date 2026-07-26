@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type ThruAccount,
   createNewAccount,
-  accountFromMnemonic,
   accountFromPrivateKey,
   getBalance,
   hexToBytes,
@@ -25,7 +24,6 @@ import Stepper from "./Stepper";
 import WalletBackupDialog from "./port/WalletBackupDialog";
 
 type Mode = "idle" | "create" | "import";
-type ImportKind = "mnemonic" | "hex";
 type FaucetState = "idle" | "requesting" | "success" | "error";
 
 interface AccountPanelProps {
@@ -42,7 +40,6 @@ export default function AccountPanel({
   onForgetAccount,
 }: AccountPanelProps) {
   const [mode, setMode] = useState<Mode>("idle");
-  const [importKind, setImportKind] = useState<ImportKind>("mnemonic");
   const [importReady, setImportReady] = useState(false);
   const importSecretRef = useRef<HTMLTextAreaElement>(null);
   const [balance, setBalance] = useState<bigint | null>(null);
@@ -62,11 +59,6 @@ export default function AccountPanel({
     clearSecretInputs(importSecretRef.current);
     setImportReady(false);
   }, []);
-
-  const switchImportKind = (kind: ImportKind) => {
-    clearImportSecret();
-    setImportKind(kind);
-  };
 
   const closeImport = () => {
     clearImportSecret();
@@ -140,21 +132,15 @@ export default function AccountPanel({
     let importValue = importSecretRef.current?.value ?? "";
     clearImportSecret();
     try {
-      let acc: ThruAccount;
-      if (importKind === "mnemonic") {
-        const normalizedMnemonic = importValue.trim().replace(/\s+/g, " ");
-        acc = await accountFromMnemonic(normalizedMnemonic);
-      } else {
-        importedPrivateKey = hexToBytes(importValue);
-        acc = await accountFromPrivateKey(importedPrivateKey);
-      }
+      importedPrivateKey = hexToBytes(importValue);
+      const acc = await accountFromPrivateKey(importedPrivateKey);
       onAccountChange(acc);
       setBackedUp(true);
     } catch (err) {
       setError(
         err instanceof Error
           ? err.message
-          : "Couldn't import that account. Check your recovery phrase or private key.",
+          : "Couldn't import that account. Check your private key.",
       );
     } finally {
       importValue = "";
@@ -276,24 +262,10 @@ export default function AccountPanel({
             <div className="stack">
               <div className="tabs" role="tablist" aria-label="Import method">
                 <button
-                  className={importKind === "mnemonic" ? "tab tab-active" : "tab"}
+                  className="tab tab-active"
                   type="button"
                   role="tab"
-                  aria-selected={importKind === "mnemonic"}
-                  onClick={() => {
-                    switchImportKind("mnemonic");
-                  }}
-                >
-                  Recovery phrase
-                </button>
-                <button
-                  className={importKind === "hex" ? "tab tab-active" : "tab"}
-                  type="button"
-                  role="tab"
-                  aria-selected={importKind === "hex"}
-                  onClick={() => {
-                    switchImportKind("hex");
-                  }}
+                  aria-selected="true"
                 >
                   Private key (hex)
                 </button>
@@ -301,17 +273,9 @@ export default function AccountPanel({
               <textarea
                 ref={importSecretRef}
                 className="input"
-                aria-label={
-                  importKind === "mnemonic"
-                    ? "Recovery phrase"
-                    : "Private key in hexadecimal format"
-                }
-                rows={importKind === "mnemonic" ? 3 : 2}
-                placeholder={
-                  importKind === "mnemonic"
-                    ? "Paste your 12 words, separated by spaces"
-                    : "Hex private key, with or without 0x prefix"
-                }
+                aria-label="Private key in hexadecimal format"
+                rows={2}
+                placeholder="Hex private key, with or without 0x prefix"
                 onChange={(event) =>
                   setImportReady(event.currentTarget.value.trim().length > 0)
                 }

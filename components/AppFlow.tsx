@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import {
   type ThruAccount,
   createNewAccount,
-  accountFromMnemonic,
   accountFromPrivateKey,
   getBalance,
   hexToBytes,
@@ -14,6 +13,8 @@ import {
   restorePersistedWallet,
   removePersistedWallet,
   saveAndVerifyPersistedWallet,
+  completePersistedWalletSetup,
+  isPersistedWalletSetupPending,
   WALLET_REMOVAL_ERROR,
   WALLET_SAVE_ERROR,
   WalletVaultError,
@@ -100,7 +101,10 @@ export default function AppFlow() {
   useEffect(() => {
     let active = true;
     restorePersistedWallet()
-      .then((restored) => {
+      .then(async (restored) => {
+        const setupPending = restored
+          ? await isPersistedWalletSetupPending(restored.address)
+          : false;
         if (!active) {
           restored?.privateKey.fill(0);
           if (restored) restored.mnemonic = undefined;
@@ -108,9 +112,7 @@ export default function AppFlow() {
         }
         if (restored) {
           restored.mnemonic = undefined;
-          setShowOneTimePrivateKeyBackup(
-            shouldShowOneTimePrivateKeyBackup("restored"),
-          );
+          setShowOneTimePrivateKeyBackup(setupPending);
           setAccount(restored);
           setRestoreStatus("WALLET_READY");
         } else {
@@ -158,7 +160,9 @@ export default function AppFlow() {
     let candidate: ThruAccount | null = null;
     try {
       candidate = await createNewAccount(true);
-      const persisted = await saveAndVerifyPersistedWallet(candidate);
+      const persisted = await saveAndVerifyPersistedWallet(candidate, {
+        setupPending: true,
+      });
       persisted.mnemonic = undefined;
       setShowOneTimePrivateKeyBackup(
         shouldShowOneTimePrivateKeyBackup("created"),
@@ -183,7 +187,7 @@ export default function AppFlow() {
   }
 
   async function handleImportWallet(
-    kind: "mnemonic" | "hex",
+    kind: "hex",
     value: string,
   ): Promise<boolean> {
     if (
@@ -201,21 +205,12 @@ export default function AppFlow() {
     let importedPrivateKey: Uint8Array | null = null;
     let candidate: ThruAccount | null = null;
     try {
-      if (kind === "mnemonic") {
-        const normalizedMnemonic = value.trim().replace(/\s+/g, " ");
-        candidate = await accountFromMnemonic(normalizedMnemonic);
-      } else {
-        importedPrivateKey = hexToBytes(value);
-        candidate = await accountFromPrivateKey(importedPrivateKey);
-      }
+      importedPrivateKey = hexToBytes(value);
+      candidate = await accountFromPrivateKey(importedPrivateKey);
       const persisted = await saveAndVerifyPersistedWallet(candidate);
       persisted.mnemonic = undefined;
       setShowOneTimePrivateKeyBackup(
-        shouldShowOneTimePrivateKeyBackup(
-          kind === "mnemonic"
-            ? "mnemonic-import"
-            : "private-key-import",
-        ),
+        shouldShowOneTimePrivateKeyBackup("private-key-import"),
       );
       setAccount(persisted);
       setRestoreStatus("WALLET_READY");
@@ -226,7 +221,7 @@ export default function AppFlow() {
         setWalletError(WALLET_SAVE_ERROR);
       } else {
         setWalletError(
-          "Couldn't import that account. Check your recovery phrase or private key.",
+          "Couldn't import that account. Check your private key.",
         );
       }
       return false;
@@ -337,6 +332,17 @@ export default function AppFlow() {
     faucetControllerRef.current?.abort();
   }
 
+  async function handleCompleteWalletSetup(): Promise<boolean> {
+    if (!account || !showOneTimePrivateKeyBackup) return false;
+    try {
+      await completePersistedWalletSetup(account.address);
+      setShowOneTimePrivateKeyBackup(false);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Phase 2 disconnect
   function forgetAccount(): Promise<void> {
     if (removalPromiseRef.current) return removalPromiseRef.current;
@@ -367,7 +373,7 @@ export default function AppFlow() {
     return (
       <OneTimePrivateKeyBackup
         account={account}
-        onContinue={() => setShowOneTimePrivateKeyBackup(false)}
+        onContinue={handleCompleteWalletSetup}
       />
     );
   }

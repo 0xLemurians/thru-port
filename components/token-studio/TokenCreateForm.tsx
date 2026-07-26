@@ -2,7 +2,6 @@ import { useMemo, useRef, useState, useEffect } from "react";
 import { formatRawAmount } from "@thru/programs/token";
 import {
   createTokenOnAlphaNet,
-  verifyAndRecoverTokenOnAlphaNet,
   type CreateTokenResult,
 } from "@/lib/token/thru-token";
 import {
@@ -19,7 +18,6 @@ import {
   savePendingSetups,
   upsertPendingSetup,
   removePendingSetup,
-  pendingSetupsForWallet,
   type PendingTokenSetup,
 } from "@/lib/token/pending-setup";
 import { explorerAddressUrl, type ThruAccount } from "@/lib/wallet/thru-wallet";
@@ -54,53 +52,18 @@ export default function TokenCreateForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // --- Recovery UI state ---
-  const [recoveryOpen, setRecoveryOpen] = useState(false);
-  const [recoveryMint, setRecoveryMint] = useState("");
-  const [recoveryTokenAccount, setRecoveryTokenAccount] = useState("");
-  const [recoveryName, setRecoveryName] = useState("MVP Test");
-  const [recoveryTicker, setRecoveryTicker] = useState("MVP");
-  const [recoveryBusy, setRecoveryBusy] = useState(false);
-  const [recoveryError, setRecoveryError] = useState<string | null>(null);
-
-  // --- Pending setups ---
-  const [pendingSetups, setPendingSetups] = useState<PendingTokenSetup[]>([]);
-
   const controllerRef = useRef<AbortController | null>(null);
-  const recoveryControllerRef = useRef<AbortController | null>(null);
   const networkActionsDisabled = tokenNetworkActionsDisabled(networkStatus);
 
   useEffect(() => {
     return () => {
       controllerRef.current?.abort();
-      recoveryControllerRef.current?.abort();
     };
   }, []);
 
   useEffect(() => {
-    onBusyChange(busy || recoveryBusy);
-  }, [busy, recoveryBusy, onBusyChange]);
-
-  // Load pending setups from localStorage and filter for the current wallet.
-  useEffect(() => {
-    if (!account?.address) {
-      setPendingSetups([]);
-      return;
-    }
-    const all = loadPendingSetups(window.localStorage);
-    setPendingSetups(pendingSetupsForWallet(all, account.address));
-  }, [account?.address]);
-
-  // Pre-fill recovery form from the first pending setup.
-  useEffect(() => {
-    if (pendingSetups.length > 0 && !recoveryOpen) {
-      const first = pendingSetups[0];
-      setRecoveryMint(first.mintAddress);
-      setRecoveryTokenAccount(first.tokenAccountAddress);
-      setRecoveryName(first.name || "");
-      setRecoveryTicker(first.ticker || "");
-    }
-  }, [pendingSetups, recoveryOpen]);
+    onBusyChange(busy);
+  }, [busy, onBusyChange]);
 
   const decimalValue = Number(decimals);
   const displaySupply = useMemo(() => {
@@ -113,23 +76,11 @@ export default function TokenCreateForm({
     const record: PendingTokenSetup = { ...setup, savedAt: Date.now() };
     const all = loadPendingSetups(window.localStorage);
     savePendingSetups(window.localStorage, upsertPendingSetup(all, record));
-    if (account?.address) {
-      setPendingSetups(pendingSetupsForWallet(
-        loadPendingSetups(window.localStorage),
-        account.address,
-      ));
-    }
   }
 
   function handleSetupComplete(mintAddress: string) {
     const all = loadPendingSetups(window.localStorage);
     savePendingSetups(window.localStorage, removePendingSetup(all, mintAddress));
-    if (account?.address) {
-      setPendingSetups(pendingSetupsForWallet(
-        loadPendingSetups(window.localStorage),
-        account.address,
-      ));
-    }
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -189,65 +140,11 @@ export default function TokenCreateForm({
           ? "Creation was cancelled. A submitted transaction may still finalize."
           : message,
       );
-      // If the creation got far enough that a pending setup was saved, show
-      // a "still syncing" indicator instead of a raw error.
-      if (!isAborted && pendingSetups.length > 0) {
-        setError("Token created; final state is still syncing. Use \"Recover created token\" below.");
-      }
     } finally {
       if (controllerRef.current === controller) {
         controllerRef.current = null;
       }
       setBusy(false);
-    }
-  }
-
-  async function handleRecover(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!account || networkActionsDisabled) return;
-
-    const controller = new AbortController();
-    recoveryControllerRef.current?.abort();
-    recoveryControllerRef.current = controller;
-    setRecoveryBusy(true);
-    setRecoveryError(null);
-
-    try {
-      const verified = await verifyAndRecoverTokenOnAlphaNet(
-        {
-          mintAddress: recoveryMint,
-          tokenAccountAddress: recoveryTokenAccount,
-          name: recoveryName,
-          ticker: recoveryTicker,
-          ownerAddress: account.address,
-        },
-        { signal: controller.signal },
-      );
-      // The parent calls onSuccess which will call portfolioHook.addKnownToken.
-      onSuccess({
-        name: verified.name,
-        ticker: verified.ticker,
-        decimals: verified.decimals,
-        initialSupplyRaw: verified.rawSupply,
-        mintAddress: verified.mintAddress,
-        tokenAccountAddress: verified.tokenAccountAddress,
-        // Recovery provides no signatures — fill with empty strings.
-        mintSignature: "",
-        tokenAccountSignature: "",
-        initialSupplySignature: "",
-        mint: verified.mint,
-        tokenAccount: verified.tokenAccount,
-      });
-      // Remove the matching pending setup if one existed.
-      handleSetupComplete(verified.mintAddress);
-      setRecoveryOpen(false);
-    } catch (caught) {
-      setRecoveryError(safeTokenActionError(caught, "Recovery failed."));
-    } finally {
-      if (recoveryControllerRef.current === controller) {
-        recoveryControllerRef.current = null;
-      }
-      setRecoveryBusy(false);
     }
   }
 
@@ -286,8 +183,6 @@ export default function TokenCreateForm({
     else if (progress.stage === "minting-initial-supply") currentStep = 3;
     else if (progress.stage === "verifying-on-chain-state") currentStep = 4;
   }
-
-  const hasPendingSetups = pendingSetups.length > 0;
 
   return (
     <div className="token-section">
@@ -510,120 +405,6 @@ export default function TokenCreateForm({
         </div>
       )}
 
-      {/* ---------------------------------------------------------------
-          Recover created token
-          Visible when there are pending setups for this wallet OR when
-          the user explicitly opens the recovery panel.
-          --------------------------------------------------------------- */}
-      {!result && (
-        <div className="token-recovery-panel" style={{ marginTop: "2.5rem", borderTop: "1px solid var(--border, #333)", paddingTop: "1.25rem" }}>
-          <button
-            className="btn btn-ghost"
-            type="button"
-            style={{ fontSize: "0.85rem", padding: "0.3rem 0.75rem" }}
-            onClick={() => {
-              setRecoveryOpen((v) => !v);
-              setRecoveryError(null);
-            }}
-          >
-            {hasPendingSetups ? "⚠ Recover created token" : "Recover created token"}
-          </button>
-          {hasPendingSetups && !recoveryOpen && (
-            <p className="hint" style={{ marginTop: "0.4rem" }}>
-              A pending token setup was found. Open the recovery panel to add it to your portfolio.
-            </p>
-          )}
-
-          {recoveryOpen && (
-            <form
-              className="token-form"
-              style={{ marginTop: "1rem" }}
-              onSubmit={handleRecover}
-            >
-              <p className="hint" style={{ marginBottom: "1rem" }}>
-                Paste the mint and token account addresses from a successful transaction in Thru Explorer. No transaction will be sent — only on-chain state is read.
-              </p>
-              <div className="token-form-grid">
-                <label className="form-field">
-                  <span className="field-label">Mint address</span>
-                  <input
-                    className="input mono"
-                    type="text"
-                    value={recoveryMint}
-                    onChange={(e) => setRecoveryMint(e.target.value)}
-                    disabled={recoveryBusy}
-                    placeholder="Paste mint address from Explorer"
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                  />
-                </label>
-                <label className="form-field">
-                  <span className="field-label">Token account address</span>
-                  <input
-                    className="input mono"
-                    type="text"
-                    value={recoveryTokenAccount}
-                    onChange={(e) => setRecoveryTokenAccount(e.target.value)}
-                    disabled={recoveryBusy}
-                    placeholder="Paste token account address from Explorer"
-                    autoComplete="off"
-                    spellCheck={false}
-                    required
-                  />
-                </label>
-                <label className="form-field">
-                  <span className="field-label">Token name</span>
-                  <input
-                    className="input"
-                    type="text"
-                    value={recoveryName}
-                    onChange={(e) => setRecoveryName(e.target.value)}
-                    disabled={recoveryBusy}
-                    maxLength={TOKEN_NAME_MAX_BYTES}
-                    autoComplete="off"
-                  />
-                </label>
-                <label className="form-field">
-                  <span className="field-label">Symbol</span>
-                  <input
-                    className="input mono"
-                    type="text"
-                    value={recoveryTicker}
-                    onChange={(e) => setRecoveryTicker(e.target.value.toUpperCase())}
-                    disabled={recoveryBusy}
-                    maxLength={TOKEN_TICKER_MAX_BYTES}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </label>
-              </div>
-
-              {recoveryError && !networkActionsDisabled && (
-                <p className="error token-error" style={{ marginTop: "0.75rem" }}>{recoveryError}</p>
-              )}
-
-              <div className="row" style={{ marginTop: "1rem" }}>
-                <button
-                  className="btn btn-primary token-network-action"
-                  type="submit"
-                  disabled={recoveryBusy || networkActionsDisabled}
-                >
-                  {recoveryBusy ? "Verifying on-chain…" : "Recover token"}
-                </button>
-                <button
-                  className="btn btn-ghost"
-                  type="button"
-                  onClick={() => { setRecoveryOpen(false); setRecoveryError(null); }}
-                  disabled={recoveryBusy}
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
-        </div>
-      )}
     </div>
   );
 }

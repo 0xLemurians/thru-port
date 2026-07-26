@@ -39,11 +39,12 @@ export class WalletVaultError extends Error {
 }
 
 export interface PersistedWalletRecord {
-  version: number;
+  version: 1 | 2;
   walletAddress: string;
   iv: ArrayBuffer;
   ciphertext: ArrayBuffer;
   createdAt: number;
+  setupPending?: boolean;
 }
 
 interface PersistedWalletPayload {
@@ -55,6 +56,7 @@ interface PersistedWalletPayload {
 export interface PersistenceOptions {
   idb?: IDBFactory | null;
   cryptoObj?: Crypto | null;
+  setupPending?: boolean;
 }
 
 function getIDB(): IDBFactory | null {
@@ -242,11 +244,12 @@ export async function savePersistedWallet(
     }
 
     const record: PersistedWalletRecord = {
-      version: 1,
+      version: 2,
       walletAddress: account.address,
       iv: ivBuffer,
       ciphertext,
       createdAt: Date.now(),
+      setupPending: options.setupPending === true,
     };
 
     await idbPut(db, STORE_ENCRYPTED_WALLET, record, RECORD_KEY);
@@ -302,12 +305,13 @@ export async function restorePersistedWallet(
 
     if (
       typeof record !== "object" ||
-      record.version !== 1 ||
+      (record.version !== 1 && record.version !== 2) ||
       typeof record.walletAddress !== "string" ||
       !(record.iv instanceof ArrayBuffer) ||
       record.iv.byteLength !== 12 ||
       !(record.ciphertext instanceof ArrayBuffer) ||
-      record.ciphertext.byteLength < 16
+      record.ciphertext.byteLength < 16 ||
+      (record.version === 2 && typeof record.setupPending !== "boolean")
     ) {
       throw new WalletVaultError(
         "VAULT_CORRUPTED",
@@ -428,7 +432,14 @@ export async function saveAndVerifyPersistedWallet(
 ): Promise<ThruAccount> {
   await savePersistedWallet(account, options);
   const restored = await restorePersistedWallet(options);
-  if (!restored || !walletAccountsMatch(account, restored)) {
+  const setupPending = restored
+    ? await isPersistedWalletSetupPending(restored.address, options)
+    : false;
+  if (
+    !restored ||
+    !walletAccountsMatch(account, restored) ||
+    setupPending !== (options.setupPending === true)
+  ) {
     restored?.privateKey.fill(0);
     if (restored) restored.mnemonic = undefined;
     throw new WalletVaultError(
@@ -437,6 +448,129 @@ export async function saveAndVerifyPersistedWallet(
     );
   }
   return restored;
+}
+
+export async function isPersistedWalletSetupPending(
+  walletAddress: string,
+  options: PersistenceOptions = {},
+): Promise<boolean> {
+  const idb = options.idb !== undefined ? options.idb : getIDB();
+  if (!idb) {
+    throw new WalletVaultError("VAULT_UNAVAILABLE", SAVED_WALLET_OPEN_ERROR);
+  }
+
+  let db: IDBDatabase;
+  try {
+    db = await openVaultDB(idb);
+  } catch {
+    throw new WalletVaultError("VAULT_OPEN_FAILED", SAVED_WALLET_OPEN_ERROR);
+  }
+
+  try {
+    let record: PersistedWalletRecord | null;
+    try {
+      record = (await idbGet(
+        db,
+        STORE_ENCRYPTED_WALLET,
+        RECORD_KEY,
+      )) as PersistedWalletRecord | null;
+    } catch {
+      throw new WalletVaultError(
+        "VAULT_READ_FAILED",
+        SAVED_WALLET_OPEN_ERROR,
+      );
+    }
+    if (!record) return false;
+    if (
+      typeof record !== "object" ||
+      (record.version !== 1 && record.version !== 2) ||
+      record.walletAddress !== walletAddress ||
+      (record.version === 2 && typeof record.setupPending !== "boolean")
+    ) {
+      throw new WalletVaultError(
+        "VAULT_CORRUPTED",
+        SAVED_WALLET_OPEN_ERROR,
+      );
+    }
+    return record.version === 2 && record.setupPending === true;
+  } finally {
+    db.close();
+  }
+}
+
+export async function completePersistedWalletSetup(
+  walletAddress: string,
+  options: PersistenceOptions = {},
+): Promise<void> {
+  const idb = options.idb !== undefined ? options.idb : getIDB();
+  if (!idb) {
+    throw new WalletVaultError("VAULT_UNAVAILABLE", WALLET_SAVE_ERROR);
+  }
+
+  let db: IDBDatabase;
+  try {
+    db = await openVaultDB(idb);
+  } catch {
+    throw new WalletVaultError("VAULT_OPEN_FAILED", WALLET_SAVE_ERROR);
+  }
+
+  try {
+    let record: PersistedWalletRecord | null;
+    try {
+      record = (await idbGet(
+        db,
+        STORE_ENCRYPTED_WALLET,
+        RECORD_KEY,
+      )) as PersistedWalletRecord | null;
+    } catch {
+      throw new WalletVaultError("VAULT_READ_FAILED", WALLET_SAVE_ERROR);
+    }
+    if (
+      !record ||
+      typeof record !== "object" ||
+      record.version !== 2 ||
+      record.walletAddress !== walletAddress ||
+      record.setupPending !== true
+    ) {
+      throw new WalletVaultError("VAULT_CORRUPTED", WALLET_SAVE_ERROR);
+    }
+
+    await idbPut(
+      db,
+      STORE_ENCRYPTED_WALLET,
+      { ...record, setupPending: false },
+      RECORD_KEY,
+    ).catch(() => {
+      throw new WalletVaultError("VAULT_SAVE_FAILED", WALLET_SAVE_ERROR);
+    });
+
+    let verified: PersistedWalletRecord | null;
+    try {
+      verified = (await idbGet(
+        db,
+        STORE_ENCRYPTED_WALLET,
+        RECORD_KEY,
+      )) as PersistedWalletRecord | null;
+    } catch {
+      throw new WalletVaultError(
+        "VAULT_VERIFICATION_FAILED",
+        WALLET_SAVE_ERROR,
+      );
+    }
+    if (
+      !verified ||
+      verified.version !== 2 ||
+      verified.walletAddress !== walletAddress ||
+      verified.setupPending !== false
+    ) {
+      throw new WalletVaultError(
+        "VAULT_VERIFICATION_FAILED",
+        WALLET_SAVE_ERROR,
+      );
+    }
+  } finally {
+    db.close();
+  }
 }
 
 export async function removePersistedWallet(

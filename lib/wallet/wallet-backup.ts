@@ -8,7 +8,8 @@ import {
 } from "./thru-wallet";
 
 export const ENCRYPTED_BACKUP_FORMAT = "thru-port-encrypted-wallet";
-export const ENCRYPTED_BACKUP_VERSION = 1;
+export const LEGACY_ENCRYPTED_BACKUP_VERSION = 1;
+export const ENCRYPTED_BACKUP_VERSION = 2;
 export const BACKUP_KDF_ITERATIONS = 310_000;
 export const BACKUP_KDF_MIN_ITERATIONS = 100_000;
 export const BACKUP_KDF_MAX_ITERATIONS = 1_000_000;
@@ -80,7 +81,10 @@ export class WalletBackupError extends Error {
 export interface EncryptedWalletBackup {
   format: typeof ENCRYPTED_BACKUP_FORMAT;
   version: typeof ENCRYPTED_BACKUP_VERSION;
+  address: string;
   walletAddress: string;
+  privateKey: string;
+  createdAt: string;
   kdf: {
     algorithm: "PBKDF2";
     hash: "SHA-256";
@@ -93,6 +97,18 @@ export interface EncryptedWalletBackup {
     ciphertext: string;
   };
 }
+
+interface LegacyEncryptedWalletBackup {
+  format: typeof ENCRYPTED_BACKUP_FORMAT;
+  version: typeof LEGACY_ENCRYPTED_BACKUP_VERSION;
+  walletAddress: string;
+  kdf: EncryptedWalletBackup["kdf"];
+  cipher: EncryptedWalletBackup["cipher"];
+}
+
+type ParsedEncryptedWalletBackup =
+  | EncryptedWalletBackup
+  | LegacyEncryptedWalletBackup;
 
 interface DecryptedWalletPayload {
   version: 1;
@@ -376,7 +392,7 @@ export async function createEncryptedWalletBackup(
       version: 1,
       address: account.address,
       privateKeyHex: bytesToHex(account.privateKey),
-      mnemonic: account.mnemonic ?? null,
+      mnemonic: null,
     };
     encodedPayload = new TextEncoder().encode(JSON.stringify(payload));
     payload.privateKeyHex = "";
@@ -400,7 +416,10 @@ export async function createEncryptedWalletBackup(
     return {
       format: ENCRYPTED_BACKUP_FORMAT,
       version: ENCRYPTED_BACKUP_VERSION,
+      address: account.address,
       walletAddress: account.address,
+      privateKey: bytesToHex(account.privateKey),
+      createdAt: new Date().toISOString(),
       kdf: {
         algorithm: "PBKDF2",
         hash: "SHA-256",
@@ -438,7 +457,7 @@ export async function createEncryptedWalletBackupFile(
 
 export function parseEncryptedWalletBackup(
   serialized: string,
-): EncryptedWalletBackup {
+): ParsedEncryptedWalletBackup {
   const encoded = new TextEncoder().encode(serialized);
   try {
     if (encoded.length === 0 || encoded.length > MAX_BACKUP_FILE_BYTES) {
@@ -465,16 +484,7 @@ export function parseEncryptedWalletBackup(
     );
   }
 
-  if (
-    !isRecord(parsed) ||
-    !hasOnlyKeys(parsed, [
-      "format",
-      "version",
-      "walletAddress",
-      "kdf",
-      "cipher",
-    ])
-  ) {
+  if (!isRecord(parsed)) {
     throw malformedBackup();
   }
   if (parsed.format !== ENCRYPTED_BACKUP_FORMAT) {
@@ -483,16 +493,50 @@ export function parseEncryptedWalletBackup(
       "This wallet backup format is not supported.",
     );
   }
-  if (parsed.version !== ENCRYPTED_BACKUP_VERSION) {
+  if (
+    parsed.version !== ENCRYPTED_BACKUP_VERSION &&
+    parsed.version !== LEGACY_ENCRYPTED_BACKUP_VERSION
+  ) {
     throw new WalletBackupError(
       "UNSUPPORTED_BACKUP",
       "This wallet backup version is not supported.",
     );
   }
+  const expectedTopLevelKeys =
+    parsed.version === ENCRYPTED_BACKUP_VERSION
+      ? [
+          "format",
+          "version",
+          "address",
+          "walletAddress",
+          "privateKey",
+          "createdAt",
+          "kdf",
+          "cipher",
+        ]
+      : ["format", "version", "walletAddress", "kdf", "cipher"];
+  if (!hasOnlyKeys(parsed, expectedTopLevelKeys)) {
+    throw malformedBackup();
+  }
   if (
     typeof parsed.walletAddress !== "string" ||
     parsed.walletAddress.length < 8 ||
     parsed.walletAddress.length > 128
+  ) {
+    throw malformedBackup();
+  }
+  if (
+    parsed.version === ENCRYPTED_BACKUP_VERSION &&
+    (typeof parsed.address !== "string" ||
+      parsed.address.length < 8 ||
+      parsed.address.length > 128 ||
+      typeof parsed.privateKey !== "string" ||
+      !/^[0-9a-f]{64}$/i.test(parsed.privateKey) ||
+      typeof parsed.createdAt !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
+        parsed.createdAt,
+      ) ||
+      !Number.isFinite(Date.parse(parsed.createdAt)))
   ) {
     throw malformedBackup();
   }
@@ -532,7 +576,7 @@ export function parseEncryptedWalletBackup(
   iv.fill(0);
   ciphertext.fill(0);
 
-  return parsed as unknown as EncryptedWalletBackup;
+  return parsed as unknown as ParsedEncryptedWalletBackup;
 }
 
 function parseDecryptedPayload(value: unknown): DecryptedWalletPayload {
@@ -581,6 +625,8 @@ export async function decryptEncryptedWalletBackup(
   let privateKeyBytes: Uint8Array | null = null;
   let account: ThruAccount | null = null;
   let mnemonicAccount: ThruAccount | null = null;
+  let plaintextAccount: ThruAccount | null = null;
+  let plaintextPrivateKeyBytes: Uint8Array | null = null;
   let payload: DecryptedWalletPayload | null = null;
   let succeeded = false;
 
@@ -635,6 +681,25 @@ export async function decryptEncryptedWalletBackup(
       );
     }
 
+    if (backup.version === ENCRYPTED_BACKUP_VERSION) {
+      plaintextPrivateKeyBytes = hexToBytes(backup.privateKey);
+      plaintextAccount = await accountFromPrivateKey(
+        plaintextPrivateKeyBytes,
+      );
+      if (
+        backup.address !== backup.walletAddress ||
+        plaintextAccount.address !== backup.address ||
+        plaintextAccount.address !== account.address ||
+        !bytesEqual(plaintextAccount.publicKey, account.publicKey) ||
+        !bytesEqual(plaintextAccount.privateKey, account.privateKey)
+      ) {
+        throw new WalletBackupError(
+          "ADDRESS_MISMATCH",
+          "This backup file does not match its wallet address.",
+        );
+      }
+    }
+
     if (payload.mnemonic !== null) {
       try {
         mnemonicAccount = await accountFromMnemonic(payload.mnemonic);
@@ -663,12 +728,15 @@ export async function decryptEncryptedWalletBackup(
     ciphertext.fill(0);
     decryptedBytes?.fill(0);
     privateKeyBytes?.fill(0);
+    plaintextPrivateKeyBytes?.fill(0);
     if (payload) {
       payload.privateKeyHex = "";
       payload.mnemonic = null;
     }
     mnemonicAccount?.privateKey.fill(0);
     if (mnemonicAccount) mnemonicAccount.mnemonic = undefined;
+    plaintextAccount?.privateKey.fill(0);
+    if (plaintextAccount) plaintextAccount.mnemonic = undefined;
     if (!succeeded) {
       account?.privateKey.fill(0);
       if (account) account.mnemonic = undefined;
@@ -696,18 +764,30 @@ export async function downloadEncryptedWalletBackup(
   password: string,
 ): Promise<void> {
   const contents = await createEncryptedWalletBackupFile(account, password);
-  const safeAddress = account.address.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
-  const timestamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
-  const blob = new Blob([contents], { type: "application/json" });
+  const blob = new Blob([contents], {
+    type: "application/json;charset=utf-8",
+  });
   const url = URL.createObjectURL(blob);
   try {
     const link = document.createElement("a");
     link.href = url;
-    link.download = `thru-wallet-${safeAddress}-${timestamp}.json`;
+    link.download = createWalletBackupFilename(account.address);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+export function createWalletBackupFilename(
+  address: string,
+  createdAt = new Date(),
+): string {
+  const safeAddress = address.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12);
+  const timestamp = createdAt
+    .toISOString()
+    .replace(/[^0-9]/g, "")
+    .slice(0, 14);
+  return `thru-wallet-${safeAddress}-${timestamp}.json`;
 }

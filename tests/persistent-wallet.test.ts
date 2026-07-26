@@ -12,6 +12,8 @@ import {
   saveAndVerifyPersistedWallet,
   restorePersistedWallet,
   removePersistedWallet,
+  completePersistedWalletSetup,
+  isPersistedWalletSetupPending,
 } from "../lib/wallet/persistent-wallet";
 
 interface MockIDBBehavior {
@@ -218,6 +220,73 @@ test("saveAndVerifyPersistedWallet returns the exact verified signing wallet", a
   verified.mnemonic = undefined;
   account.privateKey.fill(0);
   account.mnemonic = undefined;
+});
+
+test("created-wallet setup marker survives restore and clears only on completion", async () => {
+  const mockIDB = new MockIDBFactory() as any;
+  const account = await createNewAccount(true);
+  const verified = await saveAndVerifyPersistedWallet(account, {
+    idb: mockIDB,
+    cryptoObj: globalThis.crypto,
+    setupPending: true,
+  });
+
+  assert.equal(
+    await isPersistedWalletSetupPending(account.address, {
+      idb: mockIDB,
+    }),
+    true,
+  );
+  const restored = await restorePersistedWallet({
+    idb: mockIDB,
+    cryptoObj: globalThis.crypto,
+  });
+  assert.equal(restored?.address, account.address);
+  assert.equal(
+    await isPersistedWalletSetupPending(account.address, {
+      idb: mockIDB,
+    }),
+    true,
+  );
+
+  await completePersistedWalletSetup(account.address, { idb: mockIDB });
+  assert.equal(
+    await isPersistedWalletSetupPending(account.address, {
+      idb: mockIDB,
+    }),
+    false,
+  );
+
+  const record = mockIDB.stores
+    .get("encryptedWallet")
+    ?.get("current") as Record<string, unknown>;
+  assert.equal(record.setupPending, false);
+  assert.equal(Object.hasOwn(record, "privateKey"), false);
+  assert.equal(Object.hasOwn(record, "privateKeyHex"), false);
+
+  verified.privateKey.fill(0);
+  verified.mnemonic = undefined;
+  restored?.privateKey.fill(0);
+  if (restored) restored.mnemonic = undefined;
+  account.privateKey.fill(0);
+  account.mnemonic = undefined;
+});
+
+test("import-style wallet persistence never creates a pending setup marker", async () => {
+  const mockIDB = new MockIDBFactory() as any;
+  const account = await createNewAccount(false);
+  const verified = await saveAndVerifyPersistedWallet(account, {
+    idb: mockIDB,
+    cryptoObj: globalThis.crypto,
+  });
+  assert.equal(
+    await isPersistedWalletSetupPending(account.address, {
+      idb: mockIDB,
+    }),
+    false,
+  );
+  verified.privateKey.fill(0);
+  account.privateKey.fill(0);
 });
 
 test("restore reports a typed vault-open failure without creating records", async () => {

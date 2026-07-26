@@ -43,34 +43,29 @@ test("newly created wallet enters the one-time private-key screen after persiste
   );
   const createBody = APP_FLOW_SOURCE.slice(createStart, importStart);
   const persisted = createBody.indexOf(
-    "await saveAndVerifyPersistedWallet(candidate)",
+    "await saveAndVerifyPersistedWallet(candidate,",
   );
   const gate = createBody.indexOf(
     'shouldShowOneTimePrivateKeyBackup("created")',
   );
   assert.ok(persisted >= 0);
   assert.ok(gate > persisted);
+  assert.match(createBody, /setupPending: true/);
   assert.match(APP_FLOW_SOURCE, /<OneTimePrivateKeyBackup/);
 });
 
-test("restored and imported wallets do not enter the one-time screen", () => {
+test("only created and persisted pending wallets enter the one-time screen", () => {
   for (const source of [
     "restored",
-    "mnemonic-import",
     "private-key-import",
     "encrypted-backup-import",
   ] as const) {
     assert.equal(shouldShowOneTimePrivateKeyBackup(source), false);
   }
 
-  assert.match(
-    APP_FLOW_SOURCE,
-    /shouldShowOneTimePrivateKeyBackup\("restored"\)/,
-  );
-  assert.match(
-    APP_FLOW_SOURCE,
-    /kind === "mnemonic"[\s\S]*"mnemonic-import"[\s\S]*"private-key-import"/,
-  );
+  assert.match(APP_FLOW_SOURCE, /isPersistedWalletSetupPending\(restored\.address\)/);
+  assert.match(APP_FLOW_SOURCE, /setShowOneTimePrivateKeyBackup\(setupPending\)/);
+  assert.match(APP_FLOW_SOURCE, /shouldShowOneTimePrivateKeyBackup\("private-key-import"\)/);
   assert.match(
     APP_FLOW_SOURCE,
     /shouldShowOneTimePrivateKeyBackup\("encrypted-backup-import"\)/,
@@ -177,7 +172,10 @@ test("Continue is blocked before acknowledgement and dismisses after acknowledge
   assert.equal(dismissed.dismissed, true);
   assert.equal(dismissed.revealed, false);
   assert.equal(dismissed.acknowledged, false);
-  assert.match(SCREEN_SOURCE, /disabled=\{!state\.acknowledged\}/);
+  assert.match(
+    SCREEN_SOURCE,
+    /disabled=\{!state\.acknowledged \|\| continuePending\}/,
+  );
 });
 
 test("dismissed screen state cannot reveal or reopen", () => {
@@ -200,12 +198,13 @@ test("dismissed screen state cannot reveal or reopen", () => {
   );
 });
 
-test("reload defaults to restored-wallet workspace without the screen", () => {
-  assert.match(
-    APP_FLOW_SOURCE,
-    /setShowOneTimePrivateKeyBackup[\s\S]*useState\(false\)/,
-  );
-  assert.equal(shouldShowOneTimePrivateKeyBackup("restored"), false);
+test("reload restores the completion screen only from the persisted marker", () => {
+  const restoreStart = APP_FLOW_SOURCE.indexOf("restorePersistedWallet()");
+  const createStart = APP_FLOW_SOURCE.indexOf("async function handleCreateWallet");
+  const restoreBody = APP_FLOW_SOURCE.slice(restoreStart, createStart);
+  assert.match(restoreBody, /isPersistedWalletSetupPending/);
+  assert.match(restoreBody, /setShowOneTimePrivateKeyBackup\(setupPending\)/);
+  assert.doesNotMatch(restoreBody, /createNewAccount/);
 });
 
 test("copy requires an explicit call and never runs automatically", async () => {

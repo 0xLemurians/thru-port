@@ -10,7 +10,6 @@ export const PRIVATE_KEY_COPY_ERROR_MESSAGE =
 export type WalletActivationSource =
   | "created"
   | "restored"
-  | "mnemonic-import"
   | "private-key-import"
   | "encrypted-backup-import";
 

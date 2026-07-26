@@ -5,6 +5,7 @@ import {
   useEffect,
   useReducer,
   useRef,
+  useState,
 } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import { bytesToHex } from "@/lib/wallet/thru-wallet";
@@ -18,10 +19,11 @@ import {
   reduceOneTimePrivateKeyBackupState,
   schedulePrivateKeyAutoHide,
 } from "@/lib/wallet/one-time-private-key-backup";
+import WalletBackupDialog from "./WalletBackupDialog";
 
 interface OneTimePrivateKeyBackupProps {
   account: ThruAccount;
-  onContinue: () => void;
+  onContinue: () => Promise<boolean>;
 }
 
 function EyeIcon() {
@@ -79,6 +81,10 @@ export default function OneTimePrivateKeyBackup({
   const copyStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyPendingRef = useRef(false);
   const mountedRef = useRef(true);
+  const [backupOpen, setBackupOpen] = useState(false);
+  const [backupDownloaded, setBackupDownloaded] = useState(false);
+  const [continuePending, setContinuePending] = useState(false);
+  const [continueError, setContinueError] = useState<string | null>(null);
 
   const clearAutoHideTimer = useCallback(() => {
     if (autoHideTimerRef.current) {
@@ -153,13 +159,23 @@ export default function OneTimePrivateKeyBackup({
     }, PRIVATE_KEY_COPY_STATUS_MS);
   };
 
-  const continueToWorkspace = () => {
-    if (!state.acknowledged) return;
+  const continueToWorkspace = async () => {
+    if (!state.acknowledged || continuePending) return;
+    setContinuePending(true);
+    setContinueError(null);
     hidePrivateKey();
     clearCopyStatusTimer();
     if (displayRef.current) displayRef.current.textContent = "";
-    dispatch({ type: "continue" });
-    onContinue();
+    const completed = await onContinue();
+    if (!mountedRef.current) return;
+    if (completed) {
+      dispatch({ type: "continue" });
+      return;
+    }
+    setContinuePending(false);
+    setContinueError(
+      "Unable to finish wallet setup securely. Try Continue again.",
+    );
   };
 
   const displayValue = state.revealed
@@ -340,9 +356,39 @@ export default function OneTimePrivateKeyBackup({
             </label>
 
             <p style={{ color: "#9D8982", fontSize: 12, lineHeight: 1.55 }}>
-              The encrypted backup flow remains the recommended way to keep a
-              persistent wallet backup.
+              Create a password-protected encrypted payload inside the JSON
+              backup. The file will also contain the required visible
+              plaintext privateKey field.
             </p>
+
+            <div style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                className="pc-btn-secondary"
+                onClick={() => setBackupOpen(true)}
+              >
+                {backupDownloaded
+                  ? "Download another JSON backup"
+                  : "Create JSON backup"}
+              </button>
+              {backupDownloaded && (
+                <p
+                  role="status"
+                  style={{ margin: "8px 0 0", color: "#72D69A", fontSize: 13 }}
+                >
+                  JSON backup download started.
+                </p>
+              )}
+            </div>
+
+            {continueError && (
+              <p
+                role="alert"
+                style={{ margin: "14px 0 0", color: "#ff8d8d", fontSize: 13 }}
+              >
+                {continueError}
+              </p>
+            )}
 
             <div
               style={{
@@ -354,10 +400,10 @@ export default function OneTimePrivateKeyBackup({
               <button
                 type="button"
                 className="pc-btn-primary"
-                disabled={!state.acknowledged}
-                onClick={continueToWorkspace}
+                disabled={!state.acknowledged || continuePending}
+                onClick={() => void continueToWorkspace()}
                 style={
-                  !state.acknowledged
+                  !state.acknowledged || continuePending
                     ? {
                         opacity: 0.48,
                         cursor: "not-allowed",
@@ -366,11 +412,18 @@ export default function OneTimePrivateKeyBackup({
                     : undefined
                 }
               >
-                Continue
+                {continuePending ? "Finishing..." : "Continue"}
               </button>
             </div>
           </section>
         </main>
+        {backupOpen && (
+          <WalletBackupDialog
+            account={account}
+            onClose={() => setBackupOpen(false)}
+            onExported={() => setBackupDownloaded(true)}
+          />
+        )}
       </div>
     </div>
   );

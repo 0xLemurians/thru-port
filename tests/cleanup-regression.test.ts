@@ -18,12 +18,13 @@ test("Source içinde hardcoded 'mert' bulunmaz", async () => {
   assert.equal(/mert/i.test(dashFile), false);
 });
 
-test("Label input başlangıçta boştur", async () => {
+test("Identity is replaced by the AlphaNet registration notice", async () => {
   const studioFile = await fs.readFile(
     path.join(process.cwd(), "components/NameStudio.tsx"),
     "utf-8"
   );
-  assert.ok(studioFile.includes('useState("")'), "Label input initial state is empty string");
+  assert.match(studioFile, /registrations are not currently available on AlphaNet/);
+  assert.doesNotMatch(studioFile, /NameRegisterForm|NameLookupForm/);
 });
 
 test("Placeholder 'Enter label'dır", async () => {

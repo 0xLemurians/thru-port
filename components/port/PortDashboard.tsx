@@ -14,7 +14,7 @@ import PortFaucetPanel from "./PortFaucetPanel";
 import PortFooter from "./PortFooter";
 import WalletBackupDialog from "./WalletBackupDialog";
 
-type WalletImportMode = "hidden" | "mnemonic" | "hex" | "backup";
+type WalletImportMode = "hidden" | "hex" | "backup";
 
 interface PortDashboardProps {
   account: ThruAccount | null;
@@ -24,7 +24,7 @@ interface PortDashboardProps {
   walletError: string | null;
   onCreateWallet: () => void | Promise<boolean>;
   onImportWallet: (
-    kind: "mnemonic" | "hex",
+    kind: "hex",
     value: string,
   ) => Promise<boolean>;
   onImportBackup: (file: File, password: string) => Promise<boolean>;
@@ -230,13 +230,6 @@ export default function PortDashboard({
                     <div className="pc-tabs" style={{ marginBottom: 12 }}>
                       <button
                         type="button"
-                        className={`pc-tab ${importMode === "mnemonic" ? "active" : ""}`}
-                        onClick={() => switchImportMode("mnemonic")}
-                      >
-                        Recovery Phrase
-                      </button>
-                      <button
-                        type="button"
                         className={`pc-tab ${importMode === "hex" ? "active" : ""}`}
                         onClick={() => switchImportMode("hex")}
                       >
@@ -293,16 +286,8 @@ export default function PortDashboard({
                       <textarea
                         ref={importSecretRef}
                         className="pc-input"
-                        aria-label={
-                          importMode === "mnemonic"
-                            ? "Recovery phrase"
-                            : "Private key"
-                        }
-                        placeholder={
-                          importMode === "mnemonic"
-                            ? "Enter your recovery phrase..."
-                            : "Enter your 64-character hex private key..."
-                        }
+                        aria-label="Private key"
+                        placeholder="Enter your 64-character hex private key..."
                         onChange={(event) =>
                           setImportReady(
                             event.currentTarget.value.trim().length > 0,
@@ -341,7 +326,7 @@ export default function PortDashboard({
                 ) : (
                   <>
                     <button type="button" className="pc-btn-primary" style={{ padding: "12px 24px", fontSize: "14px" }} onClick={onCreateWallet}>Create Wallet</button>
-                    <button type="button" className="pc-btn-secondary" style={{ padding: "12px 24px", fontSize: "14px" }} onClick={() => switchImportMode("mnemonic")}>Import Wallet</button>
+                    <button type="button" className="pc-btn-secondary" style={{ padding: "12px 24px", fontSize: "14px" }} onClick={() => switchImportMode("hex")}>Import Wallet</button>
                   </>
                 )
               ) : (

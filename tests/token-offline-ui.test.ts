@@ -141,10 +141,7 @@ test("transfer and token-creation network actions are disabled offline", () => {
     TOKEN_CREATE_SOURCE,
     /disabled=\{busy \|\| networkActionsDisabled\}/,
   );
-  assert.match(
-    TOKEN_CREATE_SOURCE,
-    /disabled=\{recoveryBusy \|\| networkActionsDisabled\}/,
-  );
+  assert.doesNotMatch(TOKEN_CREATE_SOURCE, /Recover created token|Recover token/);
 });
 
 test("offline portfolio reads are skipped without deleting saved records", () => {

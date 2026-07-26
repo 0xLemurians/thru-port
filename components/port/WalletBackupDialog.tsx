@@ -174,19 +174,27 @@ export default function WalletBackupDialog({
           id={titleId}
           style={{ margin: "0 0 8px", color: "#FFF9F5", fontSize: 20 }}
         >
-          Create encrypted backup
+          Create wallet JSON backup
         </h2>
         <p
           id={warningId}
+          role="alert"
           style={{
             margin: "0 0 18px",
-            color: "#CEBAB0",
+            padding: "14px 16px",
+            borderRadius: 10,
+            border: "1px solid rgba(255, 113, 89, 0.45)",
+            background:
+              "linear-gradient(135deg, rgba(196, 57, 38, 0.18), rgba(244, 122, 60, 0.08))",
+            color: "#FFD5CA",
             fontSize: 13,
             lineHeight: 1.55,
           }}
         >
-          This file contains your wallet secrets encrypted with your password.
-          Store the file and password separately. There is no password reset.
+          This JSON file contains your private key in plain text. Anyone with
+          access to this file can control your wallet. Store it securely and
+          never share it. The backup password protects the encrypted payload,
+          but it does not protect the visible plaintext privateKey field.
         </p>
 
         <label className="pc-label" htmlFor={passwordId}>
@@ -274,8 +282,8 @@ export default function WalletBackupDialog({
             style={{ marginTop: 2 }}
           />
           <span>
-            I understand that anyone with the backup file and password can
-            control this wallet.
+            I understand that the privateKey field is visible in plain text
+            and is not protected by the backup password.
           </span>
         </label>
         {passwordValid && confirmationMatches && !acknowledged && (
@@ -330,7 +338,7 @@ export default function WalletBackupDialog({
               !acknowledged
             }
           >
-            {pending ? "Encrypting..." : "Download encrypted backup"}
+            {pending ? "Encrypting..." : "Download JSON backup"}
           </button>
         </div>
       </form>

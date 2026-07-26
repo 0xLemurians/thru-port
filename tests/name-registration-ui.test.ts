@@ -318,13 +318,13 @@ test("raw upstream and transport failures are never rendered", () => {
   );
 });
 
-test("the read-only lookup renders the safe offline message", () => {
+test("Identity renders the AlphaNet-unavailable notice without RPC errors", () => {
   assert.match(
-    LOOKUP_FORM_SOURCE,
-    /ALPHANET_RPC_UNAVAILABLE_MESSAGE/,
+    STUDIO_SOURCE,
+    /\.thru registrations are not currently available on AlphaNet/,
   );
-  assert.match(LOOKUP_FORM_SOURCE, /networkStatus === "Offline"/);
-  assert.match(STUDIO_SOURCE, /error && health\.status !== "Offline"/);
+  assert.match(STUDIO_SOURCE, /announce on X when registration becomes available/);
+  assert.doesNotMatch(STUDIO_SOURCE, /ALPHANET_RPC_UNAVAILABLE_MESSAGE/);
 });
 
 test("read-only lookup and Refresh actions are disabled while offline", () => {
@@ -711,10 +711,8 @@ test("uncertain registration shows only the safe message and public signature", 
   assert.doesNotMatch(message, /grpc|transport|refused/i);
 });
 
-test("the existing read-only lookup remains on the same Identity screen", () => {
-  assert.match(STUDIO_SOURCE, /<NameRegisterForm/);
-  assert.match(STUDIO_SOURCE, /<NameLookupForm/);
-  assert.match(STUDIO_SOURCE, /<NameAccountDetails/);
-  assert.match(STUDIO_SOURCE, /<LeaseDetails/);
-  assert.match(STUDIO_SOURCE, /Lookup remains read-only/);
+test("disabled Identity exposes no registration or lookup request path", () => {
+  assert.doesNotMatch(STUDIO_SOURCE, /<NameRegisterForm|<NameLookupForm/);
+  assert.doesNotMatch(STUDIO_SOURCE, /lookupThruName|purchaseThruName/);
+  assert.doesNotMatch(STUDIO_SOURCE, /Check Availability|Register|payment/i);
 });

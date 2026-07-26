@@ -18,6 +18,7 @@ import {
   WalletBackupError,
   clearSecretInputs,
   createEncryptedWalletBackupFile,
+  createWalletBackupFilename,
   decryptEncryptedWalletBackup,
   parseEncryptedWalletBackup,
   validateBackupExportRequirements,
@@ -123,7 +124,10 @@ test("test encrypts successfully with the unchanged backup cryptography", async 
 interface MutableBackup {
   format: string;
   version: number;
+  address: string;
   walletAddress: string;
+  privateKey: string;
+  createdAt: string;
   kdf: {
     algorithm: string;
     hash: string;
@@ -155,10 +159,13 @@ test("encrypted export contains no plaintext mnemonic", async () => {
   assert.equal(serialized.includes(account.mnemonic), false);
 });
 
-test("encrypted export contains no plaintext private key or privateKeyHex field", async () => {
+test("export contains the complete top-level plaintext privateKey but no plaintext payload field", async () => {
   const account = await accountPromise;
   const serialized = await backupPromise;
-  assert.equal(serialized.includes(bytesToHex(account.privateKey)), false);
+  const parsed = cloneBackup(serialized);
+  assert.equal(parsed.privateKey, bytesToHex(account.privateKey));
+  assert.equal(parsed.address, account.address);
+  assert.equal(parsed.walletAddress, account.address);
   assert.equal(serialized.includes("privateKeyHex"), false);
 });
 
@@ -222,7 +229,7 @@ test("correct password reconstructs the exact wallet", async () => {
   assert.equal(restored.address, account.address);
   assert.deepEqual(restored.publicKey, account.publicKey);
   assert.deepEqual(restored.privateKey, account.privateKey);
-  assert.equal(restored.mnemonic, account.mnemonic);
+  assert.equal(restored.mnemonic, undefined);
   restored.privateKey.fill(0);
   restored.mnemonic = undefined;
 });
@@ -274,7 +281,7 @@ test("modified IV fails AES-GCM authentication", async () => {
 
 test("unsupported backup version is rejected before decryption", async () => {
   const modified = cloneBackup(await backupPromise);
-  modified.version = 2;
+  modified.version = 3;
   assert.throws(
     () => parseEncryptedWalletBackup(JSON.stringify(modified)),
     (error: unknown) =>
@@ -316,6 +323,53 @@ test("address metadata mismatch cannot replace the intended wallet", async () =>
       error instanceof WalletBackupError &&
       error.code === "ADDRESS_MISMATCH",
   );
+});
+
+test("plaintext and encrypted wallet mismatch is rejected after decryption", async () => {
+  const modified = cloneBackup(await backupPromise);
+  const otherAccount = await createNewAccount(false);
+  modified.privateKey = bytesToHex(otherAccount.privateKey);
+  await assert.rejects(
+    () =>
+      decryptEncryptedWalletBackup(
+        JSON.stringify(modified),
+        BACKUP_PASSWORD,
+      ),
+    (error: unknown) =>
+      error instanceof WalletBackupError &&
+      error.code === "ADDRESS_MISMATCH",
+  );
+  otherAccount.privateKey.fill(0);
+});
+
+test("legacy encrypted version 1 backup remains importable", async () => {
+  const current = cloneBackup(await backupPromise);
+  const legacy = {
+    format: current.format,
+    version: 1,
+    walletAddress: current.walletAddress,
+    kdf: current.kdf,
+    cipher: current.cipher,
+  };
+  const restored = await decryptEncryptedWalletBackup(
+    JSON.stringify(legacy),
+    BACKUP_PASSWORD,
+  );
+  const account = await accountPromise;
+  assert.equal(restored.address, account.address);
+  assert.deepEqual(restored.privateKey, account.privateKey);
+  restored.privateKey.fill(0);
+  restored.mnemonic = undefined;
+});
+
+test("backup filename is predictable and never contains the private key", async () => {
+  const account = await accountPromise;
+  const filename = createWalletBackupFilename(
+    account.address,
+    new Date("2026-07-27T10:11:12.000Z"),
+  );
+  assert.match(filename, /^thru-wallet-[a-zA-Z0-9]{1,12}-20260727101112\.json$/);
+  assert.equal(filename.includes(bytesToHex(account.privateKey)), false);
 });
 
 test("legacy plaintext backup is rejected with the required message", () => {
@@ -499,6 +553,12 @@ test("both active backup buttons open the authenticated backup dialog", () => {
   assert.match(dialog, /Confirm backup password/);
   assert.match(dialog, /checked=\{acknowledged\}/);
   assert.match(dialog, /downloadEncryptedWalletBackup\(account, password\)/);
+  assert.match(dialog, /contains your private key in plain text/);
+  assert.match(dialog, /does not protect the visible plaintext privateKey field/);
+  assert.match(
+    dialog,
+    /!passwordValid \|\|[\s\S]*!confirmationMatches \|\|[\s\S]*!acknowledged/,
+  );
 });
 
 test("wallet security paths contain no secret logging or analytics events", () => {

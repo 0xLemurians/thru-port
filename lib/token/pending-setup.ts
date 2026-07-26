@@ -3,8 +3,8 @@
  *
  * Persists public (non-secret) information about a token creation that was
  * submitted to the chain but whose final on-chain verification has not yet
- * completed. This allows the UI to offer a "Recover created token" flow after
- * a page refresh or wallet re-import.
+ * completed. This preserves the public state needed by internal safety and
+ * resume logic after a page refresh or wallet re-import.
  *
  * SECURITY: Only public on-chain addresses, labels, and amounts are stored.
  * Private keys, mnemonics, and backup contents are never written here.
