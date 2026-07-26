@@ -19,6 +19,7 @@ import {
   validateBackupExportRequirements,
   validateBackupPassword,
 } from "@/lib/wallet/wallet-backup";
+import { loadCreatedTokensForWallet } from "@/lib/token/portfolio";
 
 interface WalletBackupDialogProps {
   account: ThruAccount;
@@ -121,7 +122,13 @@ export default function WalletBackupDialog({
     setPending(true);
     setError(null);
     try {
-      await downloadEncryptedWalletBackup(account, password);
+      const createdTokens = loadCreatedTokensForWallet(
+        window.localStorage,
+        account.address,
+      );
+      await downloadEncryptedWalletBackup(account, password, {
+        createdTokens,
+      });
       resetForm();
       onExported?.();
       onClose();

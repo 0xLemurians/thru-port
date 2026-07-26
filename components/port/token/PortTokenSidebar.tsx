@@ -1,6 +1,9 @@
 import { useState } from "react";
 import type { TokenPortfolioItem } from "@/lib/token/thru-token";
-import type { KnownTokenRecord } from "@/lib/token/portfolio";
+import {
+  tokenDisplayLabels,
+  type KnownTokenRecord,
+} from "@/lib/token/portfolio";
 import type { NetworkStatus } from "@/components/port/useAlphaNetHealth";
 import {
   invokeTokenNetworkAction,
@@ -10,43 +13,49 @@ import {
 export interface TokenSidebarEntry {
   mintAddress: string;
   label: string;
-  secondaryLabel: string;
+  secondaryLabel?: string;
   tokenAccountAddresses: string[];
+  liveValidated: boolean;
 }
 
 export function buildTokenSidebarEntries(
   portfolio: TokenPortfolioItem[],
   savedRecords: KnownTokenRecord[],
-  networkStatus: NetworkStatus | undefined,
 ): TokenSidebarEntry[] {
   const portfolioByMint = new Map(
     portfolio.map((item) => [item.mintAddress, item]),
   );
-
-  if (networkStatus === "Offline") {
-    return savedRecords.map((record) => {
-      const cached = portfolioByMint.get(record.mintAddress);
-      return {
-        mintAddress: record.mintAddress,
-        label:
-          cached?.mint?.ticker ??
-          cached?.label ??
-          record.label ??
-          "Saved token",
-        secondaryLabel: cached?.mint?.ticker ?? "Saved locally",
-        tokenAccountAddresses:
-          cached?.tokenAccounts.map((account) => account.address) ??
-          record.tokenAccountAddresses,
-      };
+  const entries = savedRecords.map((record) => {
+    const live = portfolioByMint.get(record.mintAddress);
+    const labels = tokenDisplayLabels(
+      record.label ?? live?.label,
+      live?.mint?.ticker ?? record.ticker,
+    );
+    return {
+      mintAddress: record.mintAddress,
+      label: labels.primary,
+      secondaryLabel: labels.secondary,
+      tokenAccountAddresses:
+        live?.tokenAccounts.map((account) => account.address) ??
+        record.tokenAccountAddresses,
+      liveValidated: Boolean(live?.mint),
+    };
+  });
+  const savedMints = new Set(entries.map((entry) => entry.mintAddress));
+  for (const item of portfolio) {
+    if (savedMints.has(item.mintAddress)) continue;
+    const labels = tokenDisplayLabels(item.label, item.mint?.ticker);
+    entries.push({
+      mintAddress: item.mintAddress,
+      label: labels.primary,
+      secondaryLabel: labels.secondary,
+      tokenAccountAddresses: item.tokenAccounts.map(
+        (account) => account.address,
+      ),
+      liveValidated: Boolean(item.mint),
     });
   }
-
-  return portfolio.map((item) => ({
-    mintAddress: item.mintAddress,
-    label: item.mint?.ticker ?? item.label ?? "Unnamed Token",
-    secondaryLabel: item.mint?.ticker ?? "TOKEN",
-    tokenAccountAddresses: item.tokenAccounts.map((account) => account.address),
-  }));
+  return entries;
 }
 
 interface PortTokenSidebarProps {
@@ -74,7 +83,6 @@ export default function PortTokenSidebar({
   const entries = buildTokenSidebarEntries(
     portfolio,
     savedRecords,
-    networkStatus,
   );
   const createDisabled = tokenNetworkActionsDisabled(networkStatus);
 
@@ -83,6 +91,7 @@ export default function PortTokenSidebar({
     const lowerSearch = search.toLowerCase();
     return (
       item.label.toLowerCase().includes(lowerSearch) ||
+      item.secondaryLabel?.toLowerCase().includes(lowerSearch) ||
       item.mintAddress.toLowerCase().includes(lowerSearch) ||
       item.tokenAccountAddresses.some((address) =>
         address.toLowerCase().includes(lowerSearch),
@@ -108,10 +117,14 @@ export default function PortTokenSidebar({
         </div>
 
         <div className="pc-token-list">
-          {loading && <div className="pc-token-list-msg">Loading portfolio...</div>}
+          {loading && (
+            <div className="pc-token-list-msg">
+              {entries.length > 0 ? "Refreshing portfolio..." : "Loading portfolio..."}
+            </div>
+          )}
           {error && <div className="pc-token-list-msg error">{error}</div>}
           
-          {!loading && !error && entries.length === 0 && (
+          {!loading && entries.length === 0 && (
             <div className="pc-token-list-msg empty-state">
               {networkStatus === "Offline"
                 ? "Live token state is unavailable. No locally saved token references are available."
@@ -119,13 +132,13 @@ export default function PortTokenSidebar({
             </div>
           )}
 
-          {!loading && !error && entries.length > 0 && filteredEntries.length === 0 && (
+          {entries.length > 0 && filteredEntries.length === 0 && (
             <div className="pc-token-list-msg empty-state">
               No matches found.
             </div>
           )}
 
-          {!loading && !error && filteredEntries.map((item) => {
+          {filteredEntries.map((item) => {
             const isSelected = selectedToken === item.mintAddress;
             return (
               <button
@@ -136,9 +149,18 @@ export default function PortTokenSidebar({
                 <div className="pc-token-list-item-label" style={{ fontWeight: 600 }}>
                   {item.label}
                 </div>
-                <div className="pc-token-list-item-address mono" style={{ marginTop: "4px" }}>
-                  {item.secondaryLabel}
-                </div>
+                {item.secondaryLabel && (
+                  <div className="pc-token-list-item-address mono" style={{ marginTop: "4px" }}>
+                    {item.secondaryLabel}
+                  </div>
+                )}
+                {!item.liveValidated && (
+                  <div className="pc-token-list-item-address" style={{ marginTop: "4px" }}>
+                    {networkStatus === "Offline" || error
+                      ? "Live state unavailable"
+                      : "Saved locally · not confirmed live"}
+                  </div>
+                )}
               </button>
             );
           })}

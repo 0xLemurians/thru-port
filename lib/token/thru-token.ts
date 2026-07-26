@@ -1,7 +1,11 @@
 import {
   ConsensusStatus,
+  Filter,
+  FilterParamValue,
+  PageRequest,
   Pubkey,
   Signature,
+  TransactionView,
   type Account,
   type Transaction,
 } from "@thru/sdk";
@@ -42,7 +46,10 @@ import {
   verifyMintToDeltas,
   verifyTransferDeltas,
 } from "./operations";
-import type { KnownTokenRecord } from "./portfolio";
+import {
+  MAX_KNOWN_MINTS,
+  type KnownTokenRecord,
+} from "./portfolio";
 import {
   planTokenSetupResume,
   type TokenResumeProgress,
@@ -58,7 +65,9 @@ import {
 } from "./destination-account";
 import {
   decimalAmountToRaw,
+  validateTokenDecimals,
   validateTokenInput,
+  validateTokenTicker,
   type ValidatedTokenInput,
 } from "./validation";
 import {
@@ -679,6 +688,218 @@ export async function fetchTokenPortfolioOnAlphaNet(
         tokenAccounts,
       };
     }),
+  );
+}
+
+const DISCOVERY_PAGE_SIZE = 32;
+const MAX_DISCOVERY_TRANSACTIONS = 128;
+const MAX_DISCOVERY_CANDIDATES = 128;
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 12_000;
+
+interface DiscoveryTransaction {
+  program: Pubkey;
+  readWriteAccounts: Pubkey[];
+}
+
+interface DiscoveryTransactionPage {
+  transactions: DiscoveryTransaction[];
+  nextPageToken?: string;
+}
+
+export interface CreatedTokenDiscoveryDependencies {
+  listTransactionsForAccount: (
+    walletAddress: string,
+    pageToken: string | undefined,
+    pageSize: number,
+  ) => Promise<DiscoveryTransactionPage>;
+  getAccount: (address: string) => Promise<Account>;
+}
+
+export interface CreatedTokenDiscoveryOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  maxTransactions?: number;
+  maxCandidates?: number;
+  maxResults?: number;
+  dependencies?: CreatedTokenDiscoveryDependencies;
+}
+
+const defaultCreatedTokenDiscoveryDependencies: CreatedTokenDiscoveryDependencies =
+  {
+    async listTransactionsForAccount(walletAddress, pageToken, pageSize) {
+      const result = await thru.transactions.listForAccount(walletAddress, {
+        filter: new Filter({
+          expression:
+            "transaction.header.program_pubkey.value == params.pubkey",
+          params: {
+            pubkey: FilterParamValue.pubkey(TOKEN_PROGRAM_ADDRESS),
+          },
+        }),
+        page: new PageRequest({ pageSize, pageToken }),
+        transactionOptions: {
+          view: TransactionView.HEADER_AND_BODY,
+          minConsensus: ConsensusStatus.FINALIZED,
+        },
+      });
+      return {
+        transactions: result.transactions,
+        nextPageToken: result.page?.nextPageToken,
+      };
+    },
+    getAccount(address) {
+      return thru.accounts.get(address, {
+        minConsensus: ConsensusStatus.FINALIZED,
+      });
+    },
+  };
+
+export async function discoverControlledTokensOnAlphaNet(
+  walletAddress: string,
+  options: CreatedTokenDiscoveryOptions = {},
+): Promise<KnownTokenRecord[]> {
+  const canonicalWallet = canonicalAddress(walletAddress, "Wallet address");
+  const timeoutMs = boundedInteger(
+    options.timeoutMs,
+    DEFAULT_DISCOVERY_TIMEOUT_MS,
+    1,
+    60_000,
+  );
+  const maxTransactions = boundedInteger(
+    options.maxTransactions,
+    MAX_DISCOVERY_TRANSACTIONS,
+    1,
+    MAX_DISCOVERY_TRANSACTIONS,
+  );
+  const maxCandidates = boundedInteger(
+    options.maxCandidates,
+    MAX_DISCOVERY_CANDIDATES,
+    1,
+    MAX_DISCOVERY_CANDIDATES,
+  );
+  const maxResults = boundedInteger(
+    options.maxResults,
+    MAX_KNOWN_MINTS,
+    1,
+    MAX_KNOWN_MINTS,
+  );
+  const dependencies =
+    options.dependencies ?? defaultCreatedTokenDiscoveryDependencies;
+  const deadline = Date.now() + timeoutMs;
+  const candidateAddresses = new Set<string>();
+  let pageToken: string | undefined;
+  let transactionCount = 0;
+
+  do {
+    throwIfDiscoveryStopped(options.signal, deadline);
+    const remaining = maxTransactions - transactionCount;
+    const page = await awaitDiscoveryStep(
+      dependencies.listTransactionsForAccount(
+        canonicalWallet,
+        pageToken,
+        Math.min(DISCOVERY_PAGE_SIZE, remaining),
+      ),
+      options.signal,
+      deadline,
+    );
+    const transactions = page.transactions.slice(0, remaining);
+    transactionCount += transactions.length;
+
+    for (const transaction of transactions) {
+      if (transaction.program.toThruFmt() !== TOKEN_PROGRAM_ADDRESS) continue;
+      for (const address of transaction.readWriteAccounts) {
+        candidateAddresses.add(address.toThruFmt());
+        if (candidateAddresses.size >= maxCandidates) break;
+      }
+      if (candidateAddresses.size >= maxCandidates) break;
+    }
+
+    const nextPageToken = page.nextPageToken;
+    if (
+      transactions.length === 0 ||
+      !nextPageToken ||
+      nextPageToken === pageToken
+    ) {
+      pageToken = undefined;
+      break;
+    }
+    pageToken = nextPageToken;
+  } while (
+    pageToken &&
+    transactionCount < maxTransactions &&
+    candidateAddresses.size < maxCandidates
+  );
+
+  const discovered: KnownTokenRecord[] = [];
+  for (const mintAddress of candidateAddresses) {
+    throwIfDiscoveryStopped(options.signal, deadline);
+    let mint: MintAccountInfo;
+    try {
+      mint = await awaitDiscoveryStep(
+        getVerifiedMintWith(dependencies.getAccount, mintAddress),
+        options.signal,
+        deadline,
+      );
+      if (!isStructurallyValidMint(mint)) continue;
+      if (
+        mint.creator !== canonicalWallet &&
+        mint.mintAuthority !== canonicalWallet
+      ) {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+
+    const tokenAccountAddresses: string[] = [];
+    const derivedTokenAccount = deriveTokenAccountAddress(
+      thru,
+      canonicalWallet,
+      mintAddress,
+      TOKEN_PROGRAM_ADDRESS,
+      TOKEN_ACCOUNT_DEFAULT_SEED,
+    ).address;
+    try {
+      const tokenAccount = await awaitDiscoveryStep(
+        getVerifiedTokenAccountWith(
+          dependencies.getAccount,
+          derivedTokenAccount,
+        ),
+        options.signal,
+        deadline,
+      );
+      if (
+        tokenAccount.mint === mintAddress &&
+        tokenAccount.owner === canonicalWallet
+      ) {
+        tokenAccountAddresses.push(derivedTokenAccount);
+      }
+    } catch {
+      // A mint remains a controlled token even without a current token account.
+    }
+
+    discovered.push({
+      mintAddress,
+      walletAddress: canonicalWallet,
+      creatorAddress: mint.creator,
+      mintAuthorityAddress: mint.mintAuthority,
+      ticker: mint.ticker,
+      decimals: mint.decimals,
+      tokenAccountAddresses,
+    });
+    if (discovered.length >= maxResults) break;
+  }
+  return discovered;
+}
+
+export function isCreatedTokenControlledByWallet(
+  item: TokenPortfolioItem,
+  walletAddress: string,
+): boolean {
+  return Boolean(
+    item.mint &&
+      isStructurallyValidMint(item.mint) &&
+      (item.mint.creator === walletAddress ||
+        item.mint.mintAuthority === walletAddress),
   );
 }
 
@@ -1702,6 +1923,89 @@ async function getTokenProgramAccount(address: string): Promise<Account> {
   const owner = account.meta?.owner?.toThruFmt();
   assertOfficialTokenProgramOwnership(owner, TOKEN_PROGRAM_ADDRESS, address);
   return account;
+}
+
+async function getTokenProgramAccountWith(
+  getAccount: (address: string) => Promise<Account>,
+  address: string,
+): Promise<Account> {
+  const account = await getAccount(address);
+  const owner = account.meta?.owner?.toThruFmt();
+  assertOfficialTokenProgramOwnership(owner, TOKEN_PROGRAM_ADDRESS, address);
+  return account;
+}
+
+async function getVerifiedMintWith(
+  getAccount: (address: string) => Promise<Account>,
+  address: string,
+): Promise<MintAccountInfo> {
+  const account = await getTokenProgramAccountWith(getAccount, address);
+  return parseMintAccountData(account);
+}
+
+async function getVerifiedTokenAccountWith(
+  getAccount: (address: string) => Promise<Account>,
+  address: string,
+): Promise<TokenAccountInfo> {
+  const account = await getTokenProgramAccountWith(getAccount, address);
+  return parseTokenAccountData(account);
+}
+
+function isStructurallyValidMint(mint: MintAccountInfo): boolean {
+  try {
+    return (
+      validateTokenTicker(mint.ticker) === mint.ticker &&
+      validateTokenDecimals(mint.decimals) === mint.decimals &&
+      Pubkey.from(mint.creator).toThruFmt() === mint.creator &&
+      Pubkey.from(mint.mintAuthority).toThruFmt() === mint.mintAuthority
+    );
+  } catch {
+    return false;
+  }
+}
+
+function boundedInteger(
+  value: number | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function throwIfDiscoveryStopped(
+  signal: AbortSignal | undefined,
+  deadline: number,
+): void {
+  if (signal?.aborted) {
+    throw new Error("Token discovery was cancelled.");
+  }
+  if (Date.now() >= deadline) {
+    throw new Error("Token discovery timed out.");
+  }
+}
+
+async function awaitDiscoveryStep<T>(
+  pending: Promise<T>,
+  signal: AbortSignal | undefined,
+  deadline: number,
+): Promise<T> {
+  throwIfDiscoveryStopped(signal, deadline);
+  const remaining = Math.max(1, deadline - Date.now());
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Token discovery timed out.")),
+      remaining,
+    );
+    const abort = () => reject(new Error("Token discovery was cancelled."));
+    signal?.addEventListener("abort", abort, { once: true });
+    pending.then(resolve, reject).finally(() => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    });
+  });
 }
 
 async function settleTokenRead<T>(

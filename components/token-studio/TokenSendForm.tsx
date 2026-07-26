@@ -6,6 +6,7 @@ import { decimalAmountToRaw } from "@/lib/token/validation";
 import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { safeTokenActionError } from "@/lib/token/network-state";
+import { tokenDisplayLabels } from "@/lib/token/portfolio";
 
 export default function TokenSendForm({
   account,
@@ -112,13 +113,23 @@ export default function TokenSendForm({
     ? formatRawAmount(selectedSourceAccount.state.amount, selectedItem.mint.decimals)
     : "0";
   const displayTicker = selectedItem.mint?.ticker ?? "TOKEN";
+  const displayLabels = tokenDisplayLabels(
+    selectedItem.label,
+    selectedItem.mint?.ticker,
+    "Known token",
+  );
 
   return (
     <div className="token-section">
       <div className="token-section-header">
         <div>
           <p className="eyebrow token-eyebrow">Send</p>
-          <h3>{selectedItem.mint?.ticker ?? "TOKEN"}</h3>
+          <h3>{displayLabels.primary}</h3>
+          {displayLabels.secondary && (
+            <p className="mono" style={{ marginTop: 4 }}>
+              {displayLabels.secondary}
+            </p>
+          )}
           <p style={{ marginTop: 4, color: "var(--text-dim)" }}>
             Available balance: {formattedBal} {displayTicker}
           </p>

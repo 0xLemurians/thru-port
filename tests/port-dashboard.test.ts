@@ -159,7 +159,7 @@ test("backup does not auto-download or export without explicit confirmation", ()
     "const requirements = validateBackupExportRequirements(",
   );
   const download = source.indexOf(
-    "await downloadEncryptedWalletBackup(account, password)",
+    "await downloadEncryptedWalletBackup(account, password, {",
   );
   assert.ok(exportGuard >= 0 && download > exportGuard);
 });

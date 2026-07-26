@@ -114,14 +114,14 @@ test("locally saved token entries remain visible while offline", () => {
         tokenAccountAddresses: ["saved-token-account"],
       },
     ],
-    "Offline",
   );
   assert.deepEqual(entries, [
     {
       mintAddress: "saved-mint",
       label: "Saved Token",
-      secondaryLabel: "Saved locally",
+      secondaryLabel: undefined,
       tokenAccountAddresses: ["saved-token-account"],
+      liveValidated: false,
     },
   ]);
   assert.match(
@@ -148,11 +148,11 @@ test("offline portfolio reads are skipped without deleting saved records", () =>
   assert.equal(tokenNetworkReadAllowed("Offline"), false);
   assert.match(
     PORTFOLIO_HOOK_SOURCE,
-    /if \(!networkReadAllowed\) \{[\s\S]*?requestTrackerRef\.current\.invalidate\(\);[\s\S]*?return;/,
+    /if \(!walletAddress \|\| !networkReadAllowed\) \{[\s\S]*?requestTrackerRef\.current\.invalidate\(\);[\s\S]*?return;/,
   );
   const offlineRefreshGuard =
     PORTFOLIO_HOOK_SOURCE.match(
-      /if \(!networkReadAllowed\) \{[\s\S]*?return;\s*\}/,
+      /if \(!walletAddress \|\| !networkReadAllowed\) \{[\s\S]*?return;\s*\}/,
     )?.[0] ?? "";
   assert.doesNotMatch(offlineRefreshGuard, /saveKnownTokens/);
 });

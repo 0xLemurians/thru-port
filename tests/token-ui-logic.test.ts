@@ -8,7 +8,7 @@ import type { MintAccountInfo, TokenAccountInfo } from "@thru/programs/token";
 const ACTIVE_WALLET = "taActiveWallet123456789012345678901234567";
 const OTHER_WALLET = "taOtherWallet1234567890123456789012345678";
 
-test("classifyPortfolio categorizes by owner and mint authority", () => {
+test("classifyPortfolio includes only creator/current authority, not received holdings", () => {
   const portfolio = [
     {
       mintAddress: "mint1",
@@ -33,13 +33,13 @@ test("classifyPortfolio categorizes by owner and mint authority", () => {
 
   const result = classifyPortfolio(portfolio, ACTIVE_WALLET);
   
-  assert.equal(result.activeAssets.length, 2);
+  assert.equal(result.activeAssets.length, 1);
   assert.equal(result.activeAssets[0].mintAddress, "mint1", "Mint authority is active wallet");
-  assert.equal(result.activeAssets[1].mintAddress, "mint2", "Token account owned by active wallet");
   
-  assert.equal(result.externalAssets.length, 2);
-  assert.equal(result.externalAssets[0].mintAddress, "mint3", "Neither mint authority nor owner");
-  assert.equal(result.externalAssets[1].mintAddress, "mint4", "Neither mint authority nor owner (no mint state)");
+  assert.equal(result.externalAssets.length, 3);
+  assert.equal(result.externalAssets[0].mintAddress, "mint2", "Received-only token is external");
+  assert.equal(result.externalAssets[1].mintAddress, "mint3", "Neither creator nor mint authority");
+  assert.equal(result.externalAssets[2].mintAddress, "mint4", "No verified mint state");
 });
 
 test("classifyPortfolio returns all as external if no active wallet is connected", () => {

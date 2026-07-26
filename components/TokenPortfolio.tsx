@@ -19,6 +19,7 @@ import {
   LatestRequestTracker,
   loadKnownTokens,
   saveKnownTokens,
+  tokenDisplayLabels,
   upsertKnownToken,
   type KnownTokenRecord,
 } from "@/lib/token/portfolio";
@@ -578,11 +579,16 @@ export default function TokenPortfolio({
 }
 
 function PortfolioCard({ item }: { item: TokenPortfolioItem }) {
+  const displayLabels = tokenDisplayLabels(
+    item.label,
+    item.mint?.ticker,
+    "Known token",
+  );
   return (
     <article className="portfolio-card">
       <div className="portfolio-card-header">
         <div>
-          <h3>{item.label || item.mint?.ticker || "Known token"}</h3>
+          <h3>{displayLabels.primary}</h3>
           <code className="mono">{item.mintAddress}</code>
         </div>
         <ExplorerLink
@@ -595,10 +601,12 @@ function PortfolioCard({ item }: { item: TokenPortfolioItem }) {
         <p className="error token-error">{item.error}</p>
       ) : item.mint ? (
         <dl className="portfolio-details">
-          <div>
-            <dt>Ticker</dt>
-            <dd className="mono">{item.mint.ticker}</dd>
-          </div>
+          {displayLabels.secondary && (
+            <div>
+              <dt>Ticker</dt>
+              <dd className="mono">{item.mint.ticker}</dd>
+            </div>
+          )}
           <div>
             <dt>Decimals</dt>
             <dd>{item.mint.decimals}</dd>

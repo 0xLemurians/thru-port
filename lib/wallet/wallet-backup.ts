@@ -6,6 +6,11 @@ import {
   bytesToHex,
   hexToBytes,
 } from "./thru-wallet";
+import {
+  MAX_BACKUP_CREATED_TOKENS,
+  normalizeBackupCreatedTokens,
+  type KnownTokenRecord,
+} from "@/lib/token/portfolio";
 
 export const ENCRYPTED_BACKUP_FORMAT = "thru-port-encrypted-wallet";
 export const LEGACY_ENCRYPTED_BACKUP_VERSION = 1;
@@ -115,11 +120,18 @@ interface DecryptedWalletPayload {
   address: string;
   privateKeyHex: string;
   mnemonic: string | null;
+  createdTokens?: KnownTokenRecord[];
 }
 
 export interface BackupCryptoOptions {
   cryptoObj?: Crypto | null;
   randomBytes?: (length: number) => Uint8Array;
+  createdTokens?: KnownTokenRecord[];
+}
+
+export interface DecryptedWalletBackupContents {
+  account: ThruAccount;
+  createdTokens: KnownTokenRecord[];
 }
 
 export interface SecretInputControl {
@@ -393,6 +405,13 @@ export async function createEncryptedWalletBackup(
       address: account.address,
       privateKeyHex: bytesToHex(account.privateKey),
       mnemonic: null,
+      ...(() => {
+        const createdTokens = normalizeBackupCreatedTokens(
+          options.createdTokens,
+          account.address,
+        );
+        return createdTokens.length > 0 ? { createdTokens } : {};
+      })(),
     };
     encodedPayload = new TextEncoder().encode(JSON.stringify(payload));
     payload.privateKeyHex = "";
@@ -580,14 +599,18 @@ export function parseEncryptedWalletBackup(
 }
 
 function parseDecryptedPayload(value: unknown): DecryptedWalletPayload {
+  const expectedKeys = [
+    "version",
+    "address",
+    "privateKeyHex",
+    "mnemonic",
+    ...(isRecord(value) && Object.hasOwn(value, "createdTokens")
+      ? ["createdTokens"]
+      : []),
+  ];
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      "version",
-      "address",
-      "privateKeyHex",
-      "mnemonic",
-    ]) ||
+    !hasOnlyKeys(value, expectedKeys) ||
     value.version !== 1 ||
     typeof value.address !== "string" ||
     value.address.length < 8 ||
@@ -599,18 +622,21 @@ function parseDecryptedPayload(value: unknown): DecryptedWalletPayload {
       (typeof value.mnemonic === "string" &&
         value.mnemonic.length > 0 &&
         value.mnemonic.length <= 1_024)
-    )
+    ) ||
+    (Object.hasOwn(value, "createdTokens") &&
+      (!Array.isArray(value.createdTokens) ||
+        value.createdTokens.length > MAX_BACKUP_CREATED_TOKENS))
   ) {
     throw malformedBackup();
   }
   return value as unknown as DecryptedWalletPayload;
 }
 
-export async function decryptEncryptedWalletBackup(
+export async function decryptEncryptedWalletBackupContents(
   serialized: string,
   password: string,
   options: Pick<BackupCryptoOptions, "cryptoObj"> = {},
-): Promise<ThruAccount> {
+): Promise<DecryptedWalletBackupContents> {
   const backup = parseEncryptedWalletBackup(serialized);
   const cryptoObj = getCrypto(options.cryptoObj);
   const salt = decodeBase64(backup.kdf.salt, BACKUP_SALT_BYTES);
@@ -720,8 +746,12 @@ export async function decryptEncryptedWalletBackup(
     }
 
     await assertAccountIdentity(account);
+    const createdTokens = normalizeBackupCreatedTokens(
+      payload.createdTokens,
+      account.address,
+    );
     succeeded = true;
-    return account;
+    return { account, createdTokens };
   } finally {
     salt.fill(0);
     iv.fill(0);
@@ -744,6 +774,16 @@ export async function decryptEncryptedWalletBackup(
   }
 }
 
+export async function decryptEncryptedWalletBackup(
+  serialized: string,
+  password: string,
+  options: Pick<BackupCryptoOptions, "cryptoObj"> = {},
+): Promise<ThruAccount> {
+  return (
+    await decryptEncryptedWalletBackupContents(serialized, password, options)
+  ).account;
+}
+
 export async function readEncryptedBackupFile(
   file: Pick<File, "size" | "text">,
 ): Promise<string> {
@@ -762,8 +802,13 @@ export async function readEncryptedBackupFile(
 export async function downloadEncryptedWalletBackup(
   account: ThruAccount,
   password: string,
+  options: BackupCryptoOptions = {},
 ): Promise<void> {
-  const contents = await createEncryptedWalletBackupFile(account, password);
+  const contents = await createEncryptedWalletBackupFile(
+    account,
+    password,
+    options,
+  );
   const blob = new Blob([contents], {
     type: "application/json;charset=utf-8",
   });

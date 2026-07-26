@@ -40,11 +40,9 @@ export default function TokenStudio({
   const networkActionsDisabled = tokenNetworkActionsDisabled(health?.status);
   const networkWarning = tokenNetworkWarning(health?.status);
 
-  const ownedPortfolio = portfolioHook.portfolio.filter((p) =>
-    p.tokenAccounts.some((acc) => acc.state?.owner === account?.address)
-  );
+  const ownedPortfolio = portfolioHook.portfolio;
   const savedRecords = portfolioHook.records.filter(
-    (record) => !record.walletAddress || record.walletAddress === account?.address,
+    (record) => record.walletAddress === account?.address,
   );
 
   // Handle default selection
@@ -73,7 +71,17 @@ export default function TokenStudio({
 
 
   function handleTokenCreated(result: CreateTokenResult) {
-    portfolioHook.addKnownToken(result.mintAddress, result.tokenAccountAddress, result.name);
+    portfolioHook.addKnownToken(
+      result.mintAddress,
+      result.tokenAccountAddress,
+      result.name,
+      {
+        creatorAddress: result.mint.creator,
+        mintAuthorityAddress: result.mint.mintAuthority,
+        ticker: result.ticker,
+        decimals: result.decimals,
+      },
+    );
     setSelectedTokenMint(result.mintAddress);
     setActiveTab("send");
   }

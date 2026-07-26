@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  discoverControlledTokensOnAlphaNet,
   fetchTokenPortfolioOnAlphaNet,
+  isCreatedTokenControlledByWallet,
   type TokenPortfolioItem,
 } from "./thru-token";
 import {
+  createdTokensForWallet,
   LatestRequestTracker,
   loadKnownTokens,
+  mergeCreatedTokenRecords,
   saveKnownTokens,
   upsertKnownToken,
   type KnownTokenRecord,
@@ -21,6 +25,27 @@ interface UseTokenPortfolioOptions {
   networkStatus?: NetworkStatus;
 }
 
+const discoveryInFlight = new Map<
+  string,
+  Promise<KnownTokenRecord[]>
+>();
+
+function discoverCreatedTokensOnce(
+  walletAddress: string,
+): Promise<KnownTokenRecord[]> {
+  const existing = discoveryInFlight.get(walletAddress);
+  if (existing) return existing;
+  const pending = discoverControlledTokensOnAlphaNet(walletAddress).finally(
+    () => {
+      if (discoveryInFlight.get(walletAddress) === pending) {
+        discoveryInFlight.delete(walletAddress);
+      }
+    },
+  );
+  discoveryInFlight.set(walletAddress, pending);
+  return pending;
+}
+
 export function useTokenPortfolio(
   account: ThruAccount | null,
   options: UseTokenPortfolioOptions = {},
@@ -32,30 +57,92 @@ export function useTokenPortfolio(
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
 
   const requestTrackerRef = useRef(new LatestRequestTracker());
+  const requestAbortRef = useRef<AbortController | null>(null);
   const networkReadAllowed = tokenNetworkReadAllowed(options.networkStatus);
 
   const refreshRecords = useCallback(async (next: KnownTokenRecord[]) => {
-    if (!networkReadAllowed) {
+    const walletAddress = account?.address;
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = null;
+    if (!walletAddress || !networkReadAllowed) {
       requestTrackerRef.current.invalidate();
+      setPortfolio([]);
       setRefreshing(false);
       setPortfolioError(null);
       return;
     }
 
     const request = requestTrackerRef.current.begin();
+    const controller = new AbortController();
+    requestAbortRef.current = controller;
     setRefreshing(true);
     setPortfolioError(null);
+    let recordsToRefresh = next;
+    let discoveryError: string | null = null;
     try {
-      const filtered = next.filter(r => !r.walletAddress || r.walletAddress === account?.address);
-      const nextPortfolio = await fetchTokenPortfolioOnAlphaNet(filtered);
+      try {
+        const discovered = await discoverCreatedTokensOnce(walletAddress);
+        if (
+          controller.signal.aborted ||
+          !requestTrackerRef.current.isCurrent(request)
+        ) {
+          return;
+        }
+        recordsToRefresh = mergeCreatedTokenRecords(
+          next,
+          discovered,
+          walletAddress,
+        );
+        saveKnownTokens(window.localStorage, recordsToRefresh);
+        setRecords(recordsToRefresh);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        discoveryError = safeTokenReadError(error);
+      }
+
+      const filtered = createdTokensForWallet(
+        recordsToRefresh,
+        walletAddress,
+      );
+      const nextPortfolio = await fetchTokenPortfolioOnAlphaNet(filtered, {
+        signal: controller.signal,
+      });
       if (!requestTrackerRef.current.isCurrent(request)) return;
-      setPortfolio(nextPortfolio);
+      const controlledPortfolio = nextPortfolio.filter((item) =>
+        isCreatedTokenControlledByWallet(item, walletAddress),
+      );
+      let enrichedRecords = recordsToRefresh;
+      for (const item of controlledPortfolio) {
+        if (!item.mint) continue;
+        enrichedRecords = upsertKnownToken(enrichedRecords, {
+          mintAddress: item.mintAddress,
+          walletAddress,
+          label: item.label,
+          creatorAddress: item.mint.creator,
+          mintAuthorityAddress: item.mint.mintAuthority,
+          ticker: item.mint.ticker,
+          decimals: item.mint.decimals,
+        });
+      }
+      saveKnownTokens(window.localStorage, enrichedRecords);
+      setRecords(enrichedRecords);
+      setPortfolio(controlledPortfolio);
+      setPortfolioError(
+        discoveryError ??
+          (nextPortfolio.some((item) => item.error)
+            ? safeTokenReadError(new Error("Token state read failed."))
+            : null),
+      );
     } catch (error) {
       if (!requestTrackerRef.current.isCurrent(request)) return;
+      if (controller.signal.aborted) return;
       setPortfolioError(safeTokenReadError(error));
     } finally {
       if (requestTrackerRef.current.isCurrent(request)) {
         setRefreshing(false);
+      }
+      if (requestAbortRef.current === controller) {
+        requestAbortRef.current = null;
       }
     }
   }, [account?.address, networkReadAllowed]);
@@ -76,7 +163,10 @@ export function useTokenPortfolio(
     if (networkReadAllowed) {
       void refreshRecords(loaded);
     } else {
+      requestAbortRef.current?.abort();
+      requestAbortRef.current = null;
       requestTrackerRef.current.invalidate();
+      setPortfolio([]);
       setRefreshing(false);
       setPortfolioError(null);
     }
@@ -85,33 +175,50 @@ export function useTokenPortfolio(
   useEffect(() => {
     const tracker = requestTrackerRef.current;
     return () => {
+      requestAbortRef.current?.abort();
+      requestAbortRef.current = null;
       tracker.invalidate();
     };
   }, []);
 
-  const addKnownToken = useCallback((mintAddress: string, tokenAccountAddress: string, label: string) => {
+  const addKnownToken = useCallback((
+    mintAddress: string,
+    tokenAccountAddress: string,
+    label: string,
+    metadata: {
+      creatorAddress?: string;
+      mintAuthorityAddress?: string;
+      ticker?: string;
+      decimals?: number;
+    } = {},
+  ) => {
     const next = upsertKnownToken(records, {
       mintAddress,
       tokenAccountAddress,
       label,
       walletAddress: account?.address,
+      ...metadata,
     });
     persistAndRefresh(next);
   }, [records, account?.address, persistAndRefresh]);
 
   const removeKnownToken = useCallback((mintAddress: string) => {
-    const next = records.filter(r => r.mintAddress !== mintAddress);
+    const next = records.filter(
+      (record) =>
+        record.mintAddress !== mintAddress ||
+        record.walletAddress !== account?.address,
+    );
     persistAndRefresh(next);
-  }, [records, persistAndRefresh]);
+  }, [records, account?.address, persistAndRefresh]);
 
   const clearExternalAssets = useCallback((activeWalletAddress?: string) => {
     const externalMints = new Set(portfolio.filter(item => {
       if (item.walletAddress && activeWalletAddress && item.walletAddress !== activeWalletAddress) {
         return true;
       }
-      const hasActiveAccount = activeWalletAddress && item.tokenAccounts.some(acc => acc.state?.owner === activeWalletAddress);
+      const isCreator = activeWalletAddress && item.mint?.creator === activeWalletAddress;
       const isMintAuthority = activeWalletAddress && item.mint?.mintAuthority === activeWalletAddress;
-      return !hasActiveAccount && !isMintAuthority;
+      return !isCreator && !isMintAuthority;
     }).map(item => item.mintAddress));
     
     const next = records.filter(r => !externalMints.has(r.mintAddress));

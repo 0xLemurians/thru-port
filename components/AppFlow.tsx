@@ -21,9 +21,13 @@ import {
 } from "@/lib/wallet/persistent-wallet";
 import {
   WalletBackupError,
-  decryptEncryptedWalletBackup,
+  decryptEncryptedWalletBackupContents,
   readEncryptedBackupFile,
 } from "@/lib/wallet/wallet-backup";
+import {
+  restoreCreatedTokenCatalog,
+  type KnownTokenRecord,
+} from "@/lib/token/portfolio";
 import { withdrawFromFaucet, FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
 import {
   SAFE_FAUCET_ERROR_MESSAGE,
@@ -253,11 +257,26 @@ export default function AppFlow() {
     setPersistenceWarning(null);
     let serialized = "";
     let candidate: ThruAccount | null = null;
+    let restoredCreatedTokens: KnownTokenRecord[] = [];
     try {
       serialized = await readEncryptedBackupFile(file);
-      candidate = await decryptEncryptedWalletBackup(serialized, password);
+      const restored = await decryptEncryptedWalletBackupContents(
+        serialized,
+        password,
+      );
+      candidate = restored.account;
+      restoredCreatedTokens = restored.createdTokens;
       const persisted = await saveAndVerifyPersistedWallet(candidate);
       persisted.mnemonic = undefined;
+      try {
+        restoreCreatedTokenCatalog(
+          window.localStorage,
+          persisted.address,
+          restoredCreatedTokens,
+        );
+      } catch {
+        // Public catalog restoration must not invalidate a verified wallet.
+      }
       setShowOneTimePrivateKeyBackup(
         shouldShowOneTimePrivateKeyBackup("encrypted-backup-import"),
       );
@@ -277,6 +296,7 @@ export default function AppFlow() {
     } finally {
       password = "";
       serialized = "";
+      restoredCreatedTokens = [];
       candidate?.privateKey.fill(0);
       if (candidate) candidate.mnemonic = undefined;
       walletOperationRef.current = false;

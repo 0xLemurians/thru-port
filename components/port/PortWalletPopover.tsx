@@ -5,7 +5,12 @@ import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
 import { formatRawAmount } from "@thru/programs/token";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { decimalAmountToRaw } from "@/lib/token/validation";
-import type { TokenPortfolioItem, TransferTokenResult } from "@/lib/token/thru-token";
+import {
+  isCreatedTokenControlledByWallet,
+  type TokenPortfolioItem,
+  type TransferTokenResult,
+} from "@/lib/token/thru-token";
+import { tokenDisplayLabels } from "@/lib/token/portfolio";
 import WalletBackupDialog from "./WalletBackupDialog";
 
 interface PortWalletPopoverProps {
@@ -49,13 +54,15 @@ export default function PortWalletPopover({
     }
   };
 
-  const portfolioHook = useTokenPortfolio(account);
+  const portfolioHook = useTokenPortfolio(account, {
+    networkStatus: health.status,
+  });
   const isLoading = !portfolioHook.storageReady || portfolioHook.refreshing;
 
-  // Only owned tokens
+  // Only tokens created by or currently controlled by this wallet.
   const ownedPortfolio = useMemo(() => {
-    return portfolioHook.portfolio.filter((p) =>
-      p.tokenAccounts.some((acc) => acc.state?.owner === account.address)
+    return portfolioHook.portfolio.filter((item) =>
+      isCreatedTokenControlledByWallet(item, account.address),
     );
   }, [portfolioHook.portfolio, account.address]);
 
@@ -170,7 +177,7 @@ export default function PortWalletPopover({
         )}
 
         {!isLoading && ownedPortfolio.length === 0 && (
-          <div style={{ fontSize: "13px", color: "var(--text-dim)" }}>No tokens owned.</div>
+          <div style={{ fontSize: "13px", color: "var(--text-dim)" }}>No created tokens.</div>
         )}
 
         {isLoading && ownedPortfolio.length > 0 && (
@@ -181,6 +188,7 @@ export default function PortWalletPopover({
           const acc = item.tokenAccounts.find(a => a.state?.owner === account.address);
           const bal = acc?.state ? formatRawAmount(acc.state.amount, item.mint?.decimals ?? 0) : "0";
           const ticker = item.mint?.ticker ?? "TOKEN";
+          const labels = tokenDisplayLabels(item.label, item.mint?.ticker);
 
           return (
             <button
@@ -205,7 +213,16 @@ export default function PortWalletPopover({
               }}
               disabled={busy}
             >
-              <span style={{ fontWeight: 500, fontSize: "14px" }}>{ticker}</span>
+              <span>
+                <span style={{ display: "block", fontWeight: 500, fontSize: "14px" }}>
+                  {labels.primary}
+                </span>
+                {labels.secondary && (
+                  <span className="mono" style={{ display: "block", fontSize: "11px", color: "var(--text-dim)" }}>
+                    {labels.secondary}
+                  </span>
+                )}
+              </span>
               <span style={{ fontSize: "14px" }} className="mono">{bal} {ticker}</span>
             </button>
           );
@@ -368,11 +385,12 @@ function PopoverSend({
             {portfolio.length === 0 && <option value="">No tokens</option>}
             {portfolio.map(p => {
               const ticker = p.mint?.ticker ?? "TOKEN";
+              const labels = tokenDisplayLabels(p.label, p.mint?.ticker);
               const acc = p.tokenAccounts.find(a => a.state?.owner === account.address);
               const bal = acc?.state ? formatRawAmount(acc.state.amount, p.mint?.decimals ?? 0) : "0";
               return (
                 <option key={p.mintAddress} value={p.mintAddress}>
-                  {ticker} — {bal} {ticker}
+                  {labels.primary}{labels.secondary ? ` (${labels.secondary})` : ""} — {bal} {ticker}
                 </option>
               );
             })}
@@ -481,13 +499,19 @@ function PopoverReceive({
           <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
             {portfolio.map(p => {
               const ticker = p.mint?.ticker ?? "TOKEN";
+              const labels = tokenDisplayLabels(p.label, p.mint?.ticker);
               const acc = p.tokenAccounts.find(a => a.state?.owner === account.address);
               if (!acc) return null;
               const bal = acc.state ? formatRawAmount(acc.state.amount, p.mint?.decimals ?? 0) : "0";
 
               return (
                 <div key={p.mintAddress} style={{ backgroundColor: "var(--bg)", padding: "8px", borderRadius: "4px" }}>
-                  <div style={{ fontWeight: 500 }}>{ticker}</div>
+                  <div style={{ fontWeight: 500 }}>{labels.primary}</div>
+                  {labels.secondary && (
+                    <div className="mono" style={{ fontSize: "11px", color: "var(--text-dim)" }}>
+                      {labels.secondary}
+                    </div>
+                  )}
                   <div style={{ fontSize: "12px", color: "var(--text-dim)" }}>Balance: {bal} {ticker}</div>
                   <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "4px" }}>Token account: {acc.address.slice(0,8)}...</div>
                   <button

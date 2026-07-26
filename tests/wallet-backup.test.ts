@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { Pubkey } from "@thru/sdk";
 import { createNewAccount, bytesToHex } from "../lib/wallet/thru-wallet";
 import {
   BACKUP_IV_BYTES,
@@ -20,6 +21,7 @@ import {
   createEncryptedWalletBackupFile,
   createWalletBackupFilename,
   decryptEncryptedWalletBackup,
+  decryptEncryptedWalletBackupContents,
   parseEncryptedWalletBackup,
   validateBackupExportRequirements,
   validateBackupPassword,
@@ -152,6 +154,76 @@ function mutateBase64(value: string): string {
   return Buffer.from(bytes).toString("base64");
 }
 
+async function rewriteEncryptedPayload(
+  serialized: string,
+  password: string,
+  mutate: (payload: Record<string, unknown>) => void,
+): Promise<string> {
+  const backup = cloneBackup(serialized);
+  const passwordBytes = new TextEncoder().encode(password);
+  const salt = Uint8Array.from(Buffer.from(backup.kdf.salt, "base64"));
+  const iv = Uint8Array.from(Buffer.from(backup.cipher.iv, "base64"));
+  const ciphertext = Uint8Array.from(
+    Buffer.from(backup.cipher.ciphertext, "base64"),
+  );
+  try {
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw",
+      passwordBytes,
+      "PBKDF2",
+      false,
+      ["deriveKey"],
+    );
+    const key = await crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt,
+        iterations: backup.kdf.iterations,
+      },
+      keyMaterial,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    );
+    const plaintext = new Uint8Array(
+      await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv, tagLength: 128 },
+        key,
+        ciphertext,
+      ),
+    );
+    try {
+      const payload = JSON.parse(
+        new TextDecoder().decode(plaintext),
+      ) as Record<string, unknown>;
+      mutate(payload);
+      const rewritten = new TextEncoder().encode(JSON.stringify(payload));
+      try {
+        const encrypted = new Uint8Array(
+          await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv, tagLength: 128 },
+            key,
+            rewritten,
+          ),
+        );
+        backup.cipher.ciphertext = Buffer.from(encrypted).toString("base64");
+        encrypted.fill(0);
+      } finally {
+        rewritten.fill(0);
+      }
+    } finally {
+      plaintext.fill(0);
+    }
+    return JSON.stringify(backup);
+  } finally {
+    passwordBytes.fill(0);
+    salt.fill(0);
+    iv.fill(0);
+    ciphertext.fill(0);
+  }
+}
+
 test("encrypted export contains no plaintext mnemonic", async () => {
   const account = await accountPromise;
   const serialized = await backupPromise;
@@ -232,6 +304,116 @@ test("correct password reconstructs the exact wallet", async () => {
   assert.equal(restored.mnemonic, undefined);
   restored.privateKey.fill(0);
   restored.mnemonic = undefined;
+});
+
+test("encrypted payload restores bounded created-token metadata and local names", async () => {
+  const account = await accountPromise;
+  const mintAddress = Pubkey.from(new Uint8Array(32).fill(71)).toThruFmt();
+  const tokenAccountAddress = Pubkey.from(
+    new Uint8Array(32).fill(72),
+  ).toThruFmt();
+  const serialized = await createEncryptedWalletBackupFile(
+    account,
+    BACKUP_PASSWORD,
+    {
+      randomBytes: deterministicRandom(81),
+      createdTokens: [
+        {
+          mintAddress,
+          walletAddress: account.address,
+          creatorAddress: account.address,
+          mintAuthorityAddress: account.address,
+          label: "Alper",
+          ticker: "ALP",
+          decimals: 6,
+          tokenAccountAddresses: [tokenAccountAddress],
+        },
+      ],
+    },
+  );
+  assert.doesNotMatch(serialized, /createdTokens|Alper|tokenAccountAddresses/);
+
+  const restored = await decryptEncryptedWalletBackupContents(
+    serialized,
+    BACKUP_PASSWORD,
+  );
+  assert.equal(restored.createdTokens.length, 1);
+  assert.deepEqual(restored.createdTokens[0], {
+    mintAddress,
+    walletAddress: account.address,
+    creatorAddress: account.address,
+    mintAuthorityAddress: account.address,
+    label: "Alper",
+    ticker: "ALP",
+    decimals: 6,
+    tokenAccountAddresses: [tokenAccountAddress],
+  });
+  restored.account.privateKey.fill(0);
+});
+
+test("older encrypted payloads without token metadata restore an empty catalog", async () => {
+  const restored = await decryptEncryptedWalletBackupContents(
+    await backupPromise,
+    BACKUP_PASSWORD,
+  );
+  assert.deepEqual(restored.createdTokens, []);
+  restored.account.privateKey.fill(0);
+});
+
+test("malformed, duplicate, and foreign-wallet backup token records are safely normalized", async () => {
+  const account = await accountPromise;
+  const mintAddress = Pubkey.from(new Uint8Array(32).fill(73)).toThruFmt();
+  const firstAccount = Pubkey.from(new Uint8Array(32).fill(74)).toThruFmt();
+  const secondAccount = Pubkey.from(new Uint8Array(32).fill(75)).toThruFmt();
+  const foreignWallet = Pubkey.from(new Uint8Array(32).fill(76)).toThruFmt();
+  const rewritten = await rewriteEncryptedPayload(
+    await backupPromise,
+    BACKUP_PASSWORD,
+    (payload) => {
+      payload.createdTokens = [
+        {
+          mintAddress,
+          walletAddress: account.address,
+          label: "Alper",
+          ticker: "ALP",
+          decimals: 6,
+          tokenAccountAddresses: [firstAccount],
+        },
+        {
+          mintAddress,
+          walletAddress: account.address,
+          label: "Replacement",
+          ticker: "ALP",
+          decimals: 6,
+          tokenAccountAddresses: [secondAccount],
+        },
+        {
+          mintAddress: "not-an-address",
+          walletAddress: account.address,
+          tokenAccountAddresses: [],
+        },
+        {
+          mintAddress: Pubkey.from(new Uint8Array(32).fill(77)).toThruFmt(),
+          walletAddress: foreignWallet,
+          label: "Foreign",
+          ticker: "FOR",
+          decimals: 6,
+          tokenAccountAddresses: [],
+        },
+      ];
+    },
+  );
+  const restored = await decryptEncryptedWalletBackupContents(
+    rewritten,
+    BACKUP_PASSWORD,
+  );
+  assert.equal(restored.createdTokens.length, 1);
+  assert.equal(restored.createdTokens[0].label, "Alper");
+  assert.deepEqual(restored.createdTokens[0].tokenAccountAddresses, [
+    firstAccount,
+    secondAccount,
+  ]);
+  restored.account.privateKey.fill(0);
 });
 
 test("wrong password fails with a safe generic authentication error", async () => {
@@ -552,7 +734,11 @@ test("both active backup buttons open the authenticated backup dialog", () => {
   assert.match(dialog, /type="password"/);
   assert.match(dialog, /Confirm backup password/);
   assert.match(dialog, /checked=\{acknowledged\}/);
-  assert.match(dialog, /downloadEncryptedWalletBackup\(account, password\)/);
+  assert.match(
+    dialog,
+    /downloadEncryptedWalletBackup\(account, password, \{\s*createdTokens,/,
+  );
+  assert.match(dialog, /loadCreatedTokensForWallet/);
   assert.match(dialog, /contains your private key in plain text/);
   assert.match(dialog, /does not protect the visible plaintext privateKey field/);
   assert.match(

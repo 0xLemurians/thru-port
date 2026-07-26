@@ -2,6 +2,7 @@ import { useState } from "react";
 import { formatRawAmount } from "@thru/programs/token";
 import { explorerAddressUrl } from "@/lib/wallet/thru-wallet";
 import type { TokenPortfolioItem } from "@/lib/token/thru-token";
+import { tokenDisplayLabels } from "@/lib/token/portfolio";
 
 export default function PortfolioCard({
   item,
@@ -23,12 +24,17 @@ export default function PortfolioCard({
     (sum, acc) => sum + (acc.state?.amount ?? 0n),
     0n,
   );
+  const displayLabels = tokenDisplayLabels(
+    item.label,
+    item.mint?.ticker,
+    "Known token",
+  );
 
   return (
     <article className="portfolio-card">
       <div className="portfolio-card-header">
         <div>
-          <h3>{item.label || item.mint?.ticker || "Known token"}</h3>
+          <h3>{displayLabels.primary}</h3>
           <code className="mono">{shortAddress(item.mintAddress)}</code>
         </div>
         <div className="portfolio-card-actions">
@@ -55,10 +61,12 @@ export default function PortfolioCard({
         <p className="error token-error">{item.error}</p>
       ) : item.mint ? (
         <dl className="portfolio-details">
-          <div>
-            <dt>Ticker</dt>
-            <dd className="mono">{item.mint.ticker}</dd>
-          </div>
+          {displayLabels.secondary && (
+            <div>
+              <dt>Ticker</dt>
+              <dd className="mono">{item.mint.ticker}</dd>
+            </div>
+          )}
           <div>
             <dt>Supply</dt>
             <dd>
