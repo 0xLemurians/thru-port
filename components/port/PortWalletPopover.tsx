@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
-import { downloadBackupFile } from "@/lib/wallet/thru-wallet";
 import type { AlphaNetHealth } from "./useAlphaNetHealth";
 import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
 import { formatRawAmount } from "@thru/programs/token";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { decimalAmountToRaw } from "@/lib/token/validation";
 import type { TokenPortfolioItem, TransferTokenResult } from "@/lib/token/thru-token";
+import WalletBackupDialog from "./WalletBackupDialog";
 
 interface PortWalletPopoverProps {
   account: ThruAccount;
@@ -25,11 +25,13 @@ export default function PortWalletPopover({
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [backupOpen, setBackupOpen] = useState(false);
 
   useEffect(() => {
     setDisconnectConfirm(false);
     setRemoveError(null);
     setRemoving(false);
+    setBackupOpen(false);
   }, [account?.address]);
 
   const handleConfirmRemoval = async () => {
@@ -38,8 +40,10 @@ export default function PortWalletPopover({
     setRemoveError(null);
     try {
       await onForgetAccount();
-    } catch (err) {
-      setRemoveError(err instanceof Error ? err.message : "Failed to remove wallet from storage.");
+    } catch {
+      setRemoveError(
+        "Unable to remove the wallet from this device. Try again.",
+      );
     } finally {
       setRemoving(false);
     }
@@ -212,7 +216,7 @@ export default function PortWalletPopover({
             type="button"
             className="pc-btn-secondary"
             style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
-            onClick={() => downloadBackupFile(account)}
+            onClick={() => setBackupOpen(true)}
           >
             Download Backup
           </button>
@@ -260,6 +264,12 @@ export default function PortWalletPopover({
           </div>
         )}
       </div>
+      {backupOpen && (
+        <WalletBackupDialog
+          account={account}
+          onClose={() => setBackupOpen(false)}
+        />
+      )}
     </div>
   );
 }

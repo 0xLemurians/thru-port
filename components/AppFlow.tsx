@@ -11,21 +11,36 @@ import {
   isAccountNotFoundError,
 } from "@/lib/wallet/thru-wallet";
 import {
-  savePersistedWallet,
   restorePersistedWallet,
   removePersistedWallet,
+  saveAndVerifyPersistedWallet,
+  WALLET_REMOVAL_ERROR,
+  WALLET_SAVE_ERROR,
+  WalletVaultError,
 } from "@/lib/wallet/persistent-wallet";
+import {
+  WalletBackupError,
+  decryptEncryptedWalletBackup,
+  readEncryptedBackupFile,
+} from "@/lib/wallet/wallet-backup";
 import { withdrawFromFaucet, FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
+import { SAFE_FAUCET_ERROR_MESSAGE } from "@/lib/wallet/faucet-safety";
 import NameStudio from "./NameStudio";
 import TokenStudio from "./TokenStudio";
 import type { WorkspaceStage } from "./port/PortHeader";
 import PortShell from "./port/PortShell";
 import PortDashboard from "./port/PortDashboard";
+import OneTimePrivateKeyBackup from "./port/OneTimePrivateKeyBackup";
 import { useAlphaNetHealth } from "./port/useAlphaNetHealth";
+import { shouldShowOneTimePrivateKeyBackup } from "@/lib/wallet/one-time-private-key-backup";
 
 export default function AppFlow() {
   const [stage, setStage] = useState<WorkspaceStage>("account");
   const [account, setAccount] = useState<ThruAccount | null>(null);
+  const [
+    showOneTimePrivateKeyBackup,
+    setShowOneTimePrivateKeyBackup,
+  ] = useState(false);
 
   // Wallet logic moved up
   const [balance, setBalance] = useState<bigint | null>(null);
@@ -33,7 +48,9 @@ export default function AppFlow() {
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
 
-  const [restoreStatus, setRestoreStatus] = useState<"RESTORING" | "WALLET_READY" | "NO_SAVED_WALLET">("RESTORING");
+  const [restoreStatus, setRestoreStatus] = useState<
+    "RESTORING" | "WALLET_READY" | "NO_SAVED_WALLET" | "VAULT_ERROR"
+  >("RESTORING");
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
 
   const [faucetState, setFaucetState] = useState<"idle" | "requesting" | "success" | "error">("idle");
@@ -41,6 +58,8 @@ export default function AppFlow() {
   const [retryInfo, setRetryInfo] = useState<string | null>(null);
   const [lastSignature, setLastSignature] = useState<string | null>(null);
   const faucetControllerRef = useRef<AbortController | null>(null);
+  const walletOperationRef = useRef(false);
+  const removalPromiseRef = useRef<Promise<void> | null>(null);
 
   const health = useAlphaNetHealth();
 
@@ -78,18 +97,29 @@ export default function AppFlow() {
     let active = true;
     restorePersistedWallet()
       .then((restored) => {
-        if (!active) return;
+        if (!active) {
+          restored?.privateKey.fill(0);
+          if (restored) restored.mnemonic = undefined;
+          return;
+        }
         if (restored) {
+          restored.mnemonic = undefined;
+          setShowOneTimePrivateKeyBackup(
+            shouldShowOneTimePrivateKeyBackup("restored"),
+          );
           setAccount(restored);
           setRestoreStatus("WALLET_READY");
         } else {
+          setShowOneTimePrivateKeyBackup(false);
           setRestoreStatus("NO_SAVED_WALLET");
         }
       })
-      .catch((err) => {
+      .catch(() => {
         if (!active) return;
-        setRestoreStatus("NO_SAVED_WALLET");
-        setWalletError(err instanceof Error ? err.message : "Could not restore saved wallet.");
+        setShowOneTimePrivateKeyBackup(false);
+        setAccount(null);
+        setRestoreStatus("VAULT_ERROR");
+        setWalletError(null);
       });
     return () => {
       active = false;
@@ -109,63 +139,161 @@ export default function AppFlow() {
     }
   }, [account, refreshBalance, health.status]);
 
-  async function handleCreateWallet() {
+  async function handleCreateWallet(): Promise<boolean> {
+    if (
+      walletOperationRef.current ||
+      restoreStatus !== "NO_SAVED_WALLET" ||
+      account
+    ) {
+      return false;
+    }
+    walletOperationRef.current = true;
     setWalletBusy(true);
     setWalletError(null);
     setPersistenceWarning(null);
+    let candidate: ThruAccount | null = null;
     try {
-      const acc = await createNewAccount(true);
-      setAccount(acc);
+      candidate = await createNewAccount(true);
+      const persisted = await saveAndVerifyPersistedWallet(candidate);
+      persisted.mnemonic = undefined;
+      setShowOneTimePrivateKeyBackup(
+        shouldShowOneTimePrivateKeyBackup("created"),
+      );
+      setAccount(persisted);
       setRestoreStatus("WALLET_READY");
-      try {
-        await savePersistedWallet(acc);
-      } catch {
-        setPersistenceWarning("Wallet created, but it could not be saved on this device. Keep your backup file safe.");
-      }
+      return true;
     } catch (err) {
-      setWalletError(err instanceof Error ? err.message : "Couldn't create the account.");
+      if (err instanceof WalletVaultError) {
+        setRestoreStatus("VAULT_ERROR");
+        setWalletError(WALLET_SAVE_ERROR);
+      } else {
+        setWalletError("Couldn't create the account securely.");
+      }
+      return false;
     } finally {
+      candidate?.privateKey.fill(0);
+      if (candidate) candidate.mnemonic = undefined;
+      walletOperationRef.current = false;
       setWalletBusy(false);
     }
   }
 
-  async function handleImportWallet(kind: "mnemonic" | "hex", value: string) {
+  async function handleImportWallet(
+    kind: "mnemonic" | "hex",
+    value: string,
+  ): Promise<boolean> {
+    if (
+      walletOperationRef.current ||
+      restoreStatus !== "NO_SAVED_WALLET" ||
+      account
+    ) {
+      value = "";
+      return false;
+    }
+    walletOperationRef.current = true;
     setWalletBusy(true);
     setWalletError(null);
     setPersistenceWarning(null);
     let importedPrivateKey: Uint8Array | null = null;
+    let candidate: ThruAccount | null = null;
     try {
-      let acc: ThruAccount;
       if (kind === "mnemonic") {
         const normalizedMnemonic = value.trim().replace(/\s+/g, " ");
-        acc = await accountFromMnemonic(normalizedMnemonic);
+        candidate = await accountFromMnemonic(normalizedMnemonic);
       } else {
         importedPrivateKey = hexToBytes(value);
-        acc = await accountFromPrivateKey(importedPrivateKey);
+        candidate = await accountFromPrivateKey(importedPrivateKey);
       }
-      setAccount(acc);
-      setRestoreStatus("WALLET_READY");
-      try {
-        await savePersistedWallet(acc);
-      } catch {
-        setPersistenceWarning("Wallet imported, but it could not be saved on this device. Keep your backup file safe.");
-      }
-    } catch (err) {
-      setWalletError(
-        err instanceof Error
-          ? err.message
-          : "Couldn't import that account. Check your recovery phrase or private key.",
+      const persisted = await saveAndVerifyPersistedWallet(candidate);
+      persisted.mnemonic = undefined;
+      setShowOneTimePrivateKeyBackup(
+        shouldShowOneTimePrivateKeyBackup(
+          kind === "mnemonic"
+            ? "mnemonic-import"
+            : "private-key-import",
+        ),
       );
+      setAccount(persisted);
+      setRestoreStatus("WALLET_READY");
+      return true;
+    } catch (err) {
+      if (err instanceof WalletVaultError) {
+        setRestoreStatus("VAULT_ERROR");
+        setWalletError(WALLET_SAVE_ERROR);
+      } else {
+        setWalletError(
+          "Couldn't import that account. Check your recovery phrase or private key.",
+        );
+      }
+      return false;
     } finally {
+      value = "";
       importedPrivateKey?.fill(0);
+      candidate?.privateKey.fill(0);
+      if (candidate) candidate.mnemonic = undefined;
+      walletOperationRef.current = false;
+      setWalletBusy(false);
+    }
+  }
+
+  async function handleImportBackup(
+    file: File,
+    password: string,
+  ): Promise<boolean> {
+    if (
+      walletOperationRef.current ||
+      restoreStatus !== "NO_SAVED_WALLET" ||
+      account
+    ) {
+      password = "";
+      return false;
+    }
+    walletOperationRef.current = true;
+    setWalletBusy(true);
+    setWalletError(null);
+    setPersistenceWarning(null);
+    let serialized = "";
+    let candidate: ThruAccount | null = null;
+    try {
+      serialized = await readEncryptedBackupFile(file);
+      candidate = await decryptEncryptedWalletBackup(serialized, password);
+      const persisted = await saveAndVerifyPersistedWallet(candidate);
+      persisted.mnemonic = undefined;
+      setShowOneTimePrivateKeyBackup(
+        shouldShowOneTimePrivateKeyBackup("encrypted-backup-import"),
+      );
+      setAccount(persisted);
+      setRestoreStatus("WALLET_READY");
+      return true;
+    } catch (err) {
+      if (err instanceof WalletBackupError) {
+        setWalletError(err.message);
+      } else if (err instanceof WalletVaultError) {
+        setRestoreStatus("VAULT_ERROR");
+        setWalletError(WALLET_SAVE_ERROR);
+      } else {
+        setWalletError("Unable to import this encrypted wallet backup.");
+      }
+      return false;
+    } finally {
+      password = "";
+      serialized = "";
+      candidate?.privateKey.fill(0);
+      if (candidate) candidate.mnemonic = undefined;
+      walletOperationRef.current = false;
       setWalletBusy(false);
     }
   }
 
   async function handleFaucet() {
-    if (!account) return;
+    if (
+      !account ||
+      health.status !== "Online" ||
+      faucetControllerRef.current
+    ) {
+      return;
+    }
     const controller = new AbortController();
-    faucetControllerRef.current?.abort();
     faucetControllerRef.current = controller;
     setFaucetState("requesting");
     setFaucetError(null);
@@ -173,24 +301,17 @@ export default function AppFlow() {
     try {
       const result = await withdrawFromFaucet(account, FAUCET_WITHDRAW_LIMIT, {
         signal: controller.signal,
-        onRetry: ({ attempt, maxAttempts, delayMs }) => {
-          setRetryInfo(
-            attempt === 0
-              ? "Creating and confirming your account on-chain…"
-              : `AlphaNet seems busy — retrying (${attempt}/${maxAttempts}) in ${Math.round(delayMs / 1000)}s…`,
-          );
-        },
       });
       setRetryInfo(null);
       if (result.failureReason) {
         setFaucetState("error");
-        setFaucetError(result.failureReason);
+        setFaucetError(SAFE_FAUCET_ERROR_MESSAGE);
       } else {
         setFaucetState("success");
         setLastSignature(result.signature || null);
         await refreshBalance(account.address);
       }
-    } catch (err) {
+    } catch {
       setRetryInfo(null);
       if (controller.signal.aborted) {
         setFaucetState("idle");
@@ -198,9 +319,7 @@ export default function AppFlow() {
         return;
       }
       setFaucetState("error");
-      setFaucetError(
-          err instanceof Error ? err.message : "Faucet request failed. AlphaNet may be busy — try again in a moment.",
-      );
+      setFaucetError(SAFE_FAUCET_ERROR_MESSAGE);
     } finally {
       if (faucetControllerRef.current === controller) {
         faucetControllerRef.current = null;
@@ -213,14 +332,38 @@ export default function AppFlow() {
   }
 
   // Phase 2 disconnect
-  async function forgetAccount() {
-    await removePersistedWallet();
-    faucetControllerRef.current?.abort();
-    account?.privateKey.fill(0);
-    setAccount(null);
-    setRestoreStatus("NO_SAVED_WALLET");
-    setPersistenceWarning(null);
-    setStage("account");
+  function forgetAccount(): Promise<void> {
+    if (removalPromiseRef.current) return removalPromiseRef.current;
+    const activeAccount = account;
+    const removal = (async () => {
+      try {
+        await removePersistedWallet();
+      } catch {
+        throw new Error(WALLET_REMOVAL_ERROR);
+      }
+      faucetControllerRef.current?.abort();
+      activeAccount?.privateKey.fill(0);
+      if (activeAccount) activeAccount.mnemonic = undefined;
+      setShowOneTimePrivateKeyBackup(false);
+      setAccount(null);
+      setRestoreStatus("NO_SAVED_WALLET");
+      setWalletError(null);
+      setPersistenceWarning(null);
+      setStage("account");
+    })().finally(() => {
+      removalPromiseRef.current = null;
+    });
+    removalPromiseRef.current = removal;
+    return removal;
+  }
+
+  if (account && showOneTimePrivateKeyBackup) {
+    return (
+      <OneTimePrivateKeyBackup
+        account={account}
+        onContinue={() => setShowOneTimePrivateKeyBackup(false)}
+      />
+    );
   }
 
   return (
@@ -248,6 +391,7 @@ export default function AppFlow() {
           lastSignature={lastSignature}
           onCreateWallet={handleCreateWallet}
           onImportWallet={handleImportWallet}
+          onImportBackup={handleImportBackup}
           onRequestFaucet={handleFaucet}
           onCancelFaucet={cancelFaucet}
           onForgetAccount={forgetAccount}

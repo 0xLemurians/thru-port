@@ -1,55 +1,107 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import {
+  AlphaNetHealthProbeSequence,
+  isUsableAlphaNetHeightSnapshot,
+  probeAlphaNetHealth,
+  type NetworkStatus,
+} from "../lib/network/alphanet-health";
 
-test("AlphaNet Health Status Tests", async (t) => {
-  await t.test("useAlphaNetHealth provides Checking state initially", () => {
-    // In a real environment, useAlphaNetHealth would initialize with 'Checking'.
-    const initialState = "Checking";
-    assert.equal(initialState, "Checking");
-  });
+test("transport success without usable height state is Degraded, not Online", async () => {
+  assert.equal(await probeAlphaNetHealth(async () => ({})), "Degraded");
+});
 
-  await t.test("useAlphaNetHealth transitions to Online after successful RPC", () => {
-    // Simulated successful getBlockHeight
-    const nextState = "Online";
-    assert.equal(nextState, "Online");
-  });
+test("SDK-style empty height response is Degraded", async () => {
+  assert.equal(
+    await probeAlphaNetHealth(async () => ({
+      finalized: 0n,
+      locallyExecuted: 0n,
+      clusterExecuted: 0n,
+    })),
+    "Degraded",
+  );
+});
 
-  await t.test("useAlphaNetHealth transitions to Degraded after 1 failure", () => {
-    const nextState = "Degraded";
-    assert.equal(nextState, "Degraded");
-  });
+test("positive internally consistent SDK height state is Online", async () => {
+  const snapshot = {
+    finalized: 100n,
+    locallyExecuted: 102n,
+    clusterExecuted: 101n,
+  };
+  assert.equal(isUsableAlphaNetHeightSnapshot(snapshot), true);
+  assert.equal(await probeAlphaNetHealth(async () => snapshot), "Online");
+});
 
-  await t.test("useAlphaNetHealth transitions to Offline after 2 consecutive failures", () => {
-    const nextState = "Offline";
-    assert.equal(nextState, "Offline");
-  });
+test("partial or inconsistent height state is Degraded", async () => {
+  assert.equal(
+    await probeAlphaNetHealth(async () => ({
+      finalized: 100n,
+      locallyExecuted: 99n,
+      clusterExecuted: 101n,
+    })),
+    "Degraded",
+  );
+  assert.equal(
+    await probeAlphaNetHealth(async () => ({
+      finalized: 100n,
+      locallyExecuted: 102n,
+    })),
+    "Degraded",
+  );
+});
 
-  await t.test("useAlphaNetHealth transitions back to Online after success", () => {
-    const nextState = "Online";
-    assert.equal(nextState, "Online");
-  });
+test("RPC rejection is Offline", async () => {
+  assert.equal(
+    await probeAlphaNetHealth(async () => {
+      throw new Error("transport unavailable");
+    }),
+    "Offline",
+  );
+});
 
-  await t.test("Timeout prevents late responses from updating state (race condition fix)", () => {
-    // Tests that sequenceId guards against late promise resolution
-    assert.ok(true);
-  });
+test("RPC timeout is Offline", async () => {
+  assert.equal(
+    await probeAlphaNetHealth(
+      () => new Promise<never>(() => {}),
+      { timeoutMs: 5 },
+    ),
+    "Offline",
+  );
+});
 
-  await t.test("Header and Dashboard share the same health state source (AppFlow)", () => {
-    // Verifies architecture where useAlphaNetHealth is at the shell/flow level
-    assert.ok(true);
-  });
+test("a stale probe cannot overwrite a newer status", () => {
+  const sequence = new AlphaNetHealthProbeSequence();
+  const olderProbe = sequence.begin();
+  const newerProbe = sequence.begin();
+  let status: NetworkStatus = "Checking";
 
-  await t.test("Only one polling timer is created and no parallel RPC requests run", () => {
-    // Verifies checkInProgress ref guards against multiple requests
-    assert.ok(true);
-  });
+  if (sequence.isCurrent(newerProbe)) status = "Degraded";
+  if (sequence.isCurrent(olderProbe)) status = "Online";
 
-  await t.test("visibilitychange stops and restarts polling", () => {
-    // Verifies visibility change event listeners logic
-    assert.ok(true);
-  });
+  assert.equal(olderProbe.signal.aborted, true);
+  assert.equal(sequence.isCurrent(olderProbe), false);
+  assert.equal(sequence.isCurrent(newerProbe), true);
+  assert.equal(status, "Degraded");
+});
 
-  await t.test("Header ALPHANET is not rendered twice", () => {
-    assert.ok(true);
-  });
+test("visibility cancellation invalidates the active probe", () => {
+  const sequence = new AlphaNetHealthProbeSequence();
+  const activeProbe = sequence.begin();
+  sequence.cancel();
+  assert.equal(activeProbe.signal.aborted, true);
+  assert.equal(sequence.isCurrent(activeProbe), false);
+});
+
+test("AppFlow owns one centralized health result for all workspaces", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "components/AppFlow.tsx"),
+    "utf8",
+  );
+  assert.equal(source.match(/useAlphaNetHealth\(\)/g)?.length, 1);
+  assert.match(source, /<PortShell[\s\S]*health=\{health\}/);
+  assert.match(source, /<PortDashboard[\s\S]*health=\{health\}/);
+  assert.match(source, /<TokenStudio account=\{account\} health=\{health\}/);
+  assert.match(source, /<NameStudio[\s\S]*health=\{health\}/);
 });

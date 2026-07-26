@@ -5,16 +5,38 @@ import fs from "node:fs";
 import path from "node:path";
 import { createNewAccount } from "../lib/wallet/thru-wallet";
 import {
+  SAVED_WALLET_OPEN_ERROR,
+  WALLET_REMOVAL_ERROR,
+  WalletVaultError,
   savePersistedWallet,
+  saveAndVerifyPersistedWallet,
   restorePersistedWallet,
   removePersistedWallet,
 } from "../lib/wallet/persistent-wallet";
 
+interface MockIDBBehavior {
+  failOpen?: boolean;
+  failRead?: boolean;
+  failDelete?: boolean;
+  retainDeletedRecords?: boolean;
+}
+
 class MockObjectStore {
-  constructor(private store: Map<string, unknown>) {}
+  constructor(
+    private store: Map<string, unknown>,
+    private behavior: MockIDBBehavior,
+  ) {}
   get(key: string) {
-    const req = { onsuccess: null as any, onerror: null as any, result: this.store.get(key) };
-    setTimeout(() => req.onsuccess?.(), 0);
+    const req = {
+      onsuccess: null as any,
+      onerror: null as any,
+      result: this.store.get(key),
+      error: this.behavior.failRead ? new Error("mock read failure") : null,
+    };
+    setTimeout(() => {
+      if (this.behavior.failRead) req.onerror?.();
+      else req.onsuccess?.();
+    }, 0);
     return req;
   }
   put(value: unknown, key: string) {
@@ -24,9 +46,23 @@ class MockObjectStore {
     return req;
   }
   delete(key: string) {
-    this.store.delete(key);
-    const req = { onsuccess: null as any, onerror: null as any };
-    setTimeout(() => req.onsuccess?.(), 0);
+    if (
+      !this.behavior.failDelete &&
+      !this.behavior.retainDeletedRecords
+    ) {
+      this.store.delete(key);
+    }
+    const req = {
+      onsuccess: null as any,
+      onerror: null as any,
+      error: this.behavior.failDelete
+        ? new Error("mock delete failure")
+        : null,
+    };
+    setTimeout(() => {
+      if (this.behavior.failDelete) req.onerror?.();
+      else req.onsuccess?.();
+    }, 0);
     return req;
   }
 }
@@ -35,7 +71,10 @@ class MockDatabase {
   objectStoreNames = {
     contains: (name: string) => this.stores.has(name),
   };
-  constructor(public stores: Map<string, Map<string, unknown>>) {}
+  constructor(
+    public stores: Map<string, Map<string, unknown>>,
+    private behavior: MockIDBBehavior,
+  ) {}
   createObjectStore(name: string) {
     this.stores.set(name, new Map());
   }
@@ -43,13 +82,25 @@ class MockDatabase {
     const tx = {
       oncomplete: null as any,
       onerror: null as any,
-      error: null,
+      onabort: null as any,
+      error: null as Error | null,
       objectStore: (name: string) => {
         if (!this.stores.has(name)) this.stores.set(name, new Map());
-        return new MockObjectStore(this.stores.get(name)!);
+        return new MockObjectStore(this.stores.get(name)!, this.behavior);
       },
     };
-    setTimeout(() => tx.oncomplete?.(), 0);
+    setTimeout(() => {
+      if (
+        this.behavior.failDelete &&
+        Array.isArray(_storeNames) &&
+        _storeNames.includes("encryptedWallet")
+      ) {
+        tx.error = new Error("mock delete transaction failure");
+        tx.onerror?.();
+      } else {
+        tx.oncomplete?.();
+      }
+    }, 0);
     return tx as any;
   }
   close() {}
@@ -57,16 +108,21 @@ class MockDatabase {
 
 class MockIDBFactory {
   stores = new Map<string, Map<string, unknown>>();
+  constructor(public behavior: MockIDBBehavior = {}) {}
   open(_name: string, _version: number) {
-    const db = new MockDatabase(this.stores);
+    const db = new MockDatabase(this.stores, this.behavior);
     const req = {
       onupgradeneeded: null as any,
       onsuccess: null as any,
       onerror: null as any,
       result: db,
-      error: null,
+      error: this.behavior.failOpen ? new Error("mock open failure") : null,
     };
     setTimeout(() => {
+      if (this.behavior.failOpen) {
+        req.onerror?.();
+        return;
+      }
       req.onupgradeneeded?.();
       req.onsuccess?.();
     }, 0);
@@ -74,17 +130,39 @@ class MockIDBFactory {
   }
 }
 
-test("persistent-wallet returns null and handles missing storage gracefully", async () => {
-  const restored = await restorePersistedWallet({ idb: null });
-  assert.equal(restored, null);
-
+test("persistent-wallet distinguishes unavailable storage from a missing wallet", async () => {
+  await assert.rejects(
+    () => restorePersistedWallet({ idb: null }),
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_UNAVAILABLE" &&
+      error.message === SAVED_WALLET_OPEN_ERROR,
+  );
   const account = await createNewAccount(true);
   await assert.rejects(
     () => savePersistedWallet(account, { idb: null }),
-    /Secure client-side storage is not available/,
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_UNAVAILABLE",
   );
+  await assert.rejects(
+    () => removePersistedWallet({ idb: null }),
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_UNAVAILABLE" &&
+      error.message === WALLET_REMOVAL_ERROR,
+  );
+  account.privateKey.fill(0);
+  account.mnemonic = undefined;
 
-  await removePersistedWallet({ idb: null });
+  const emptyIDB = new MockIDBFactory() as any;
+  assert.equal(
+    await restorePersistedWallet({
+      idb: emptyIDB,
+      cryptoObj: globalThis.crypto,
+    }),
+    null,
+  );
 });
 
 test("persistent-wallet encrypts and saves account to IDB without raw secrets", async () => {
@@ -124,97 +202,146 @@ test("persistent-wallet restores exact account from IDB and wipes on remove", as
   assert.equal(afterRemove, null, "Account should be null after removePersistedWallet");
 });
 
-// Helper to simulate UI state logic of removal confirmation
-class RemovalConfirmationController {
-  confirming = false;
-  removing = false;
-  error: string | null = null;
-  account: any = { address: "thru1mock" };
-
-  onClickRemove() {
-    this.confirming = true;
-    this.error = null;
-  }
-
-  onClickCancel() {
-    this.confirming = false;
-    this.error = null;
-  }
-
-  async onClickConfirm(removeFn: () => Promise<void>) {
-    if (this.removing) return; // Prevent double click
-    this.removing = true;
-    this.error = null;
-    try {
-      await removeFn();
-      this.account = null;
-      this.confirming = false;
-    } catch (err: any) {
-      this.error = err.message || "Removal failed";
-    } finally {
-      this.removing = false;
-    }
-  }
-}
-
-test("removal confirmation UX workflow and storage guarantees", async () => {
+test("saveAndVerifyPersistedWallet returns the exact verified signing wallet", async () => {
   const mockIDB = new MockIDBFactory() as any;
   const account = await createNewAccount(true);
-  await savePersistedWallet(account, { idb: mockIDB, cryptoObj: globalThis.crypto });
-
-  const controller = new RemovalConfirmationController();
-  controller.account = account;
-
-  // 1. İlk Remove tıklaması confirmation görünümünü açar.
-  controller.onClickRemove();
-  assert.equal(controller.confirming, true, "Confirmation state should be active");
-
-  // 2. Confirmation zaman geçince kendiliğinden kapanmaz.
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal(controller.confirming, true, "Confirmation should not auto-reset over time");
-
-  // 3. Cancel storage’a dokunmaz.
-  controller.onClickCancel();
-  assert.equal(controller.confirming, false);
-  const restoredAfterCancel = await restorePersistedWallet({ idb: mockIDB, cryptoObj: globalThis.crypto });
-  assert.ok(restoredAfterCancel, "Storage should remain untouched after cancel");
-
-  // 7. Removal sürerken double-click engellenir.
-  controller.onClickRemove();
-  let removeCalls = 0;
-  let resolveRemove: () => void = () => {};
-  const slowRemoveFn = () => new Promise<void>((resolve) => {
-    removeCalls++;
-    resolveRemove = resolve;
+  const verified = await saveAndVerifyPersistedWallet(account, {
+    idb: mockIDB,
+    cryptoObj: globalThis.crypto,
   });
 
-  const p1 = controller.onClickConfirm(slowRemoveFn);
-  assert.equal(controller.removing, true);
-  const p2 = controller.onClickConfirm(slowRemoveFn); // Second click ignored
-  resolveRemove();
-  await p1;
-  await p2;
-  assert.equal(removeCalls, 1, "Should only execute removal once during double click");
+  assert.equal(verified.address, account.address);
+  assert.deepEqual(verified.publicKey, account.publicKey);
+  assert.deepEqual(verified.privateKey, account.privateKey);
+  assert.equal(verified.mnemonic, account.mnemonic);
+  verified.privateKey.fill(0);
+  verified.mnemonic = undefined;
+  account.privateKey.fill(0);
+  account.mnemonic = undefined;
+});
 
-  // 8. Removal hatasında wallet aktif kalır.
-  controller.account = account;
-  controller.onClickRemove();
-  const failingRemoveFn = async () => { throw new Error("Disk write error"); };
-  await controller.onClickConfirm(failingRemoveFn);
-  assert.ok(controller.account, "Wallet should remain active when removal throws error");
-  assert.equal(controller.error, "Disk write error", "Error message should be displayed");
+test("restore reports a typed vault-open failure without creating records", async () => {
+  const mockIDB = new MockIDBFactory({ failOpen: true }) as any;
+  await assert.rejects(
+    () =>
+      restorePersistedWallet({
+        idb: mockIDB,
+        cryptoObj: globalThis.crypto,
+      }),
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_OPEN_FAILED" &&
+      error.message === SAVED_WALLET_OPEN_ERROR,
+  );
+  assert.equal(mockIDB.stores.size, 0);
+});
 
-  // 4 & 5. Confirm encrypted wallet record’unu ve device CryptoKey'i siler.
-  // 6. Başarılı confirm active wallet state’ini temizler.
-  await savePersistedWallet(account, { idb: mockIDB, cryptoObj: globalThis.crypto });
+test("restore reports a typed vault-read failure rather than no wallet", async () => {
+  const mockIDB = new MockIDBFactory({ failRead: true }) as any;
+  await assert.rejects(
+    () =>
+      restorePersistedWallet({
+        idb: mockIDB,
+        cryptoObj: globalThis.crypto,
+      }),
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_READ_FAILED",
+  );
+});
+
+test("removal reports a typed vault-open failure", async () => {
+  const mockIDB = new MockIDBFactory({ failOpen: true }) as any;
+  await assert.rejects(
+    () => removePersistedWallet({ idb: mockIDB }),
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_OPEN_FAILED" &&
+      error.message === WALLET_REMOVAL_ERROR,
+  );
+});
+
+test("deletion failure preserves both wallet vault records", async () => {
+  const mockIDB = new MockIDBFactory() as any;
+  const account = await createNewAccount(true);
+  await savePersistedWallet(account, {
+    idb: mockIDB,
+    cryptoObj: globalThis.crypto,
+  });
+  mockIDB.behavior.failDelete = true;
+
+  await assert.rejects(
+    () => removePersistedWallet({ idb: mockIDB }),
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_DELETE_FAILED",
+  );
   assert.ok(mockIDB.stores.get("encryptedWallet")?.get("current"));
   assert.ok(mockIDB.stores.get("deviceKey")?.get("current"));
+  account.privateKey.fill(0);
+  account.mnemonic = undefined;
+});
 
-  controller.onClickRemove();
-  await controller.onClickConfirm(() => removePersistedWallet({ idb: mockIDB, cryptoObj: globalThis.crypto }));
-  assert.equal(controller.account, null, "Active wallet state should be cleared on success");
-  assert.equal(mockIDB.stores.get("encryptedWallet")?.get("current"), undefined, "Encrypted wallet record should be deleted");
-  assert.equal(mockIDB.stores.get("deviceKey")?.get("current"), undefined, "Device CryptoKey should be deleted");
+test("removal fails when deleted records cannot be verified absent", async () => {
+  const mockIDB = new MockIDBFactory() as any;
+  const account = await createNewAccount(true);
+  await savePersistedWallet(account, {
+    idb: mockIDB,
+    cryptoObj: globalThis.crypto,
+  });
+  mockIDB.behavior.retainDeletedRecords = true;
+
+  await assert.rejects(
+    () => removePersistedWallet({ idb: mockIDB }),
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_DELETE_VERIFICATION_FAILED",
+  );
+  assert.ok(mockIDB.stores.get("encryptedWallet")?.get("current"));
+  assert.ok(mockIDB.stores.get("deviceKey")?.get("current"));
+  account.privateKey.fill(0);
+  account.mnemonic = undefined;
+});
+
+test("corrupted vault data returns a typed failure without overwriting it", async () => {
+  const mockIDB = new MockIDBFactory() as any;
+  mockIDB.stores.set(
+    "encryptedWallet",
+    new Map([["current", { version: 99 }]]),
+  );
+  const original = mockIDB.stores.get("encryptedWallet")?.get("current");
+
+  await assert.rejects(
+    () =>
+      restorePersistedWallet({
+        idb: mockIDB,
+        cryptoObj: globalThis.crypto,
+      }),
+    (error: unknown) =>
+      error instanceof WalletVaultError &&
+      error.code === "VAULT_CORRUPTED",
+  );
+  assert.equal(
+    mockIDB.stores.get("encryptedWallet")?.get("current"),
+    original,
+  );
+});
+
+test("AppFlow clears the active wallet only after verified vault removal", () => {
+  const appFlowSource = fs.readFileSync(
+    path.join(process.cwd(), "components/AppFlow.tsx"),
+    "utf8",
+  );
+  const removalCall = appFlowSource.indexOf("await removePersistedWallet()");
+  const activeClear = appFlowSource.indexOf("setAccount(null)", removalCall);
+
+  assert.ok(removalCall >= 0, "production removal call is present");
+  assert.ok(
+    activeClear > removalCall,
+    "active wallet is cleared only after production removal resolves",
+  );
+  assert.match(appFlowSource, /removalPromiseRef\.current/);
+  assert.match(appFlowSource, /throw new Error\(WALLET_REMOVAL_ERROR\)/);
 });
 
 test("clean source check: bis_skin_checked and suppressHydrationWarning absent", () => {

@@ -119,6 +119,49 @@ export async function accountFromPrivateKey(
   return { address, publicKey, privateKey: privateKeyCopy };
 }
 
+function secureBytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index];
+  }
+  return difference === 0;
+}
+
+export async function assertAccountIdentity(
+  account: ThruAccount,
+): Promise<void> {
+  let reconstructed: ThruAccount | null = null;
+  let mnemonicAccount: ThruAccount | null = null;
+  try {
+    reconstructed = await accountFromPrivateKey(account.privateKey);
+    if (
+      reconstructed.address !== account.address ||
+      !secureBytesEqual(reconstructed.publicKey, account.publicKey)
+    ) {
+      throw new Error(
+        "Wallet key material does not match its public address.",
+      );
+    }
+    if (account.mnemonic) {
+      mnemonicAccount = await accountFromMnemonic(account.mnemonic);
+      if (
+        mnemonicAccount.address !== account.address ||
+        !secureBytesEqual(mnemonicAccount.publicKey, account.publicKey) ||
+        !secureBytesEqual(mnemonicAccount.privateKey, account.privateKey)
+      ) {
+        throw new Error(
+          "Wallet recovery material does not match its public address.",
+        );
+      }
+    }
+  } finally {
+    reconstructed?.privateKey.fill(0);
+    mnemonicAccount?.privateKey.fill(0);
+    if (mnemonicAccount) mnemonicAccount.mnemonic = undefined;
+  }
+}
+
 async function addressFromPublicKey(publicKey: Uint8Array): Promise<string> {
   const { encodeAddress } = await import("@thru/sdk/helpers");
   return encodeAddress(publicKey);
@@ -221,36 +264,6 @@ export async function ensureAccountExists(
 export async function getBalance(address: string): Promise<bigint> {
   const account = await thru.accounts.get(address);
   return account.meta?.balance ?? 0n;
-}
-
-/**
- * Private key + (varsa) mnemonic'i tek bir JSON yedek dosyası olarak
- * indirtir. Bu fonksiyon HİÇBİR AĞ İSTEĞİ YAPMAZ — sadece tarayıcının
- * yerel Blob/indirme mekanizmasını kullanır.
- */
-export function downloadBackupFile(account: ThruAccount): void {
-  const payload = {
-    warning:
-      "DO NOT SHARE THIS FILE WITH ANYONE. Anyone with access to this file " +
-      "has full control of your account. There is NO password reset.",
-    network: "thru-alphanet-testnet",
-    address: account.address,
-    privateKeyHex: bytesToHex(account.privateKey),
-    mnemonic: account.mnemonic ?? null,
-    createdAt: new Date().toISOString(),
-  };
-
-  const blob = new Blob([JSON.stringify(payload, null, 2)], {
-    type: "application/json",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `thru-alphanet-backup-${account.address.slice(0, 10)}.json`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
 }
 
 export function bytesToHex(bytes: Uint8Array): string {

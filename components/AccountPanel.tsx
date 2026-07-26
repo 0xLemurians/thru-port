@@ -6,17 +6,19 @@ import {
   createNewAccount,
   accountFromMnemonic,
   accountFromPrivateKey,
-  downloadBackupFile,
   getBalance,
   hexToBytes,
   explorerAddressUrl,
   isAccountNotFoundError,
 } from "@/lib/wallet/thru-wallet";
+import { clearSecretInputs } from "@/lib/wallet/wallet-backup";
 import {
   withdrawFromFaucet,
   FAUCET_WITHDRAW_LIMIT,
 } from "@/lib/wallet/faucet";
+import { SAFE_FAUCET_ERROR_MESSAGE } from "@/lib/wallet/faucet-safety";
 import Stepper from "./Stepper";
+import WalletBackupDialog from "./port/WalletBackupDialog";
 
 type Mode = "idle" | "create" | "import";
 type ImportKind = "mnemonic" | "hex";
@@ -37,19 +39,35 @@ export default function AccountPanel({
 }: AccountPanelProps) {
   const [mode, setMode] = useState<Mode>("idle");
   const [importKind, setImportKind] = useState<ImportKind>("mnemonic");
-  const [importValue, setImportValue] = useState("");
+  const [importReady, setImportReady] = useState(false);
+  const importSecretRef = useRef<HTMLTextAreaElement>(null);
   const [balance, setBalance] = useState<bigint | null>(null);
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [revealKey, setRevealKey] = useState(false);
   const [backedUp, setBackedUp] = useState(() => account !== null);
-  const [backupAcknowledged, setBackupAcknowledged] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [faucetState, setFaucetState] = useState<FaucetState>("idle");
   const [faucetError, setFaucetError] = useState<string | null>(null);
   const [lastSignature, setLastSignature] = useState<string | null>(null);
   const faucetControllerRef = useRef<AbortController | null>(null);
+
+  const clearImportSecret = useCallback(() => {
+    clearSecretInputs(importSecretRef.current);
+    setImportReady(false);
+  }, []);
+
+  const switchImportKind = (kind: ImportKind) => {
+    clearImportSecret();
+    setImportKind(kind);
+  };
+
+  const closeImport = () => {
+    clearImportSecret();
+    setMode("idle");
+  };
 
   const refreshBalance = useCallback(async (address: string) => {
     setBalanceError(null);
@@ -71,6 +89,7 @@ export default function AccountPanel({
   useEffect(
     () => () => {
       faucetControllerRef.current?.abort();
+      clearSecretInputs(importSecretRef.current);
     },
     [],
   );
@@ -82,14 +101,17 @@ export default function AccountPanel({
       setLastSignature(null);
       setRetryInfo(null);
       setRevealKey(false);
+      setBackupOpen(false);
+      clearImportSecret();
       void refreshBalance(account.address);
     } else {
       setBalance(null);
       setBalanceError(null);
       setBackedUp(false);
-      setBackupAcknowledged(false);
+      setBackupOpen(false);
+      clearImportSecret();
     }
-  }, [account, refreshBalance]);
+  }, [account, clearImportSecret, refreshBalance]);
 
   const currentStep = !account ? 1 : balance !== null && balance > 0n ? 3 : 2;
 
@@ -100,7 +122,6 @@ export default function AccountPanel({
       const acc = await createNewAccount(true);
       onAccountChange(acc);
       setBackedUp(false);
-      setBackupAcknowledged(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't create the account.");
     } finally {
@@ -112,6 +133,8 @@ export default function AccountPanel({
     setBusy(true);
     setError(null);
     let importedPrivateKey: Uint8Array | null = null;
+    let importValue = importSecretRef.current?.value ?? "";
+    clearImportSecret();
     try {
       let acc: ThruAccount;
       if (importKind === "mnemonic") {
@@ -123,7 +146,6 @@ export default function AccountPanel({
       }
       onAccountChange(acc);
       setBackedUp(true);
-      setImportValue("");
     } catch (err) {
       setError(
         err instanceof Error
@@ -131,7 +153,9 @@ export default function AccountPanel({
           : "Couldn't import that account. Check your recovery phrase or private key.",
       );
     } finally {
+      importValue = "";
       importedPrivateKey?.fill(0);
+      clearImportSecret();
       setBusy(false);
     }
   }
@@ -147,9 +171,8 @@ export default function AccountPanel({
   const [retryInfo, setRetryInfo] = useState<string | null>(null);
 
   async function handleFaucet() {
-    if (!account) return;
+    if (!account || faucetControllerRef.current) return;
     const controller = new AbortController();
-    faucetControllerRef.current?.abort();
     faucetControllerRef.current = controller;
     setFaucetState("requesting");
     setFaucetError(null);
@@ -157,24 +180,17 @@ export default function AccountPanel({
     try {
       const result = await withdrawFromFaucet(account, FAUCET_WITHDRAW_LIMIT, {
         signal: controller.signal,
-        onRetry: ({ attempt, maxAttempts, delayMs }) => {
-          setRetryInfo(
-            attempt === 0
-              ? "Creating and confirming your account on-chain…"
-              : `AlphaNet seems busy — retrying (${attempt}/${maxAttempts}) in ${Math.round(delayMs / 1000)}s…`,
-          );
-        },
       });
       setRetryInfo(null);
       if (result.failureReason) {
         setFaucetState("error");
-        setFaucetError(result.failureReason);
+        setFaucetError(SAFE_FAUCET_ERROR_MESSAGE);
       } else {
         setFaucetState("success");
         setLastSignature(result.signature || null);
         await refreshBalance(account.address);
       }
-    } catch (err) {
+    } catch {
       setRetryInfo(null);
       if (controller.signal.aborted) {
         setFaucetState("idle");
@@ -182,9 +198,7 @@ export default function AccountPanel({
         return;
       }
       setFaucetState("error");
-      setFaucetError(
-          err instanceof Error ? err.message : "Faucet request failed. AlphaNet may be busy — try again in a moment.",
-      );
+      setFaucetError(SAFE_FAUCET_ERROR_MESSAGE);
     } finally {
       if (faucetControllerRef.current === controller) {
         faucetControllerRef.current = null;
@@ -218,7 +232,14 @@ export default function AccountPanel({
               <button className="btn btn-primary" type="button" onClick={() => setMode("create")}>
                 Create new account
               </button>
-              <button className="btn btn-ghost" type="button" onClick={() => setMode("import")}>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                onClick={() => {
+                  clearImportSecret();
+                  setMode("import");
+                }}
+              >
                 Import existing account
               </button>
             </div>
@@ -249,8 +270,7 @@ export default function AccountPanel({
                   role="tab"
                   aria-selected={importKind === "mnemonic"}
                   onClick={() => {
-                    setImportKind("mnemonic");
-                    setImportValue("");
+                    switchImportKind("mnemonic");
                   }}
                 >
                   Recovery phrase
@@ -261,14 +281,14 @@ export default function AccountPanel({
                   role="tab"
                   aria-selected={importKind === "hex"}
                   onClick={() => {
-                    setImportKind("hex");
-                    setImportValue("");
+                    switchImportKind("hex");
                   }}
                 >
                   Private key (hex)
                 </button>
               </div>
               <textarea
+                ref={importSecretRef}
                 className="input"
                 aria-label={
                   importKind === "mnemonic"
@@ -281,8 +301,9 @@ export default function AccountPanel({
                     ? "Paste your 12 words, separated by spaces"
                     : "Hex private key, with or without 0x prefix"
                 }
-                value={importValue}
-                onChange={(e) => setImportValue(e.target.value)}
+                onChange={(event) =>
+                  setImportReady(event.currentTarget.value.trim().length > 0)
+                }
                 autoComplete="off"
                 autoCapitalize="none"
                 spellCheck={false}
@@ -291,11 +312,11 @@ export default function AccountPanel({
                 className="btn btn-primary"
                 type="button"
                 onClick={handleImport}
-                disabled={busy || !importValue.trim()}
+                disabled={busy || !importReady}
               >
                 {busy ? "Importing…" : "Import"}
               </button>
-              <button className="btn btn-link" type="button" onClick={() => setMode("idle")}>
+              <button className="btn btn-link" type="button" onClick={closeImport}>
                 ← Back
               </button>
             </div>
@@ -372,29 +393,16 @@ export default function AccountPanel({
           <div className="warning-box">
             <p>
               <strong>One last reminder.</strong> Make sure you&apos;ve backed
-              up your recovery phrase or private key. The downloaded JSON is
-              unencrypted plaintext; anyone who obtains it can control the
-              account.
+              up your wallet. The downloaded JSON encrypts the wallet secrets
+              with a password that only you know.
             </p>
-            <label className="check-row">
-              <input
-                type="checkbox"
-                checked={backupAcknowledged}
-                onChange={(event) => setBackupAcknowledged(event.target.checked)}
-              />
-              <span>I understand the backup file must be stored privately.</span>
-            </label>
             <div className="row">
               <button
                 className="btn btn-primary"
                 type="button"
-                disabled={!backupAcknowledged}
-                onClick={() => {
-                  downloadBackupFile(account);
-                  setBackedUp(true);
-                }}
+                onClick={() => setBackupOpen(true)}
               >
-                Download plaintext backup
+                Download encrypted backup
               </button>
               <button
                 className="btn btn-ghost"
@@ -475,6 +483,13 @@ export default function AccountPanel({
           Forget this account
         </button>
       </div>
+      {backupOpen && (
+        <WalletBackupDialog
+          account={account}
+          onClose={() => setBackupOpen(false)}
+          onExported={() => setBackedUp(true)}
+        />
+      )}
     </>
   );
 }

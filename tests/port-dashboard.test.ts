@@ -1,5 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import type { NetworkStatus } from "../lib/network/alphanet-health";
+import {
+  SAFE_FAUCET_ERROR_MESSAGE,
+  isFaucetActionDisabled,
+  type FaucetUiState,
+} from "../lib/wallet/faucet-safety";
 
 // Since we cannot render React components easily, we test the navigation state logic
 // that governs Port Dashboard locking behavior.
@@ -39,9 +47,12 @@ function isFaucetVisible(accountAvailable: boolean) {
 }
 
 function getFaucetRequestStatus(healthStatus: string, faucetState: string) {
-  if (healthStatus === "Offline" || healthStatus === "Checking") return "disabled";
-  if (faucetState === "requesting") return "disabled";
-  return "enabled";
+  return isFaucetActionDisabled(
+    healthStatus as NetworkStatus,
+    faucetState as FaucetUiState,
+  )
+    ? "disabled"
+    : "enabled";
 }
 
 function getFaucetWarning(healthStatus: string) {
@@ -77,6 +88,11 @@ test("RPC Checking durumunda request disabled", () => {
 
 test("RPC Offline durumunda request disabled", () => {
   assert.equal(getFaucetRequestStatus("Offline", "idle"), "disabled");
+});
+
+test("RPC Degraded durumunda Faucet ve Retry disabled", () => {
+  assert.equal(getFaucetRequestStatus("Degraded", "idle"), "disabled");
+  assert.equal(getFaucetRequestStatus("Degraded", "error"), "disabled");
 });
 
 test("RPC Degraded durumunda amber uyarı gösteriliyor", () => {
@@ -120,16 +136,66 @@ test("clipboard hatası güvenli gösteriliyor", () => {
   assert.equal(copyAddress("thru1test", false), "error");
 });
 
-test("Download Backup mevcut callback’i çağırıyor", () => {
-  let callbackCalled = false;
-  function downloadBackupFile() { callbackCalled = true; }
-  downloadBackupFile();
-  assert.equal(callbackCalled, true);
+test("Download Backup opens the production password confirmation dialog", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "components/port/PortDashboard.tsx"),
+    "utf8",
+  );
+  assert.match(source, /onClick=\{\(\) => setBackupOpen\(true\)\}/);
+  assert.match(source, /<WalletBackupDialog/);
 });
 
-test("backup otomatik başlamıyor", () => {
-  const autoDownload = false;
-  assert.equal(autoDownload, false);
+test("backup does not auto-download or export without explicit confirmation", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "components/port/WalletBackupDialog.tsx"),
+    "utf8",
+  );
+  assert.match(source, /event\.preventDefault\(\)/);
+  assert.match(source, /validateBackupExportRequirements\(/);
+  const exportGuard = source.indexOf(
+    "const requirements = validateBackupExportRequirements(",
+  );
+  const download = source.indexOf(
+    "await downloadEncryptedWalletBackup(account, password)",
+  );
+  assert.ok(exportGuard >= 0 && download > exportGuard);
+});
+
+test("Faucet errors are always rendered as the safe approved message", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "components/port/PortFaucetPanel.tsx"),
+    "utf8",
+  );
+  assert.equal(
+    SAFE_FAUCET_ERROR_MESSAGE,
+    "The faucet request could not be completed. Try again when AlphaNet is available.",
+  );
+  assert.match(source, /\{SAFE_FAUCET_ERROR_MESSAGE\}/);
+  assert.doesNotMatch(source, /\{faucetError\}/);
+  assert.doesNotMatch(source, /invalid transaction signature|invalid_argument|gRPC|VM|proxy|transport/i);
+});
+
+test("Faucet production handler requires Online and prevents duplicate requests", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "components/AppFlow.tsx"),
+    "utf8",
+  );
+  assert.match(source, /health\.status !== "Online"/);
+  assert.match(source, /faucetControllerRef\.current/);
+  assert.doesNotMatch(source, /setFaucetError\(result\.failureReason\)/);
+});
+
+test("Faucet engine performs only one submission attempt", () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), "lib/wallet/faucet.ts"),
+    "utf8",
+  );
+  assert.equal(
+    source.match(/attemptFaucetWithdraw\(/g)?.length,
+    2,
+    "one call site plus the function declaration",
+  );
+  assert.doesNotMatch(source, /MAX_ATTEMPTS|backoffDelay|onRetry/);
 });
 
 test("Disconnect account state’ini temizliyor", () => {

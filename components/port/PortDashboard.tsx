@@ -1,11 +1,20 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { type ThruAccount, downloadBackupFile } from "@/lib/wallet/thru-wallet";
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { clearSecretInputs } from "@/lib/wallet/wallet-backup";
 import PortSafetyRail from "./PortSafetyRail";
 import type { AlphaNetHealth } from "./useAlphaNetHealth";
 import PortFaucetPanel from "./PortFaucetPanel";
 import PortFooter from "./PortFooter";
+import WalletBackupDialog from "./WalletBackupDialog";
+
+type WalletImportMode = "hidden" | "mnemonic" | "hex" | "backup";
 
 interface PortDashboardProps {
   account: ThruAccount | null;
@@ -13,8 +22,12 @@ interface PortDashboardProps {
   balanceError: string | null;
   walletBusy: boolean;
   walletError: string | null;
-  onCreateWallet: () => void;
-  onImportWallet: (kind: "mnemonic" | "hex", value: string) => void;
+  onCreateWallet: () => void | Promise<boolean>;
+  onImportWallet: (
+    kind: "mnemonic" | "hex",
+    value: string,
+  ) => Promise<boolean>;
+  onImportBackup: (file: File, password: string) => Promise<boolean>;
   health: AlphaNetHealth;
   faucetState?: "idle" | "requesting" | "confirming" | "success" | "error";
   faucetError?: string | null;
@@ -23,7 +36,11 @@ interface PortDashboardProps {
   onRequestFaucet?: () => void;
   onCancelFaucet?: () => void;
   onForgetAccount?: () => void | Promise<void>;
-  restoreStatus?: "RESTORING" | "WALLET_READY" | "NO_SAVED_WALLET";
+  restoreStatus?:
+    | "RESTORING"
+    | "WALLET_READY"
+    | "NO_SAVED_WALLET"
+    | "VAULT_ERROR";
   persistenceWarning?: string | null;
 }
 
@@ -35,6 +52,7 @@ export default function PortDashboard({
   walletError,
   onCreateWallet,
   onImportWallet,
+  onImportBackup,
   health,
   faucetState = "idle",
   faucetError = null,
@@ -46,24 +64,82 @@ export default function PortDashboard({
   restoreStatus = "NO_SAVED_WALLET",
   persistenceWarning = null,
 }: PortDashboardProps) {
-  const [importMode, setImportMode] = useState<"hidden" | "mnemonic" | "hex">("hidden");
-  const [importValue, setImportValue] = useState("");
+  const [importMode, setImportMode] = useState<WalletImportMode>("hidden");
+  const [importReady, setImportReady] = useState(false);
+  const [backupFileReady, setBackupFileReady] = useState(false);
+  const importSecretRef = useRef<HTMLTextAreaElement>(null);
+  const backupPasswordRef = useRef<HTMLInputElement>(null);
+  const backupFileRef = useRef<HTMLInputElement>(null);
   const [copied, setCopied] = useState(false);
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
   const [copyError, setCopyError] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [backupOpen, setBackupOpen] = useState(false);
+
+  const clearImportSecretControls = useCallback(() => {
+    clearSecretInputs(
+      importSecretRef.current,
+      backupPasswordRef.current,
+      backupFileRef.current,
+    );
+  }, []);
+
+  const resetImportForm = useCallback(() => {
+    clearImportSecretControls();
+    setImportReady(false);
+    setBackupFileReady(false);
+  }, [clearImportSecretControls]);
+
+  const switchImportMode = (nextMode: WalletImportMode) => {
+    resetImportForm();
+    setImportMode(nextMode);
+  };
 
   useEffect(() => {
     setDisconnectConfirm(false);
     setRemoveError(null);
     setRemoving(false);
-  }, [account?.address]);
+    setBackupOpen(false);
+    resetImportForm();
+    setImportMode("hidden");
+  }, [account?.address, resetImportForm]);
 
-  const handleImportSubmit = (e: React.FormEvent) => {
+  useEffect(
+    () => () => {
+      clearImportSecretControls();
+    },
+    [clearImportSecretControls],
+  );
+
+  const handleImportSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (importMode === "hidden") return;
-    onImportWallet(importMode, importValue);
+
+    if (importMode === "backup") {
+      const file = backupFileRef.current?.files?.[0];
+      let password = backupPasswordRef.current?.value ?? "";
+      if (!file || !password) return;
+      resetImportForm();
+      try {
+        const imported = await onImportBackup(file, password);
+        if (imported) setImportMode("hidden");
+      } finally {
+        password = "";
+      }
+      return;
+    }
+
+    let secret = importSecretRef.current?.value ?? "";
+    if (!secret.trim()) return;
+    const kind = importMode;
+    resetImportForm();
+    try {
+      const imported = await onImportWallet(kind, secret);
+      if (imported) setImportMode("hidden");
+    } finally {
+      secret = "";
+    }
   };
 
   const copyAddress = () => {
@@ -84,16 +160,13 @@ export default function PortDashboard({
     setRemoveError(null);
     try {
       await onForgetAccount();
-    } catch (err) {
-      setRemoveError(err instanceof Error ? err.message : "Failed to remove wallet from storage.");
+    } catch {
+      setRemoveError(
+        "Unable to remove the wallet from this device. Try again.",
+      );
     } finally {
       setRemoving(false);
     }
-  };
-
-  const handleDownloadBackup = () => {
-    if (!account) return;
-    downloadBackupFile(account);
   };
 
   const shortAddress = account
@@ -133,59 +206,142 @@ export default function PortDashboard({
                   <div style={{ display: "flex", alignItems: "center", gap: "12px", color: "#CEBAB0", fontSize: "14px", fontWeight: 500 }}>
                     <div className="pc-spinner" /> Preparing workspace...
                   </div>
+                ) : restoreStatus === "RESTORING" ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px", color: "#CEBAB0", fontSize: "14px", fontWeight: 500 }}>
+                    <div className="pc-spinner" /> Restoring wallet...
+                  </div>
+                ) : restoreStatus === "VAULT_ERROR" ? (
+                  <div
+                    role="alert"
+                    style={{
+                      color: "#ff8d8d",
+                      fontSize: 13,
+                      background: "rgba(255, 141, 141, 0.08)",
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,141,141,0.2)",
+                    }}
+                  >
+                    {walletError ??
+                      "The saved wallet could not be opened on this device."}
+                  </div>
                 ) : importMode !== "hidden" ? (
                   <form className="pc-import-form pc-anim-bottom" onSubmit={handleImportSubmit} style={{ width: "100%", maxWidth: "480px" }}>
                     <div className="pc-tabs" style={{ marginBottom: 12 }}>
                       <button
                         type="button"
                         className={`pc-tab ${importMode === "mnemonic" ? "active" : ""}`}
-                        onClick={() => { setImportMode("mnemonic"); setImportValue(""); }}
+                        onClick={() => switchImportMode("mnemonic")}
                       >
                         Recovery Phrase
                       </button>
                       <button
                         type="button"
                         className={`pc-tab ${importMode === "hex" ? "active" : ""}`}
-                        onClick={() => { setImportMode("hex"); setImportValue(""); }}
+                        onClick={() => switchImportMode("hex")}
                       >
                         Private Key
                       </button>
+                      <button
+                        type="button"
+                        className={`pc-tab ${importMode === "backup" ? "active" : ""}`}
+                        onClick={() => switchImportMode("backup")}
+                      >
+                        Encrypted Backup
+                      </button>
                     </div>
-                    <textarea
-                      className="pc-input"
-                      placeholder={importMode === "mnemonic" ? "Enter your 24-word recovery phrase..." : "Enter your 64-character hex private key..."}
-                      value={importValue}
-                      onChange={(e) => setImportValue(e.target.value)}
-                      rows={3}
-                      disabled={walletBusy}
-                      style={{ marginBottom: 12 }}
-                    />
+                    {importMode === "backup" ? (
+                      <>
+                        <label className="pc-label" htmlFor="wallet-backup-file">
+                          Encrypted backup file
+                        </label>
+                        <input
+                          ref={backupFileRef}
+                          id="wallet-backup-file"
+                          className="pc-input"
+                          type="file"
+                          accept=".json,application/json"
+                          disabled={walletBusy}
+                          onChange={(event) =>
+                            setBackupFileReady(
+                              Boolean(event.currentTarget.files?.[0]),
+                            )
+                          }
+                          style={{ marginBottom: 12 }}
+                        />
+                        <label
+                          className="pc-label"
+                          htmlFor="wallet-backup-import-password"
+                        >
+                          Backup password
+                        </label>
+                        <input
+                          ref={backupPasswordRef}
+                          id="wallet-backup-import-password"
+                          className="pc-input"
+                          type="password"
+                          autoComplete="current-password"
+                          maxLength={1024}
+                          disabled={walletBusy}
+                          onChange={(event) =>
+                            setImportReady(event.currentTarget.value.length > 0)
+                          }
+                          style={{ marginBottom: 12 }}
+                        />
+                      </>
+                    ) : (
+                      <textarea
+                        ref={importSecretRef}
+                        className="pc-input"
+                        aria-label={
+                          importMode === "mnemonic"
+                            ? "Recovery phrase"
+                            : "Private key"
+                        }
+                        placeholder={
+                          importMode === "mnemonic"
+                            ? "Enter your recovery phrase..."
+                            : "Enter your 64-character hex private key..."
+                        }
+                        onChange={(event) =>
+                          setImportReady(
+                            event.currentTarget.value.trim().length > 0,
+                          )
+                        }
+                        rows={3}
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        disabled={walletBusy}
+                        style={{ marginBottom: 12 }}
+                      />
+                    )}
                     <div style={{ display: "flex", gap: 12 }}>
                       <button 
                         type="submit" 
                         className="pc-btn-primary" 
-                        disabled={walletBusy || !importValue.trim()}
+                        disabled={
+                          walletBusy ||
+                          !importReady ||
+                          (importMode === "backup" && !backupFileReady)
+                        }
                       >
                         {walletBusy ? "Importing..." : "Confirm Import"}
                       </button>
                       <button 
                         type="button" 
                         className="pc-btn-secondary" 
-                        onClick={() => { setImportMode("hidden"); setImportValue(""); }}
+                        onClick={() => switchImportMode("hidden")}
                         disabled={walletBusy}
                       >
                         Cancel
                       </button>
                     </div>
                   </form>
-                ) : restoreStatus === "RESTORING" ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px", color: "#CEBAB0", fontSize: "14px", fontWeight: 500 }}>
-                    <div className="pc-spinner" /> Restoring wallet…
-                  </div>
                 ) : (
                   <>
-                    <button className="pc-btn-primary" style={{ padding: "12px 24px", fontSize: "14px" }} onClick={onCreateWallet}>Create Wallet</button>
-                    <button className="pc-btn-secondary" style={{ padding: "12px 24px", fontSize: "14px" }} onClick={() => setImportMode("mnemonic")}>Import Wallet</button>
+                    <button type="button" className="pc-btn-primary" style={{ padding: "12px 24px", fontSize: "14px" }} onClick={onCreateWallet}>Create Wallet</button>
+                    <button type="button" className="pc-btn-secondary" style={{ padding: "12px 24px", fontSize: "14px" }} onClick={() => switchImportMode("mnemonic")}>Import Wallet</button>
                   </>
                 )
               ) : (
@@ -208,7 +364,7 @@ export default function PortDashboard({
                   />
                 </div>
               )}
-              {walletError && (
+              {walletError && restoreStatus !== "VAULT_ERROR" && (
                 <div className="pc-error pc-anim-bottom" style={{ marginTop: 16, color: "#ff8d8d", fontSize: 13, background: "rgba(255, 141, 141, 0.08)", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(255,141,141,0.2)" }}>
                   {walletError}
                 </div>
@@ -336,7 +492,7 @@ export default function PortDashboard({
                     type="button"
                     className="pc-btn-secondary"
                     style={{ padding: "8px 12px", fontSize: "12px", gap: "6px", whiteSpace: "nowrap" }}
-                    onClick={handleDownloadBackup}
+                    onClick={() => setBackupOpen(true)}
                   >
                     Download Backup
                   </button>
@@ -405,6 +561,12 @@ export default function PortDashboard({
       
       <PortSafetyRail />
       <PortFooter />
+      {account && backupOpen && (
+        <WalletBackupDialog
+          account={account}
+          onClose={() => setBackupOpen(false)}
+        />
+      )}
     </div>
   );
 }

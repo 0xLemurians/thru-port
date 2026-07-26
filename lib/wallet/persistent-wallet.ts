@@ -1,6 +1,7 @@
 import {
   type ThruAccount,
   accountFromPrivateKey,
+  assertAccountIdentity,
   bytesToHex,
   hexToBytes,
 } from "./thru-wallet";
@@ -10,6 +11,32 @@ export const WALLET_VAULT_VERSION = 1;
 export const STORE_ENCRYPTED_WALLET = "encryptedWallet";
 export const STORE_DEVICE_KEY = "deviceKey";
 export const RECORD_KEY = "current";
+export const SAVED_WALLET_OPEN_ERROR =
+  "The saved wallet could not be opened on this device.";
+export const WALLET_REMOVAL_ERROR =
+  "Unable to remove the wallet from this device. Try again.";
+export const WALLET_SAVE_ERROR =
+  "Unable to save the wallet securely on this device.";
+
+export type WalletVaultErrorCode =
+  | "VAULT_UNAVAILABLE"
+  | "VAULT_OPEN_FAILED"
+  | "VAULT_READ_FAILED"
+  | "VAULT_CORRUPTED"
+  | "VAULT_SAVE_FAILED"
+  | "VAULT_VERIFICATION_FAILED"
+  | "VAULT_DELETE_FAILED"
+  | "VAULT_DELETE_VERIFICATION_FAILED";
+
+export class WalletVaultError extends Error {
+  constructor(
+    public readonly code: WalletVaultErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WalletVaultError";
+  }
+}
 
 export interface PersistedWalletRecord {
   version: number;
@@ -17,6 +44,12 @@ export interface PersistedWalletRecord {
   iv: ArrayBuffer;
   ciphertext: ArrayBuffer;
   createdAt: number;
+}
+
+interface PersistedWalletPayload {
+  address?: string;
+  privateKeyHex?: string;
+  mnemonic?: string | null;
 }
 
 export interface PersistenceOptions {
@@ -42,6 +75,12 @@ function getCrypto(): Crypto | null {
     return globalThis.crypto;
   }
   return null;
+}
+
+function copyToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
 }
 
 async function openVaultDB(idb: IDBFactory): Promise<IDBDatabase> {
@@ -109,6 +148,27 @@ async function idbPut(
   });
 }
 
+function secureBytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index];
+  }
+  return difference === 0;
+}
+
+export function walletAccountsMatch(
+  left: ThruAccount,
+  right: ThruAccount,
+): boolean {
+  return (
+    left.address === right.address &&
+    secureBytesEqual(left.publicKey, right.publicKey) &&
+    secureBytesEqual(left.privateKey, right.privateKey) &&
+    (left.mnemonic ?? null) === (right.mnemonic ?? null)
+  );
+}
+
 export async function savePersistedWallet(
   account: ThruAccount,
   options: PersistenceOptions = {},
@@ -117,12 +177,24 @@ export async function savePersistedWallet(
   const cryptoObj =
     options.cryptoObj !== undefined ? options.cryptoObj : getCrypto();
   if (!idb || !cryptoObj || !cryptoObj.subtle) {
-    throw new Error(
-      "Secure client-side storage is not available in this browser.",
+    throw new WalletVaultError(
+      "VAULT_UNAVAILABLE",
+      WALLET_SAVE_ERROR,
     );
   }
 
-  const db = await openVaultDB(idb);
+  await assertAccountIdentity(account).catch(() => {
+    throw new WalletVaultError("VAULT_SAVE_FAILED", WALLET_SAVE_ERROR);
+  });
+
+  let db: IDBDatabase;
+  try {
+    db = await openVaultDB(idb);
+  } catch {
+    throw new WalletVaultError("VAULT_OPEN_FAILED", WALLET_SAVE_ERROR);
+  }
+  let encodedPayload: Uint8Array | null = null;
+  let ivBytes: Uint8Array | null = null;
   try {
     let deviceKey = (await idbGet(
       db,
@@ -138,37 +210,52 @@ export async function savePersistedWallet(
       await idbPut(db, STORE_DEVICE_KEY, deviceKey, RECORD_KEY);
     }
 
-    const ivBytes = new Uint8Array(12);
+    ivBytes = new Uint8Array(12);
     cryptoObj.getRandomValues(ivBytes);
 
-    const payloadObj = {
+    const payloadObj: {
+      address: string;
+      privateKeyHex: string;
+      mnemonic: string | null;
+    } = {
       address: account.address,
       privateKeyHex: bytesToHex(account.privateKey),
       mnemonic: account.mnemonic || null,
     };
-    const encodedPayload = new TextEncoder().encode(
+    encodedPayload = new TextEncoder().encode(
       JSON.stringify(payloadObj),
     );
+    payloadObj.privateKeyHex = "";
+    payloadObj.mnemonic = null;
 
-    const ciphertext = await cryptoObj.subtle.encrypt(
-      { name: "AES-GCM", iv: ivBytes },
-      deviceKey,
-      encodedPayload,
-    );
+    const ivBuffer = copyToArrayBuffer(ivBytes);
+    const payloadBuffer = copyToArrayBuffer(encodedPayload);
+    let ciphertext: ArrayBuffer;
+    try {
+      ciphertext = await cryptoObj.subtle.encrypt(
+        { name: "AES-GCM", iv: ivBuffer },
+        deviceKey,
+        payloadBuffer,
+      );
+    } finally {
+      new Uint8Array(payloadBuffer).fill(0);
+    }
 
     const record: PersistedWalletRecord = {
       version: 1,
       walletAddress: account.address,
-      iv: ivBytes.buffer.slice(
-        ivBytes.byteOffset,
-        ivBytes.byteOffset + ivBytes.byteLength,
-      ),
+      iv: ivBuffer,
       ciphertext,
       createdAt: Date.now(),
     };
 
     await idbPut(db, STORE_ENCRYPTED_WALLET, record, RECORD_KEY);
+  } catch (error) {
+    if (error instanceof WalletVaultError) throw error;
+    throw new WalletVaultError("VAULT_SAVE_FAILED", WALLET_SAVE_ERROR);
   } finally {
+    encodedPayload?.fill(0);
+    ivBytes?.fill(0);
     db.close();
   }
 }
@@ -180,40 +267,71 @@ export async function restorePersistedWallet(
   const cryptoObj =
     options.cryptoObj !== undefined ? options.cryptoObj : getCrypto();
   if (!idb || !cryptoObj || !cryptoObj.subtle) {
-    return null;
+    throw new WalletVaultError("VAULT_UNAVAILABLE", SAVED_WALLET_OPEN_ERROR);
   }
 
   let db: IDBDatabase;
   try {
     db = await openVaultDB(idb);
   } catch {
-    return null;
+    throw new WalletVaultError("VAULT_OPEN_FAILED", SAVED_WALLET_OPEN_ERROR);
   }
 
+  let decryptedBytes: Uint8Array | null = null;
+  let privateKeyBytes: Uint8Array | null = null;
+  let account: ThruAccount | null = null;
+  let payload: PersistedWalletPayload | null = null;
+  let succeeded = false;
   try {
-    const record = (await idbGet(
-      db,
-      STORE_ENCRYPTED_WALLET,
-      RECORD_KEY,
-    )) as PersistedWalletRecord | null;
+    let record: PersistedWalletRecord | null;
+    try {
+      record = (await idbGet(
+        db,
+        STORE_ENCRYPTED_WALLET,
+        RECORD_KEY,
+      )) as PersistedWalletRecord | null;
+    } catch {
+      throw new WalletVaultError(
+        "VAULT_READ_FAILED",
+        SAVED_WALLET_OPEN_ERROR,
+      );
+    }
     if (!record) {
       return null;
     }
 
-    if (record.version !== 1) {
-      throw new Error(
-        `Unknown wallet vault version (${record.version}). Please import your backup file.`,
+    if (
+      typeof record !== "object" ||
+      record.version !== 1 ||
+      typeof record.walletAddress !== "string" ||
+      !(record.iv instanceof ArrayBuffer) ||
+      record.iv.byteLength !== 12 ||
+      !(record.ciphertext instanceof ArrayBuffer) ||
+      record.ciphertext.byteLength < 16
+    ) {
+      throw new WalletVaultError(
+        "VAULT_CORRUPTED",
+        SAVED_WALLET_OPEN_ERROR,
       );
     }
 
-    const deviceKey = (await idbGet(
-      db,
-      STORE_DEVICE_KEY,
-      RECORD_KEY,
-    )) as CryptoKey | null;
+    let deviceKey: CryptoKey | null;
+    try {
+      deviceKey = (await idbGet(
+        db,
+        STORE_DEVICE_KEY,
+        RECORD_KEY,
+      )) as CryptoKey | null;
+    } catch {
+      throw new WalletVaultError(
+        "VAULT_READ_FAILED",
+        SAVED_WALLET_OPEN_ERROR,
+      );
+    }
     if (!deviceKey) {
-      throw new Error(
-        "Device encryption key is missing or corrupted. Please import your backup file.",
+      throw new WalletVaultError(
+        "VAULT_CORRUPTED",
+        SAVED_WALLET_OPEN_ERROR,
       );
     }
 
@@ -225,44 +343,100 @@ export async function restorePersistedWallet(
         record.ciphertext,
       );
     } catch {
-      throw new Error(
-        "Failed to decrypt saved wallet. Data may be corrupted or key mismatch.",
+      throw new WalletVaultError(
+        "VAULT_CORRUPTED",
+        SAVED_WALLET_OPEN_ERROR,
       );
     }
 
-    const decryptedText = new TextDecoder().decode(decryptedBuffer);
-    const payload = JSON.parse(decryptedText) as {
-      address?: string;
-      privateKeyHex?: string;
-      mnemonic?: string | null;
-    };
+    decryptedBytes = new Uint8Array(decryptedBuffer);
+    try {
+      payload = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(decryptedBytes),
+      ) as PersistedWalletPayload;
+    } catch {
+      throw new WalletVaultError(
+        "VAULT_CORRUPTED",
+        SAVED_WALLET_OPEN_ERROR,
+      );
+    }
     if (
       !payload ||
       typeof payload.privateKeyHex !== "string" ||
-      !payload.address
+      !/^[0-9a-f]{64}$/i.test(payload.privateKeyHex) ||
+      typeof payload.address !== "string" ||
+      !(
+        payload.mnemonic === null ||
+        payload.mnemonic === undefined ||
+        (typeof payload.mnemonic === "string" &&
+          payload.mnemonic.length > 0 &&
+          payload.mnemonic.length <= 1_024)
+      )
     ) {
-      throw new Error("Corrupted wallet payload.");
+      throw new WalletVaultError(
+        "VAULT_CORRUPTED",
+        SAVED_WALLET_OPEN_ERROR,
+      );
     }
 
-    const privateKeyBytes = hexToBytes(payload.privateKeyHex);
-    const account = await accountFromPrivateKey(privateKeyBytes);
-    privateKeyBytes.fill(0);
+    privateKeyBytes = hexToBytes(payload.privateKeyHex);
+    account = await accountFromPrivateKey(privateKeyBytes);
 
     if (
       account.address !== record.walletAddress ||
       account.address !== payload.address
     ) {
-      throw new Error("Wallet address mismatch in restored data.");
+      throw new WalletVaultError(
+        "VAULT_CORRUPTED",
+        SAVED_WALLET_OPEN_ERROR,
+      );
     }
 
     if (payload.mnemonic && typeof payload.mnemonic === "string") {
       account.mnemonic = payload.mnemonic;
     }
 
+    await assertAccountIdentity(account).catch(() => {
+      throw new WalletVaultError(
+        "VAULT_CORRUPTED",
+        SAVED_WALLET_OPEN_ERROR,
+      );
+    });
+    succeeded = true;
     return account;
+  } catch (error) {
+    if (error instanceof WalletVaultError) throw error;
+    throw new WalletVaultError("VAULT_CORRUPTED", SAVED_WALLET_OPEN_ERROR);
   } finally {
+    decryptedBytes?.fill(0);
+    privateKeyBytes?.fill(0);
+    if (payload) {
+      payload.privateKeyHex = "";
+      payload.mnemonic = null;
+    }
+    if (!succeeded) {
+      account?.privateKey.fill(0);
+      if (account) account.mnemonic = undefined;
+    }
     db.close();
   }
+}
+
+export async function saveAndVerifyPersistedWallet(
+  account: ThruAccount,
+  options: PersistenceOptions = {},
+): Promise<ThruAccount> {
+  await savePersistedWallet(account, options);
+  const restored = await restorePersistedWallet(options);
+  if (!restored || !walletAccountsMatch(account, restored)) {
+    restored?.privateKey.fill(0);
+    if (restored) restored.mnemonic = undefined;
+    throw new WalletVaultError(
+      "VAULT_VERIFICATION_FAILED",
+      WALLET_SAVE_ERROR,
+    );
+  }
+  return restored;
 }
 
 export async function removePersistedWallet(
@@ -270,30 +444,70 @@ export async function removePersistedWallet(
 ): Promise<void> {
   const idb = options.idb !== undefined ? options.idb : getIDB();
   if (!idb) {
-    return;
+    throw new WalletVaultError("VAULT_UNAVAILABLE", WALLET_REMOVAL_ERROR);
   }
   let db: IDBDatabase;
   try {
     db = await openVaultDB(idb);
   } catch {
-    return;
+    throw new WalletVaultError("VAULT_OPEN_FAILED", WALLET_REMOVAL_ERROR);
   }
   try {
-    await new Promise<void>((resolve, reject) => {
-      try {
-        const tx = db.transaction(
-          [STORE_ENCRYPTED_WALLET, STORE_DEVICE_KEY],
-          "readwrite",
-        );
-        tx.objectStore(STORE_ENCRYPTED_WALLET).delete(RECORD_KEY);
-        tx.objectStore(STORE_DEVICE_KEY).delete(RECORD_KEY);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () =>
-          reject(tx.error || new Error("Failed to remove vault data"));
-      } catch (err) {
-        reject(err);
-      }
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        try {
+          const tx = db.transaction(
+            [STORE_ENCRYPTED_WALLET, STORE_DEVICE_KEY],
+            "readwrite",
+          );
+          const walletRequest = tx
+            .objectStore(STORE_ENCRYPTED_WALLET)
+            .delete(RECORD_KEY);
+          const keyRequest = tx.objectStore(STORE_DEVICE_KEY).delete(RECORD_KEY);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () =>
+            reject(tx.error || new Error("Wallet vault deletion failed"));
+          tx.onabort = () =>
+            reject(tx.error || new Error("Wallet vault deletion was aborted"));
+          walletRequest.onerror = () =>
+            reject(
+              walletRequest.error ||
+                new Error("Encrypted wallet deletion failed"),
+            );
+          keyRequest.onerror = () =>
+            reject(
+              keyRequest.error || new Error("Device key deletion failed"),
+            );
+        } catch (error) {
+          reject(error);
+        }
+      });
+    } catch {
+      throw new WalletVaultError(
+        "VAULT_DELETE_FAILED",
+        WALLET_REMOVAL_ERROR,
+      );
+    }
+
+    let walletRecord: unknown;
+    let deviceKey: unknown;
+    try {
+      [walletRecord, deviceKey] = await Promise.all([
+        idbGet(db, STORE_ENCRYPTED_WALLET, RECORD_KEY),
+        idbGet(db, STORE_DEVICE_KEY, RECORD_KEY),
+      ]);
+    } catch {
+      throw new WalletVaultError(
+        "VAULT_DELETE_VERIFICATION_FAILED",
+        WALLET_REMOVAL_ERROR,
+      );
+    }
+    if (walletRecord !== null || deviceKey !== null) {
+      throw new WalletVaultError(
+        "VAULT_DELETE_VERIFICATION_FAILED",
+        WALLET_REMOVAL_ERROR,
+      );
+    }
   } finally {
     db.close();
   }

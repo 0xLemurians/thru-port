@@ -27,6 +27,7 @@
 import { ConsensusStatus, Signature } from "@thru/sdk";
 import { encodeAddress } from "@thru/sdk/helpers";
 import { thru, type ThruAccount, getBalance, ensureAccountExists } from "./thru-wallet";
+import { SAFE_FAUCET_ERROR_MESSAGE } from "./faucet-safety";
 
 export const FAUCET_ACCOUNT_ADDRESS =
   "taxoImN8fTEOxXYnvgC6JZ0lN0n0qvZERwz_vlOjX3MkIn";
@@ -69,42 +70,20 @@ export interface FaucetWithdrawResult {
   attempts: number;
 }
 
-export interface FaucetRetryProgress {
-  attempt: number;
-  maxAttempts: number;
-  delayMs: number;
-  reason: string;
-}
-
-const MAX_ATTEMPTS = 5;
-const BASE_DELAY_MS = 2_000;
-const MAX_DELAY_MS = 15_000;
-
-function backoffDelay(attempt: number): number {
-  return Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
-}
-
 /**
- * Kendi hesabına faucet'ten test token çeker (self-withdraw), AlphaNet
- * tarafında görülen geçici bağlantı hatalarına (bkz. "Connection refused" /
- * "upstream connect error" — Envoy tabanlı gateway hataları, resmi Thru
- * Onboard sitesinde de aynı sınıf hataya rastlandı) karşı retry ile.
- *
- * `build_upload.sh`'taki prensiple aynı: körlemesine tekrar denemek yerine,
- * her retry öncesi bakiyeyi kontrol ediyoruz — önceki deneme aslında
- * zincire ulaşmış ama yanıt bize dönmemiş olabilir. Bakiye zaten arttıysa
- * tekrar göndermiyoruz.
+ * Kendi hesabına faucet'ten test token çeker (self-withdraw). Belirsiz veya
+ * başarısız bir sonuç otomatik olarak yeniden gönderilmez; kullanıcı ancak
+ * güncel ağ sağlığı Online olduğunda elle tekrar deneyebilir.
  */
 export async function withdrawFromFaucet(
   account: ThruAccount,
   amount: bigint = FAUCET_WITHDRAW_LIMIT,
   options: {
     timeoutMs?: number;
-    onRetry?: (progress: FaucetRetryProgress) => void;
     signal?: AbortSignal;
   } = {},
 ): Promise<FaucetWithdrawResult> {
-  const { timeoutMs = 30_000, onRetry, signal } = options;
+  const { timeoutMs = 30_000, signal } = options;
   signal?.throwIfAborted();
 
   if (amount <= 0n) {
@@ -118,93 +97,54 @@ export async function withdrawFromFaucet(
 
   const balanceBefore = await getBalance(account.address).catch(() => 0n);
 
-  let lastFailure = "";
-
   // Yeni bir keypair henüz zincirde "hesap" olarak var olmayabilir —
   // faucet withdraw denemeden önce bunu garantiye alıyoruz.
   try {
-    const created = await ensureAccountExists(account, { timeoutMs, signal });
-    if (created) {
-      onRetry?.({
-        attempt: 0,
-        maxAttempts: MAX_ATTEMPTS,
-        delayMs: 0,
-        reason: "Setting up your account on-chain for the first time…",
-      });
-    }
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    throw new Error(
-      `Account setup could not be confirmed: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
+    await ensureAccountExists(account, { timeoutMs, signal });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new Error(SAFE_FAUCET_ERROR_MESSAGE);
   }
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    signal?.throwIfAborted();
-    if (attempt > 1) {
-      // Önceki deneme belirsiz bir durumda bitmiş olabilir (bağlantı hatası,
-      // ama transaction zincire ulaşmış olabilir) — tekrar göndermeden önce
-      // bakiyenin zaten artıp artmadığını kontrol et.
-      const currentBalance = await getBalance(account.address).catch(() => balanceBefore);
-      if (currentBalance > balanceBefore) {
-        return { signature: "", finalized: true, attempts: attempt - 1 };
-      }
-    }
-
-    try {
-      const result = await attemptFaucetWithdraw(
-        account,
-        amount,
-        timeoutMs,
+  signal?.throwIfAborted();
+  try {
+    const result = await attemptFaucetWithdraw(
+      account,
+      amount,
+      timeoutMs,
+      signal,
+    );
+    if (!result.failureReason) {
+      const confirmedBalance = await waitForBalanceIncrease(
+        account.address,
+        balanceBefore,
         signal,
       );
-      if (!result.failureReason) {
-        const confirmedBalance = await waitForBalanceIncrease(
-          account.address,
-          balanceBefore,
-          signal,
-        );
-        if (confirmedBalance !== null) {
-          return {
-            ...result,
-            finalized: true,
-            attempts: attempt,
-          };
-        }
-        if (result.signature || result.finalized) {
-          return {
-            ...result,
-            finalized: false,
-            failureReason:
-              "The faucet transaction was submitted, but the balance increase " +
-              "could not be confirmed. Refresh the balance before trying again.",
-            attempts: attempt,
-          };
-        }
-        lastFailure =
-          "Transaction tracking ended before a balance increase was confirmed.";
-      } else {
-        lastFailure = result.failureReason;
+      if (confirmedBalance !== null) {
+        return {
+          ...result,
+          finalized: true,
+          attempts: 1,
+        };
       }
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      lastFailure = err instanceof Error ? err.message : String(err);
+      if (result.signature || result.finalized) {
+        return {
+          ...result,
+          finalized: false,
+          failureReason: SAFE_FAUCET_ERROR_MESSAGE,
+          attempts: 1,
+        };
+      }
     }
-
-    if (attempt < MAX_ATTEMPTS) {
-      const delayMs = backoffDelay(attempt);
-      onRetry?.({ attempt, maxAttempts: MAX_ATTEMPTS, delayMs, reason: lastFailure });
-      await abortableDelay(delayMs, signal);
-    }
+  } catch (error) {
+    if (signal?.aborted) throw error;
   }
 
   return {
     signature: "",
     finalized: false,
-    failureReason: `Failed after ${MAX_ATTEMPTS} attempts. Last error: ${lastFailure}`,
-    attempts: MAX_ATTEMPTS,
+    failureReason: SAFE_FAUCET_ERROR_MESSAGE,
+    attempts: 1,
   };
 }
 

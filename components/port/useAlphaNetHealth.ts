@@ -1,7 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  AlphaNetHealthProbeSequence,
+  probeAlphaNetHealth,
+  type NetworkStatus,
+} from "@/lib/network/alphanet-health";
 import { thru } from "@/lib/wallet/thru-wallet";
 
-export type NetworkStatus = "Checking" | "Online" | "Degraded" | "Offline";
+export type { NetworkStatus } from "@/lib/network/alphanet-health";
 
 export interface AlphaNetHealth {
   status: NetworkStatus;
@@ -9,102 +14,68 @@ export interface AlphaNetHealth {
   checkNow: () => void;
 }
 
+function getFormattedTime(): string {
+  return new Date().toLocaleTimeString([], {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export function useAlphaNetHealth(): AlphaNetHealth {
   const [status, setStatus] = useState<NetworkStatus>("Checking");
   const [lastChecked, setLastChecked] = useState<string | null>(null);
-  
-  const consecutiveFailures = useRef(0);
-  const sequenceId = useRef(0);
-  const pollingTimer = useRef<NodeJS.Timeout | null>(null);
-  const checkInProgress = useRef(false);
-
-  const getFormattedTime = () => {
-    const now = new Date();
-    return now.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  };
+  const pollingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const probeSequence = useRef(new AlphaNetHealthProbeSequence());
 
   const performCheck = useCallback(async () => {
-    // If dev override is on
-    if (process.env.NODE_ENV === "development" && typeof window !== "undefined") {
-      const isMockOffline = localStorage.getItem("MOCK_RPC_OFFLINE") === "true";
-      if (isMockOffline) {
-        consecutiveFailures.current += 1;
-        if (consecutiveFailures.current >= 2) {
-          setStatus("Offline");
-        } else {
-          setStatus("Degraded");
-        }
-        setLastChecked(getFormattedTime());
-        return;
-      }
-    }
+    const token = probeSequence.current.begin();
 
-    if (checkInProgress.current) return;
-    checkInProgress.current = true;
-
-    sequenceId.current += 1;
-    const currentSeq = sequenceId.current;
-
-    try {
-      // Create a timeout promise
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("RPC Timeout")), 4000);
-      });
-
-      // Race the actual RPC call against the timeout
-      await Promise.race([
-        thru.blocks.getBlockHeight(),
-        timeoutPromise
-      ]);
-
-      if (currentSeq !== sequenceId.current) return;
-
-      consecutiveFailures.current = 0;
-      setStatus("Online");
-      setLastChecked(getFormattedTime());
-    } catch {
-      if (currentSeq !== sequenceId.current) return;
-
-      consecutiveFailures.current += 1;
-      if (consecutiveFailures.current >= 2) {
+    if (
+      process.env.NODE_ENV === "development" &&
+      typeof window !== "undefined" &&
+      localStorage.getItem("MOCK_RPC_OFFLINE") === "true"
+    ) {
+      if (probeSequence.current.isCurrent(token)) {
         setStatus("Offline");
-      } else {
-        setStatus("Degraded");
+        setLastChecked(getFormattedTime());
       }
-      setLastChecked(getFormattedTime());
-    } finally {
-      if (currentSeq === sequenceId.current) {
-        checkInProgress.current = false;
-      }
+      return;
     }
+
+    const nextStatus = await probeAlphaNetHealth(
+      () => thru.blocks.getBlockHeight(),
+      { signal: token.signal },
+    );
+
+    if (!probeSequence.current.isCurrent(token)) return;
+    setStatus(nextStatus);
+    setLastChecked(getFormattedTime());
   }, []);
 
   const scheduleNext = useCallback(() => {
     if (pollingTimer.current) clearTimeout(pollingTimer.current);
     pollingTimer.current = setTimeout(() => {
-      void performCheck().then(() => {
-        scheduleNext();
-      });
-    }, 10000);
+      void performCheck().then(scheduleNext);
+    }, 10_000);
   }, [performCheck]);
 
   useEffect(() => {
-    // Initial check
-    void performCheck().then(() => {
-      scheduleNext();
-    });
+    const activeProbeSequence = probeSequence.current;
+    void performCheck().then(scheduleNext);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void performCheck().then(() => {
-          scheduleNext();
-        });
-      } else {
-        if (pollingTimer.current) {
-          clearTimeout(pollingTimer.current);
-          pollingTimer.current = null;
-        }
+        void performCheck().then(scheduleNext);
+        return;
       }
+
+      if (pollingTimer.current) {
+        clearTimeout(pollingTimer.current);
+        pollingTimer.current = null;
+      }
+      activeProbeSequence.cancel();
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -115,8 +86,7 @@ export function useAlphaNetHealth(): AlphaNetHealth {
         clearTimeout(pollingTimer.current);
         pollingTimer.current = null;
       }
-      sequenceId.current += 1; // invalidate any in-flight
-      checkInProgress.current = false;
+      activeProbeSequence.cancel();
     };
   }, [performCheck, scheduleNext]);
 
@@ -124,8 +94,11 @@ export function useAlphaNetHealth(): AlphaNetHealth {
     status,
     lastChecked,
     checkNow: () => {
-      if (pollingTimer.current) clearTimeout(pollingTimer.current);
-      void performCheck().then(() => scheduleNext());
-    }
+      if (pollingTimer.current) {
+        clearTimeout(pollingTimer.current);
+        pollingTimer.current = null;
+      }
+      void performCheck().then(scheduleNext);
+    },
   };
 }

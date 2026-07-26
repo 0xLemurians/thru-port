@@ -1,5 +1,9 @@
 import type { AlphaNetHealth } from "./useAlphaNetHealth";
 import { FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
+import {
+  SAFE_FAUCET_ERROR_MESSAGE,
+  isFaucetActionDisabled,
+} from "@/lib/wallet/faucet-safety";
 
 interface PortFaucetPanelProps {
   faucetState: "idle" | "requesting" | "confirming" | "success" | "error";
@@ -20,10 +24,12 @@ export default function PortFaucetPanel({
   onRequest,
   onCancel,
 }: PortFaucetPanelProps) {
-  // Determine if the request button should be disabled
   const isRpcOffline = health.status === "Offline";
   const isRpcChecking = health.status === "Checking";
-  const isRequestDisabled = isRpcOffline || isRpcChecking || faucetState === "requesting";
+  const isRequestDisabled = isFaucetActionDisabled(
+    health.status,
+    faucetState,
+  );
 
   return (
     <div className="panel" style={{ marginTop: 24 }}>
@@ -95,8 +101,13 @@ export default function PortFaucetPanel({
 
         {faucetState === "error" && faucetError && (
           <div className="stack">
-            <p className="error">{faucetError}</p>
-            <button className="btn btn-ghost" type="button" onClick={onRequest} disabled={isRequestDisabled}>
+            <p className="error">{SAFE_FAUCET_ERROR_MESSAGE}</p>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              onClick={onRequest}
+              disabled={isRequestDisabled}
+            >
               Retry
             </button>
           </div>
