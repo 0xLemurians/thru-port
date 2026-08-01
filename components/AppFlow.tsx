@@ -163,7 +163,11 @@ export default function AppFlow() {
     setPersistenceWarning(null);
     let candidate: ThruAccount | null = null;
     try {
-      candidate = await createNewAccount(true);
+      // The product exposes a one-time private-key backup, not a recovery
+      // phrase. Generate a direct SDK keypair so a mnemonic is never created
+      // or persisted for new wallets. Legacy records that contain a mnemonic
+      // remain readable by the vault parser.
+      candidate = await createNewAccount(false);
       const persisted = await saveAndVerifyPersistedWallet(candidate, {
         setupPending: true,
       });

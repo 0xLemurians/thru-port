@@ -51,6 +51,7 @@ export default function TokenCreateForm({
   const [result, setResult] = useState<CreateTokenResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
 
   const controllerRef = useRef<AbortController | null>(null);
   const networkActionsDisabled = tokenNetworkActionsDisabled(networkStatus);
@@ -74,13 +75,36 @@ export default function TokenCreateForm({
   // Pending-setup hooks passed down to createTokenOnAlphaNet.
   function handlePendingSetupAvailable(setup: Omit<PendingTokenSetup, "savedAt">) {
     const record: PendingTokenSetup = { ...setup, savedAt: Date.now() };
-    const all = loadPendingSetups(window.localStorage);
-    savePendingSetups(window.localStorage, upsertPendingSetup(all, record));
+    try {
+      const all = loadPendingSetups(window.localStorage);
+      savePendingSetups(window.localStorage, upsertPendingSetup(all, record));
+      setPersistenceWarning(null);
+    } catch {
+      if (
+        setup.mintSignature ||
+        setup.tokenAccountSignature ||
+        setup.initialSupplySignature
+      ) {
+        setPersistenceWarning(
+          "A transaction was submitted, but this browser could not update its public recovery metadata. Do not submit it again.",
+        );
+        return;
+      }
+      throw new Error(
+        "This browser could not save the public pending-operation record. No transaction was submitted.",
+      );
+    }
   }
 
   function handleSetupComplete(mintAddress: string) {
-    const all = loadPendingSetups(window.localStorage);
-    savePendingSetups(window.localStorage, removePendingSetup(all, mintAddress));
+    try {
+      const all = loadPendingSetups(window.localStorage);
+      savePendingSetups(window.localStorage, removePendingSetup(all, mintAddress));
+    } catch {
+      setPersistenceWarning(
+        "Token creation succeeded on-chain, but this browser could not update its public recovery metadata.",
+      );
+    }
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -91,7 +115,8 @@ export default function TokenCreateForm({
     controllerRef.current?.abort();
     controllerRef.current = controller;
     setBusy(true);
-    setError(null);
+      setError(null);
+      setPersistenceWarning(null);
     setResult(null);
     setProgress({ stage: "validating" });
     setSignatures({});
@@ -337,6 +362,12 @@ export default function TokenCreateForm({
             </details>
           )}
         </div>
+      )}
+
+      {persistenceWarning && (
+        <p className="notice" role="status">
+          {persistenceWarning}
+        </p>
       )}
 
       {result && (

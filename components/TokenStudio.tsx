@@ -102,6 +102,11 @@ export default function TokenStudio({
           {networkWarning}
         </p>
       )}
+      {portfolioHook.persistenceWarning && (
+        <p className="name-network-message" role="status">
+          {portfolioHook.persistenceWarning}
+        </p>
+      )}
       <PortTokenLayout
         sidebar={
           <PortTokenSidebar

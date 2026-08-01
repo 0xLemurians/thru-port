@@ -8,7 +8,12 @@ export default function PortTokenLayout({
   return (
     <div className="pc-token-layout pc-token-layout-simplified">
       <aside className="pc-token-panel pc-token-sidebar">{sidebar}</aside>
-      <main className="pc-token-panel pc-token-workspace">{workspace}</main>
+      <section
+        className="pc-token-panel pc-token-workspace"
+        aria-label="Token workspace"
+      >
+        {workspace}
+      </section>
     </div>
   );
 }

@@ -12,19 +12,27 @@ import {
 } from "@/lib/token/thru-token";
 import { tokenDisplayLabels } from "@/lib/token/portfolio";
 import WalletBackupDialog from "./WalletBackupDialog";
+import {
+  formatNativeThruAmount,
+  NATIVE_THRU_BALANCE_UNIT,
+} from "@/lib/wallet/native-balance";
 
 interface PortWalletPopoverProps {
+  id: string;
   account: ThruAccount;
   balance: bigint | null;
   health: AlphaNetHealth;
   onForgetAccount?: () => void | Promise<void>;
+  onBusyChange?: (busy: boolean) => void;
 }
 
 export default function PortWalletPopover({
+  id,
   account,
   balance,
   health,
   onForgetAccount,
+  onBusyChange,
 }: PortWalletPopoverProps) {
   const [activeTab, setActiveTab] = useState<"none" | "send" | "receive">("none");
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
@@ -85,13 +93,24 @@ export default function PortWalletPopover({
     onSuccess: () => portfolioHook.refreshRecords(portfolioHook.records),
   });
 
+  useEffect(() => {
+    onBusyChange?.(busy || removing);
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange, removing]);
 
-  const nativeBalStr = balance !== null ? formatRawAmount(balance, 9) : "...";
+
+  const nativeBalStr =
+    balance !== null ? formatNativeThruAmount(balance) : "...";
 
   return (
     <div
+      id={id}
       ref={popoverRef}
       className="pc-wallet-popover"
+      role="dialog"
+      aria-label="Wallet actions"
+      aria-busy={busy}
+      tabIndex={-1}
       style={{
         position: "absolute",
         top: "40px",
@@ -117,7 +136,7 @@ export default function PortWalletPopover({
         <div style={{ marginTop: "4px" }}>
           <div style={{ fontSize: "12px", color: "var(--text-dim)" }}>Native balance</div>
           <div style={{ fontSize: "20px", fontWeight: "600", color: "var(--text)" }}>
-            {nativeBalStr} THRU
+            {nativeBalStr} {balance !== null ? NATIVE_THRU_BALANCE_UNIT : ""}
           </div>
         </div>
 
@@ -234,6 +253,7 @@ export default function PortWalletPopover({
             className="pc-btn-secondary"
             style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
             onClick={() => setBackupOpen(true)}
+            disabled={busy}
           >
             Download Backup
           </button>
@@ -243,6 +263,7 @@ export default function PortWalletPopover({
               className="pc-btn-secondary"
               style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
               onClick={() => {
+                if (busy) return;
                 setDisconnectConfirm(true);
                 setRemoveError(null);
               }}
@@ -255,7 +276,7 @@ export default function PortWalletPopover({
                 type="button"
                 className="pc-btn-secondary"
                 style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center", color: "#ff8d8d", borderColor: "rgba(255,141,141,0.2)" }}
-                disabled={removing}
+                disabled={removing || busy}
                 onClick={handleConfirmRemoval}
               >
                 {removing ? "Removing..." : "Confirm removal"}
@@ -425,7 +446,7 @@ function PopoverSend({
             autoComplete="off"
             style={{ padding: "6px", fontSize: "12px" }}
           />
-          {valError && <span style={{ color: "var(--accent-red)", fontSize: "11px", marginTop: "2px" }}>{valError}</span>}
+          {valError && <span role="alert" style={{ color: "var(--accent-red)", fontSize: "11px", marginTop: "2px" }}>{valError}</span>}
         </label>
 
         <button
@@ -440,9 +461,9 @@ function PopoverSend({
 
       {(error || result) && (
         <div style={{ marginTop: "12px", fontSize: "12px" }}>
-          {error && <p style={{ color: "var(--accent-red)", margin: 0 }}>{error}</p>}
+          {error && <p role="alert" style={{ color: "var(--accent-red)", margin: 0 }}>{error}</p>}
           {result && (
-            <div>
+            <div role="status">
               <p style={{ color: "var(--accent-green)", margin: 0 }}>Transfer successful!</p>
               <a href={`https://scan.thru.org/tx/${result.signature}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent-amber)" }}>
                 View Explorer ↗
@@ -466,11 +487,27 @@ function PopoverReceive({
   portfolio: TokenPortfolioItem[];
 }) {
   const [copied, setCopied] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(id);
-    setTimeout(() => setCopied(null), 2000);
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+  }, []);
+
+  const handleCopy = async (text: string, id: string) => {
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(id);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => {
+        setCopied(null);
+        copyTimerRef.current = null;
+      }, 2000);
+    } catch {
+      setCopied(null);
+      setCopyError("Unable to copy the public address.");
+    }
   };
 
   return (
@@ -478,6 +515,7 @@ function PopoverReceive({
       <p style={{ color: "var(--text-dim)", marginBottom: "12px", marginTop: 0 }}>
         Share your wallet address for wallet-based transfers.
       </p>
+      {copyError && <p role="alert" style={{ color: "var(--accent-red)" }}>{copyError}</p>}
 
       <div style={{ marginBottom: "16px" }}>
         <div style={{ fontSize: "11px", color: "var(--text-dim)", textTransform: "uppercase" }}>Main Wallet Address</div>
@@ -485,6 +523,7 @@ function PopoverReceive({
           {account.address}
         </div>
         <button
+          type="button"
           className="pc-btn-secondary"
           onClick={() => handleCopy(account.address, "main")}
           style={{ padding: "4px 8px", fontSize: "11px", marginTop: "6px" }}
@@ -515,6 +554,7 @@ function PopoverReceive({
                   <div style={{ fontSize: "12px", color: "var(--text-dim)" }}>Balance: {bal} {ticker}</div>
                   <div style={{ fontSize: "11px", color: "var(--text-dim)", marginTop: "4px" }}>Token account: {acc.address.slice(0,8)}...</div>
                   <button
+                    type="button"
                     className="pc-btn-secondary"
                     onClick={() => handleCopy(acc.address, p.mintAddress)}
                     style={{ padding: "2px 6px", fontSize: "10px", marginTop: "6px" }}

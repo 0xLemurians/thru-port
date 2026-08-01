@@ -1327,6 +1327,7 @@ async function submitAndTrackPurchase(input: {
   let confirmationReported = false;
   let finalized = false;
   let executionSucceeded = false;
+  let submissionStarted = false;
   const updates = input
     .sendAndTrack(wire, {
       timeoutMs: input.timeoutMs,
@@ -1334,6 +1335,7 @@ async function submitAndTrackPurchase(input: {
     })
     [Symbol.asyncIterator]();
   try {
+    submissionStarted = true;
     while (true) {
       const next = await abortable(updates.next(), input.signal);
       if (next.done) break;
@@ -1384,7 +1386,7 @@ async function submitAndTrackPurchase(input: {
     if (
       error instanceof PurchaseError &&
       (error.code === "TRANSACTION_REJECTED" ||
-        error.code === "OPERATION_ABORTED")
+        (error.code === "OPERATION_ABORTED" && !submissionStarted))
     ) {
       throw error;
     }
@@ -1790,7 +1792,7 @@ export async function purchaseThruName(
                 expectedOwner: walletAddress,
                 expected: signingState,
                 lookupName,
-                signal: scope?.signal,
+                signal: undefined,
               });
               return fallbackPostState !== null;
             } catch (error) {
@@ -1808,7 +1810,7 @@ export async function purchaseThruName(
             error.code === "POST_STATE_MISMATCH"
               ? "failure"
               : "pending",
-          signal: scope.signal,
+          signal: undefined,
           timeoutMs: Math.min(
             TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS,
             Math.max(1, Math.floor(timeoutMs / 2)),
@@ -1846,7 +1848,7 @@ export async function purchaseThruName(
         intervalMs: options.postStateIntervalMs,
         lookupName,
         sleep,
-        signal: scope.signal,
+        signal: undefined,
       }));
 
     return {

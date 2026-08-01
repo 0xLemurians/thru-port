@@ -6,6 +6,18 @@ import {
   type TransferTokenResult
 } from "@/lib/token/thru-token";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import {
+  SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
+  TransactionStatusUncertainError,
+} from "./transaction-status";
+
+interface CachedTransferUiState {
+  progressLabel: string | null;
+  error: string | null;
+  result: TransferTokenResult | null;
+}
+
+const transferUiState = new Map<string, CachedTransferUiState>();
 
 export function useTokenTransfer({
   account,
@@ -15,11 +27,21 @@ export function useTokenTransfer({
   onSuccess?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [progressLabel, setProgressLabel] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<TransferTokenResult | null>(null);
+  const cached = account ? transferUiState.get(account.address) : undefined;
+  const [progressLabel, setProgressLabel] = useState<string | null>(
+    cached?.progressLabel ?? null,
+  );
+  const [error, setError] = useState<string | null>(cached?.error ?? null);
+  const [result, setResult] = useState<TransferTokenResult | null>(
+    cached?.result ?? null,
+  );
 
   const controllerRef = useRef<AbortController | null>(null);
+  const inFlightRef = useRef(false);
+
+  const remember = useCallback((next: CachedTransferUiState) => {
+    if (account) transferUiState.set(account.address, next);
+  }, [account]);
 
   useEffect(() => {
     return () => controllerRef.current?.abort();
@@ -29,7 +51,8 @@ export function useTokenTransfer({
     setError(null);
     setResult(null);
     setProgressLabel(null);
-  }, []);
+    if (account) transferUiState.delete(account.address);
+  }, [account]);
 
   async function transfer({
     selectedTokenMint,
@@ -42,10 +65,10 @@ export function useTokenTransfer({
     transferDestination: string;
     transferAmount: string;
   }) {
-    if (!account) return;
+    if (!account || inFlightRef.current) return;
 
     const controller = new AbortController();
-    controllerRef.current?.abort();
+    inFlightRef.current = true;
     controllerRef.current = controller;
     setBusy(true);
     setError(null);
@@ -68,7 +91,13 @@ export function useTokenTransfer({
         },
         {
           signal: controller.signal,
-          onProgress: () => {},
+          onProgress: (progress) => {
+            if (progress.stage === "waiting-final-consensus") {
+              setProgressLabel("Confirming recipient account...");
+            } else if (progress.stage === "refetching-on-chain-state") {
+              setProgressLabel("Verifying recipient account...");
+            }
+          },
         }
       );
 
@@ -86,23 +115,34 @@ export function useTokenTransfer({
         },
         {
           signal: controller.signal,
-          onProgress: () => {},
+          onProgress: (progress) => {
+            if (progress.stage === "waiting-final-consensus") {
+              setProgressLabel("Confirming token transfer...");
+            } else if (progress.stage === "refetching-on-chain-state") {
+              setProgressLabel("Verifying token balances...");
+            }
+          },
         }
       );
 
       setResult(next);
+      remember({ progressLabel: null, error: null, result: next });
       if (onSuccess) onSuccess();
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Transfer failed.";
-      setError(
-        controller.signal.aborted
-          ? "Cancelled."
-          : message
-      );
+      const safeMessage =
+        cause instanceof TransactionStatusUncertainError
+          ? SAFE_TRANSACTION_UNCERTAIN_MESSAGE
+          : controller.signal.aborted
+            ? "Cancelled before submission."
+            : message;
+      setError(safeMessage);
+      remember({ progressLabel: null, error: safeMessage, result: null });
     } finally {
       if (controllerRef.current === controller) {
         controllerRef.current = null;
       }
+      inFlightRef.current = false;
       setBusy(false);
       setProgressLabel(null);
     }

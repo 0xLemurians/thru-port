@@ -80,7 +80,7 @@ export function assertUsableTransactionContext(
 }
 
 /**
- * @thru/sdk 0.3.0 fetches the fee-payer nonce, finalized slot, and chain ID
+ * @thru/sdk 0.3.2 fetches the fee-payer nonce, finalized slot, and chain ID
  * while building. The result is checked before it may reach a signing call.
  */
 export async function buildTransactionForSigning(

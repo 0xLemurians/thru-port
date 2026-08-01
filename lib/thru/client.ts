@@ -1,4 +1,7 @@
-import { createThruClient } from "@thru/sdk";
+import {
+  createThruClient,
+  TransactionSigningScheme,
+} from "@thru/sdk";
 
 export const ALPHANET_RPC_URL = "https://rpc.alphanet.thru.org";
 
@@ -8,4 +11,5 @@ export const ALPHANET_RPC_URL = "https://rpc.alphanet.thru.org";
  */
 export const thru = createThruClient({
   baseUrl: ALPHANET_RPC_URL,
+  transactionSigningScheme: TransactionSigningScheme.Rfc8032,
 });

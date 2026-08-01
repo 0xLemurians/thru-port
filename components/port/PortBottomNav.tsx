@@ -41,10 +41,13 @@ export default function PortBottomNav({
       {ITEMS.map((item) => {
         const isLocked = !accountAvailable && item.id !== "account";
         return (
-          <button
-            key={item.id}
+           <button
+             key={item.id}
+             type="button"
             className={`pc-mob-nav-btn ${currentStage === item.id ? "active" : ""} ${isLocked ? "locked" : ""}`}
-            onClick={() => handleNav(item.id)}
+             onClick={() => handleNav(item.id)}
+             disabled={isLocked || isTransitioning}
+             aria-current={currentStage === item.id ? "page" : undefined}
             title={isLocked ? "Create or import a wallet to unlock this workspace." : ""}
           >
             {isLocked ? (

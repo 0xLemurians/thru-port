@@ -1,78 +1,86 @@
-# thru-web — AlphaNet onboarding ve C editörü
+# Thru Port
 
-Tarayıcı içinde Thru AlphaNet hesabı oluşturma/içe aktarma, hesabı on-chain
-faucet ile fonlama ve başlangıç C şablonlarını Monaco editöründe düzenleme
-prototipi.
+Thru Port, Thru AlphaNet üzerinde çalışan browser tabanlı bir wallet ve fungible-token dApp'idir. Uygulama Next.js, React ve TypeScript kullanır; zincir erişimi için exact `@thru/sdk@0.3.2` ve `@thru/programs@0.3.2` paketlerine bağlıdır.
 
-> Build backend ve program deploy bu aşamada bağlı değildir. Arayüz bunları
-> çalışan özellikler olarak sunmaz.
+AlphaNet bir test ağıdır ve sıfırlanabilir. Buradaki test birimlerinin parasal değeri yoktur.
 
-## Mevcut akış
+## Aktif özellikler
 
-1. **Account**
-   - 12 kelimelik BIP-39 recovery phrase ile yeni hesap üretme
-   - Recovery phrase veya 32-byte hex private key ile import
-   - Public address ve bakiye görüntüleme
-   - Açık risk onayından sonra plaintext yerel backup indirme
-2. **Fund**
-   - Zincirde henüz bulunmayan hesabı state-proof tabanlı create transaction
-     ile oluşturma
-   - Hesap görünürlüğünü doğrulama
-   - Faucet transaction'ını tarayıcıda imzalama
-   - Retry öncesi ve başarı sonrasında bakiye artışını doğrulama
-   - Uzun isteği iptal edebilme
-3. **Code**
-   - Counter, Message Storage, Game Score ve Blank C şablonları
-   - Yerel npm paketinden yüklenen Monaco Editor
-   - Template metadata, reset ve kaydedilmemiş değişiklik uyarısı
+### Wallet
 
-## Güvenlik modeli
+- Browser içinde wallet üretimi
+- Tam olarak 32-byte Ed25519 private key importu
+- Encrypted Backup importu
+- IndexedDB üzerinde encrypted wallet persistence
+- Browser vault kayıtlarında AES-256-GCM authenticated encryption
+- Refresh sonrasında tamamlanmamış yeni-wallet backup adımını koruyan `setupPending` akışı
+- AlphaNet account creation ve doğrulanmış account-existence kontrolü
+- Kullanıcı tarafından başlatılan AlphaNet faucet akışı
+- Public address, transaction signature ve Thru Scan bağlantıları
 
-- Private key ve mnemonic uygulama backend'ine veya RPC'ye gönderilmez.
-- Key üretimi, mnemonic türetme ve transaction imzalama tarayıcıda
-  `@thru/sdk` ile yapılır.
-- RPC yalnızca public hesap verilerini, state-proof isteklerini ve imzalı wire
-  transaction'ları görür.
-- Monaco üçüncü taraf CDN'den değil, kurulu yerel `monaco-editor` paketinden
-  yüklenir.
-- Secret import alanında autocomplete, autocapitalize ve spellcheck kapalıdır.
-- Private key importu tam olarak 32 byte / 64 hex karakter olarak doğrulanır.
-- "Forget account" işlemi mutable private-key byte dizisini sıfırlar.
-- İndirilen backup **şifresiz plaintext JSON** dosyasıdır. Bu dosyayı ele
-  geçiren kişi hesabı kontrol edebilir.
+Visible Recovery Phrase importu bulunmaz. Yeni wallet oluşturma akışı gereksiz mnemonic değerini persisted wallet kaydına eklemez; eski mnemonic içeren wallet kayıtları geriye dönük olarak restore edilmeye devam eder.
 
-JavaScript stringleri güvenilir biçimde sıfırlanamadığından mnemonic için
-mutlak bellek silme garantisi verilmez. Tarayıcı eklentileri ve cihaz güvenliği
-de tehdit modelinin parçasıdır.
+### Encrypted Backup
 
-## Faucet tasarımı
+Backup v2 formatı şu ürün kararını bilinçli olarak korur:
 
-`@thru/sdk` hazır bir faucet builder sunmadığı için 16-byte withdraw instruction
-Thru faucet formatına göre oluşturulur:
+- Wallet payload'u AES-GCM ile şifrelenir.
+- Top-level `privateKey` alanı plaintext olarak backup JSON içinde bulunur.
+- Backup password yalnız encrypted payload'u korur; top-level `privateKey` alanını korumaz.
+- Export öncesinde bu durum açıkça uyarılır ve kullanıcı acknowledgment'ı gerekir.
+- Import sırasında decrypted payload, public address ve top-level private key tutarlılığı doğrulanır.
+- Legacy encrypted backup v1 importu desteklenir.
+- Created-token public metadata backup içinde restore edilebilir.
 
-- `u32 LE`: withdraw discriminant (`1`)
-- `u16 LE`: faucet account index
-- `u16 LE`: recipient account index
-- `u64 LE`: amount
+Backup dosyasına erişen herkes wallet'ı kontrol edebilir. Backup hiçbir zaman güvenilmeyen bir yere yüklenmemeli veya paylaşılmamalıdır.
 
-Account indeksleri sabit sayılarla yazılmaz; SDK'nın transaction context'i
-üzerinden hesaplanır. Yeni hesap create transaction'ı `sendAndTrack` ile
-gönderilir ve hesap RPC'de görünür olana kadar doğrulanır. Faucet başarı durumu,
-yalnızca bakiyenin başlangıç değerinden arttığı gözlemlendiğinde döner.
+### Token Studio
 
-## C şablonları
+- Fungible token mint oluşturma
+- Wallet'a ait token account oluşturma
+- Initial token mint
+- Yetkili wallet ile ek supply mint etme
+- Token transferi ve destination token-account hazırlama
+- Exact `bigint` amount validation ve post-state balance/supply doğrulaması
+- Created-token public referanslarının local persistence'ı
+- Bounded transaction-history discovery ve yarım kalan setup için resume akışı
+- Submitted fakat sonucu belirsiz token işlemleri için public, versioned pending-operation journal
 
-| Şablon | State | Instruction |
-| --- | ---: | --- |
-| Counter | 8 byte | Yok |
-| Message Storage | En az 8 byte | Raw mesaj byte'ları |
-| Game Score | 8 byte | 8-byte little-endian unsigned puan |
-| Blank | 0 byte | Yok |
+Journal yalnız public adresleri, public transaction signature'larını, raw amount değerlerini ve beklenen public post-state bilgisini tutar. Private key, mnemonic, password veya signed transaction bytes journal'a yazılmaz.
 
-Şablonlar daha önce Thru C SDK/RISC-V toolchain ile manuel olarak derlenmiştir.
-Bu repo henüz gerçek toolchain'i çalıştıran otomatik bir build testi içermez;
-bu nedenle derleme veya on-chain davranış garantisi verilmez. Docker build
-altyapısı sonraki aşamadır.
+### Identity
+
+Identity registration AlphaNet üzerinde şu anda kapalıdır. Read-only notice/lookup güvenlik kodu korunur ancak UI `.thru` registration transaction'ı başlatmaz.
+
+## Native THRU balance
+
+Resmî Web SDK içinde native THRU decimal denomination sabiti doğrulanamadığı için Dashboard ve wallet popover bakiyeyi kayıpsız raw `native units` olarak gösterir. Rastgele 9 veya 18 decimal varsayımı yapılmaz.
+
+Native THRU send şu anda aktif değildir. Resmî `@thru/sdk` browser API'sinde doğrulanmış bir native-transfer instruction builder bulunmadan manuel protocol bytes oluşturulmaz.
+
+## Transaction güvenliği
+
+- Production transaction signing yalnız resmî SDK `Transaction.sign()` RFC8032 yolu üzerinden yapılır.
+- Transaction context ve body imzalamadan önce tamamlanıp doğrulanır.
+- `legacySign()` veya Legacy scheme production path'lerinde kullanılmaz.
+- Her operation için tek submission yapılır.
+- Tracker erken biterse aynı transaction rebuild, re-sign veya rebroadcast edilmez.
+- Finalized transaction lookup ve operation'a özgü exact post-state salt-okunur biçimde reconcile edilir.
+- Unresolved public signature varken aynı operation tekrar gönderilemez.
+
+## Aktif olmayan özellikler
+
+Bu repository şu anda aşağıdakileri aktif uygulama özelliği olarak sunmaz:
+
+- Native THRU send
+- AMM, Swap veya Pools
+- Add/Remove Liquidity
+- CLOB
+- Bonding curve veya launchpad
+- Graduation ve LP lock/burn
+- Indexer/backend, chart, volume veya holder sistemi
+- Passkey wallet migration
+- Identity registration
 
 ## Çalıştırma
 
@@ -88,30 +96,19 @@ Uygulama varsayılan olarak `http://localhost:3000` adresinde açılır.
 ## Kontroller
 
 ```bash
-npm run lint
 npm run typecheck
-npm test
+npm run lint
+npm run test
 npm run build
 ```
 
-Hepsini sırayla çalıştırmak için:
+Hepsini repository script'iyle çalıştırmak için:
 
 ```bash
 npm run check
 ```
 
-## Henüz kapsamda olmayanlar
-
-- Docker/RISC-V build backend
-- Build log ve artifact indirme
-- Program deploy
-- Invoke/test transaction'ları
-- Şifreli backup formatı
-- Gerçek AlphaNet'e karşı otomatik end-to-end test
-
 ## Ağ adresleri
 
 - RPC: `https://rpc.alphanet.thru.org`
 - Explorer: `https://scan.thru.org`
-
-AlphaNet test ağı sıfırlanabilir. Test unit'lerinin parasal değeri yoktur.

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import type { WorkspaceStage } from "./PortHeader";
 import PortHeader from "./PortHeader";
 import PortBottomNav from "./PortBottomNav";
@@ -33,11 +33,22 @@ export default function PortShell({
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [swipeActive, setSwipeActive] = useState(false);
   const [initialLoad, setInitialLoad] = useState(true);
+  const transitionTimersRef = useRef<number[]>([]);
 
   useEffect(() => {
     const t = setTimeout(() => setInitialLoad(false), 50);
     return () => clearTimeout(t);
   }, []);
+
+  useEffect(
+    () => () => {
+      for (const timer of transitionTimersRef.current) {
+        window.clearTimeout(timer);
+      }
+      transitionTimersRef.current = [];
+    },
+    [],
+  );
 
   // Sync if currentStage changes externally (e.g., wallet reset)
   useEffect(() => {
@@ -52,15 +63,21 @@ export default function PortShell({
     setIsTransitioning(true);
     setSwipeActive(true);
 
-    setTimeout(() => {
+    for (const timer of transitionTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    transitionTimersRef.current = [];
+
+    transitionTimersRef.current.push(window.setTimeout(() => {
       setDisplayStage(newStage);
       onStageChange(newStage);
-    }, 130);
+    }, 130));
 
-    setTimeout(() => {
+    transitionTimersRef.current.push(window.setTimeout(() => {
       setIsTransitioning(false);
       setSwipeActive(false);
-    }, 420);
+      transitionTimersRef.current = [];
+    }, 420));
   };
 
   return (

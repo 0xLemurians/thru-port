@@ -1,7 +1,7 @@
 {
-  "fixture": "Thru v0.3.0 transaction signing",
+  "fixture": "Thru v0.3.2 RFC8032 transaction signing (bytes unchanged from v0.3.0)",
   "warning": "PUBLIC TEST VECTOR ONLY - NEVER USE THIS KEY ON-CHAIN",
-  "source": "Unto-Labs/thru v0.3.0 Rust signer and wire layout, independently reproduced with Web Crypto RFC-8032 Ed25519",
+  "source": "Unto-Labs/thru v0.3 Rust signer and wire layout, independently reproduced with Web Crypto RFC-8032 Ed25519; verified unchanged by @thru/sdk 0.3.2",
   "transactionDomain": "tn_txn_sign_v1__",
   "publicTestSeedHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
   "publicKeyHex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",

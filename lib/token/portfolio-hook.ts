@@ -55,6 +55,7 @@ export function useTokenPortfolio(
   const [storageReady, setStorageReady] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [portfolioError, setPortfolioError] = useState<string | null>(null);
+  const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
 
   const requestTrackerRef = useRef(new LatestRequestTracker());
   const requestAbortRef = useRef<AbortController | null>(null);
@@ -93,7 +94,14 @@ export function useTokenPortfolio(
           discovered,
           walletAddress,
         );
-        saveKnownTokens(window.localStorage, recordsToRefresh);
+        try {
+          saveKnownTokens(window.localStorage, recordsToRefresh);
+          setPersistenceWarning(null);
+        } catch {
+          setPersistenceWarning(
+            "On-chain token state is available, but this browser could not save the public token list.",
+          );
+        }
         setRecords(recordsToRefresh);
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -124,7 +132,14 @@ export function useTokenPortfolio(
           decimals: item.mint.decimals,
         });
       }
-      saveKnownTokens(window.localStorage, enrichedRecords);
+      try {
+        saveKnownTokens(window.localStorage, enrichedRecords);
+        setPersistenceWarning(null);
+      } catch {
+        setPersistenceWarning(
+          "On-chain token state is available, but this browser could not save the public token list.",
+        );
+      }
       setRecords(enrichedRecords);
       setPortfolio(controlledPortfolio);
       setPortfolioError(
@@ -149,7 +164,14 @@ export function useTokenPortfolio(
 
   const persistAndRefresh = useCallback(
     (next: KnownTokenRecord[]) => {
-      saveKnownTokens(window.localStorage, next);
+      try {
+        saveKnownTokens(window.localStorage, next);
+        setPersistenceWarning(null);
+      } catch {
+        setPersistenceWarning(
+          "On-chain token state is available, but this browser could not save the public token list.",
+        );
+      }
       setRecords(next);
       void refreshRecords(next);
     },
@@ -231,6 +253,7 @@ export function useTokenPortfolio(
     storageReady,
     refreshing,
     portfolioError,
+    persistenceWarning,
     refreshRecords,
     persistAndRefresh,
     addKnownToken,

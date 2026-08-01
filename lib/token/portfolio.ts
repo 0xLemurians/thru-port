@@ -28,9 +28,9 @@ export interface KnownTokenRecord {
 export function loadKnownTokens(
   storage: Pick<Storage, "getItem">,
 ): KnownTokenRecord[] {
-  const raw = storage.getItem(TOKEN_PORTFOLIO_STORAGE_KEY);
-  if (!raw) return [];
   try {
+    const raw = storage.getItem(TOKEN_PORTFOLIO_STORAGE_KEY);
+    if (!raw) return [];
     return normalizeKnownTokens(JSON.parse(raw));
   } catch {
     return [];

@@ -10,6 +10,10 @@ import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import { clearSecretInputs } from "@/lib/wallet/wallet-backup";
 import PortSafetyRail from "./PortSafetyRail";
 import type { AlphaNetHealth } from "./useAlphaNetHealth";
+import {
+  formatNativeThruAmount,
+  NATIVE_THRU_BALANCE_UNIT,
+} from "@/lib/wallet/native-balance";
 import PortFaucetPanel from "./PortFaucetPanel";
 import PortFooter from "./PortFooter";
 import WalletBackupDialog from "./WalletBackupDialog";
@@ -441,7 +445,7 @@ export default function PortDashboard({
                     ) : balance === null ? (
                       "Loading..."
                     ) : (
-                      `${(Number(balance) / 1e18).toFixed(4)} THRU`
+                      `${formatNativeThruAmount(balance)} ${NATIVE_THRU_BALANCE_UNIT}`
                     )}
                   </span>
                 </div>

@@ -57,6 +57,16 @@ import {
 } from "./resume";
 import type { PendingTokenSetup } from "./pending-setup";
 import {
+  PENDING_TOKEN_OPERATION_SCHEMA_VERSION,
+  canonicalTokenOperationKey,
+  clearPendingTokenOperation,
+  persistPendingTokenOperation,
+  reconcilePendingTokenOperationJournal,
+  type PendingTokenExpectedState,
+  type PendingTokenOperationRecord,
+  type PendingTokenOperationType,
+} from "./pending-operation";
+import {
   assertOfficialTokenProgramOwnership,
   buildDestinationInitializeAccountArgs,
   deriveDestinationTokenAccount,
@@ -82,6 +92,224 @@ export const TOKEN_PROGRAM_ADDRESS =
 const FINALIZATION_TIMEOUT_MS = 60_000;
 const REFRESH_ATTEMPTS = 7;
 const TOKEN_ACCOUNT_DEFAULT_SEED = new Uint8Array(32);
+const ACTIVE_TOKEN_OPERATIONS = new Set<string>();
+
+async function withTokenOperationGuard<T>(
+  key: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (ACTIVE_TOKEN_OPERATIONS.has(key)) {
+    throw new Error("This token operation is already in progress.");
+  }
+  ACTIVE_TOKEN_OPERATIONS.add(key);
+  try {
+    return await operation();
+  } finally {
+    ACTIVE_TOKEN_OPERATIONS.delete(key);
+  }
+}
+
+interface PendingOperationBase {
+  key: string;
+  operationType: PendingTokenOperationType;
+  walletAddress: string;
+  mintAddress: string;
+  sourceTokenAccount?: string;
+  destinationTokenAccount?: string;
+  recipientAddress?: string;
+  amountRaw?: bigint;
+  expectedPreState?: PendingTokenExpectedState;
+  expectedPostState: PendingTokenExpectedState;
+}
+
+function pendingOperationRecord(
+  base: PendingOperationBase,
+  signature: string,
+  createdAt = Date.now(),
+): PendingTokenOperationRecord {
+  return {
+    schemaVersion: PENDING_TOKEN_OPERATION_SCHEMA_VERSION,
+    key: base.key,
+    operationType: base.operationType,
+    signature,
+    walletAddress: base.walletAddress,
+    mintAddress: base.mintAddress,
+    ...(base.sourceTokenAccount
+      ? { sourceTokenAccount: base.sourceTokenAccount }
+      : {}),
+    ...(base.destinationTokenAccount
+      ? { destinationTokenAccount: base.destinationTokenAccount }
+      : {}),
+    ...(base.recipientAddress ? { recipientAddress: base.recipientAddress } : {}),
+    ...(base.amountRaw !== undefined
+      ? { amountRaw: base.amountRaw.toString(10) }
+      : {}),
+    ...(base.expectedPreState
+      ? { expectedPreState: base.expectedPreState }
+      : {}),
+    expectedPostState: base.expectedPostState,
+    createdAt,
+    lastCheckedAt: createdAt,
+    status: "submitted",
+  };
+}
+
+function clearVerifiedPendingOperation(key: string, walletAddress: string): void {
+  try {
+    clearPendingTokenOperation(key, walletAddress);
+  } catch {
+    // Verified chain success remains success. A stale public record stays
+    // fail-closed and can be reconciled/cleaned on a later safe read.
+  }
+}
+
+async function reconcilePendingOperation<TResult>(input: {
+  base: PendingOperationBase;
+  verifyExpectedState: (record: PendingTokenOperationRecord) => Promise<boolean>;
+  buildResult: (
+    signature: string,
+    record: PendingTokenOperationRecord,
+  ) => Promise<TResult>;
+  timeoutMs: number;
+}): Promise<{ outcome: "none" | "failure" } | { outcome: "success"; result: TResult }> {
+  const reconciled = await reconcilePendingTokenOperationJournal({
+    key: input.base.key,
+    walletAddress: input.base.walletAddress,
+    retainOnSuccess: true,
+    verify: async (record) => {
+      try {
+        const verification = await verifySubmittedTransaction({
+          signature: record.signature,
+          verifyExpectedState: () => input.verifyExpectedState(record),
+          classifyExpectedStateError: classifyTokenPostStateError,
+          timeoutMs: Math.min(
+            input.timeoutMs,
+            TRANSACTION_VISIBILITY_TIMEOUT_MS,
+          ),
+        });
+        return verification.outcome;
+      } catch {
+        return "uncertain";
+      }
+    },
+  });
+  if (reconciled.outcome === "none" || reconciled.outcome === "failure") {
+    return { outcome: reconciled.outcome };
+  }
+  if (reconciled.outcome === "uncertain") {
+    throw new TransactionStatusUncertainError(
+      reconciled.record.signature,
+      false,
+    );
+  }
+  const result = await input.buildResult(
+    reconciled.record.signature,
+    reconciled.record,
+  );
+  clearVerifiedPendingOperation(input.base.key, input.base.walletAddress);
+  return { outcome: "success", result };
+}
+
+function expectedRaw(value: string | undefined): bigint | null {
+  if (value === undefined) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
+function matchesPendingMintDestinationState(
+  record: PendingTokenOperationRecord,
+  mint: MintAccountInfo,
+  destination: TokenAccountInfo,
+): boolean {
+  const expected = record.expectedPostState;
+  const mintSupply = expectedRaw(expected.mintSupply);
+  const destinationBalance = expectedRaw(expected.destinationBalance);
+  return (
+    mintSupply !== null &&
+    destinationBalance !== null &&
+    mint.supply === mintSupply &&
+    destination.amount === destinationBalance &&
+    destination.mint === record.mintAddress &&
+    (expected.mintDecimals === undefined ||
+      mint.decimals === expected.mintDecimals) &&
+    (expected.mintCreator === undefined ||
+      mint.creator === expected.mintCreator) &&
+    (expected.mintAuthority === undefined ||
+      mint.mintAuthority === expected.mintAuthority) &&
+    (expected.mintTicker === undefined || mint.ticker === expected.mintTicker) &&
+    (expected.destinationOwner === undefined ||
+      destination.owner === expected.destinationOwner) &&
+    (expected.destinationFrozen === undefined ||
+      destination.isFrozen === expected.destinationFrozen)
+  );
+}
+
+function matchesPendingMintOnlyState(
+  record: PendingTokenOperationRecord,
+  mint: MintAccountInfo,
+): boolean {
+  const expected = record.expectedPostState;
+  const mintSupply = expectedRaw(expected.mintSupply);
+  return (
+    mintSupply !== null &&
+    mint.supply === mintSupply &&
+    (expected.mintDecimals === undefined ||
+      mint.decimals === expected.mintDecimals) &&
+    (expected.mintCreator === undefined ||
+      mint.creator === expected.mintCreator) &&
+    (expected.mintAuthority === undefined ||
+      mint.mintAuthority === expected.mintAuthority) &&
+    (expected.mintTicker === undefined || mint.ticker === expected.mintTicker)
+  );
+}
+
+function matchesPendingTokenAccountOnlyState(
+  record: PendingTokenOperationRecord,
+  tokenAccount: TokenAccountInfo,
+): boolean {
+  const expected = record.expectedPostState;
+  const destinationBalance = expectedRaw(expected.destinationBalance);
+  return (
+    destinationBalance !== null &&
+    tokenAccount.amount === destinationBalance &&
+    tokenAccount.mint === record.mintAddress &&
+    (expected.destinationOwner === undefined ||
+      tokenAccount.owner === expected.destinationOwner) &&
+    (expected.destinationFrozen === undefined ||
+      tokenAccount.isFrozen === expected.destinationFrozen)
+  );
+}
+
+function matchesPendingTransferState(
+  record: PendingTokenOperationRecord,
+  mint: MintAccountInfo,
+  source: TokenAccountInfo,
+  destination: TokenAccountInfo,
+): boolean {
+  const expected = record.expectedPostState;
+  const mintSupply = expectedRaw(expected.mintSupply);
+  const sourceBalance = expectedRaw(expected.sourceBalance);
+  const destinationBalance = expectedRaw(expected.destinationBalance);
+  return (
+    mintSupply !== null &&
+    sourceBalance !== null &&
+    destinationBalance !== null &&
+    mint.supply === mintSupply &&
+    source.amount === sourceBalance &&
+    destination.amount === destinationBalance &&
+    source.mint === record.mintAddress &&
+    destination.mint === record.mintAddress &&
+    (expected.sourceOwner === undefined || source.owner === expected.sourceOwner) &&
+    (expected.destinationOwner === undefined ||
+      destination.owner === expected.destinationOwner) &&
+    !source.isFrozen &&
+    (expected.destinationFrozen === undefined ||
+      destination.isFrozen === expected.destinationFrozen)
+  );
+}
 
 export interface CreateTokenInput {
   name: string;
@@ -346,6 +574,13 @@ export async function createTokenOnAlphaNet(
     onSetupComplete,
   } = options;
   let context: TokenCreationContext | null = null;
+  let submissionOccurred = false;
+  const pendingSignatures: Partial<
+    Pick<
+      PendingTokenSetup,
+      "mintSignature" | "tokenAccountSignature" | "initialSupplySignature"
+    >
+  > = {};
 
   const getContext = (): TokenCreationContext => {
     if (!context) {
@@ -354,7 +589,23 @@ export async function createTokenOnAlphaNet(
     return context;
   };
 
-  const workflowResult = await runTokenCreationWorkflow(
+  const reportPendingSetup = (): void => {
+    const current = getContext();
+    onPendingSetupAvailable?.({
+      walletAddress: account.address,
+      mintAddress: current.mint.address,
+      tokenAccountAddress: current.tokenAccount.address,
+      name: current.validated.name,
+      ticker: current.validated.ticker,
+      decimals: current.validated.decimals,
+      initialSupply: input.initialSupply,
+      ...pendingSignatures,
+    });
+  };
+
+  const workflowResult = await withTokenOperationGuard(
+    `create-token:${account.address}`,
+    () => runTokenCreationWorkflow(
     {
       validate: async () => {
         signal?.throwIfAborted();
@@ -388,20 +639,50 @@ export async function createTokenOnAlphaNet(
         };
         // Persist the pending setup as soon as addresses are known.
         // This allows recovery even if final verification times out.
-        onPendingSetupAvailable?.({
-          walletAddress: account.address,
-          mintAddress: mint.address,
-          tokenAccountAddress: tokenAccount.address,
-          name: input.name,
-          ticker: input.ticker,
-          decimals: input.decimals,
-          initialSupply: input.initialSupply,
-        });
+        reportPendingSetup();
       },
 
       createMint: async (onSubmitted) => {
         signal?.throwIfAborted();
         const current = getContext();
+        const operationKey = canonicalTokenOperationKey({
+          operationType: "create-mint",
+          walletAddress: account.address,
+          mintAddress: current.mint.address,
+        });
+        const operationBase: PendingOperationBase = {
+          key: operationKey,
+          operationType: "create-mint",
+          walletAddress: account.address,
+          mintAddress: current.mint.address,
+          expectedPostState: {
+            mintSupply: "0",
+            mintDecimals: current.validated.decimals,
+            mintCreator: account.address,
+            mintAuthority: account.address,
+            mintTicker: current.validated.ticker,
+          },
+        };
+        const reconciled = await reconcilePendingOperation({
+          base: operationBase,
+          timeoutMs,
+          verifyExpectedState: (record) =>
+            observeMintState(record.mintAddress, (mint) =>
+              matchesPendingMintOnlyState(record, mint),
+            ),
+          buildResult: async (signature, record) => {
+            current.verifiedMint = await getVerifiedMint(record.mintAddress);
+            if (!matchesPendingMintOnlyState(record, current.verifiedMint)) {
+              throw new TransactionStatusUncertainError(signature, false);
+            }
+            pendingSignatures.mintSignature = signature;
+            reportPendingSetup();
+            onSubmitted(signature);
+            return { signature };
+          },
+        });
+        if (reconciled.outcome === "success") return reconciled.result;
+
         const stateProof = await thru.proofs.generate({
           address: current.mint.address,
           proofType: StateProofType.CREATING,
@@ -432,7 +713,15 @@ export async function createTokenOnAlphaNet(
         );
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
-          onSubmitted,
+          (submittedSignature) => {
+            persistPendingTokenOperation(
+              pendingOperationRecord(operationBase, submittedSignature),
+            );
+            submissionOccurred = true;
+            pendingSignatures.mintSignature = submittedSignature;
+            reportPendingSetup();
+            onSubmitted(submittedSignature);
+          },
           timeoutMs,
           signal,
           {
@@ -460,10 +749,12 @@ export async function createTokenOnAlphaNet(
             mint.mintAuthority === account.address &&
             mint.supply === 0n &&
             mint.freezeAuthority === null &&
-            !mint.hasFreezeAuthority,
-          signal,
+              !mint.hasFreezeAuthority,
+          undefined,
           "The finalized mint state did not match the requested configuration.",
         );
+
+        clearVerifiedPendingOperation(operationKey, account.address);
 
         return { signature };
       },
@@ -471,6 +762,55 @@ export async function createTokenOnAlphaNet(
       createTokenAccount: async (onSubmitted) => {
         signal?.throwIfAborted();
         const current = getContext();
+        const operationKey = canonicalTokenOperationKey({
+          operationType: "create-token-account",
+          walletAddress: account.address,
+          mintAddress: current.mint.address,
+          destinationTokenAccount: current.tokenAccount.address,
+          recipientAddress: account.address,
+        });
+        const operationBase: PendingOperationBase = {
+          key: operationKey,
+          operationType: "create-token-account",
+          walletAddress: account.address,
+          mintAddress: current.mint.address,
+          destinationTokenAccount: current.tokenAccount.address,
+          recipientAddress: account.address,
+          expectedPostState: {
+            destinationBalance: "0",
+            destinationOwner: account.address,
+            destinationFrozen: false,
+          },
+        };
+        const reconciled = await reconcilePendingOperation({
+          base: operationBase,
+          timeoutMs,
+          verifyExpectedState: (record) =>
+            observeTokenAccountState(
+              record.destinationTokenAccount!,
+              (tokenAccount) =>
+                matchesPendingTokenAccountOnlyState(record, tokenAccount),
+            ),
+          buildResult: async (signature, record) => {
+            current.verifiedTokenAccount = await getVerifiedTokenAccount(
+              record.destinationTokenAccount!,
+            );
+            if (
+              !matchesPendingTokenAccountOnlyState(
+                record,
+                current.verifiedTokenAccount,
+              )
+            ) {
+              throw new TransactionStatusUncertainError(signature, false);
+            }
+            pendingSignatures.tokenAccountSignature = signature;
+            reportPendingSetup();
+            onSubmitted(signature);
+            return { signature };
+          },
+        });
+        if (reconciled.outcome === "success") return reconciled.result;
+
         await assertAccountDoesNotExist(current.tokenAccount.address);
         const stateProof = await thru.proofs.generate({
           address: current.tokenAccount.address,
@@ -501,7 +841,15 @@ export async function createTokenOnAlphaNet(
         );
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
-          onSubmitted,
+          (submittedSignature) => {
+            persistPendingTokenOperation(
+              pendingOperationRecord(operationBase, submittedSignature),
+            );
+            submissionOccurred = true;
+            pendingSignatures.tokenAccountSignature = submittedSignature;
+            reportPendingSetup();
+            onSubmitted(submittedSignature);
+          },
           timeoutMs,
           signal,
           {
@@ -524,9 +872,11 @@ export async function createTokenOnAlphaNet(
             tokenAccount.owner === account.address &&
             tokenAccount.amount === 0n &&
             !tokenAccount.isFrozen,
-          signal,
+          undefined,
           "The finalized token account state did not match its mint and owner.",
         );
+
+        clearVerifiedPendingOperation(operationKey, account.address);
 
         return { signature };
       },
@@ -534,6 +884,67 @@ export async function createTokenOnAlphaNet(
       mintInitialSupply: async (onSubmitted) => {
         signal?.throwIfAborted();
         const current = getContext();
+        const operationKey = canonicalTokenOperationKey({
+          operationType: "initial-supply",
+          walletAddress: account.address,
+          mintAddress: current.mint.address,
+          destinationTokenAccount: current.tokenAccount.address,
+          recipientAddress: account.address,
+          amountRaw: current.validated.initialSupplyRaw,
+        });
+        const operationBase: PendingOperationBase = {
+          key: operationKey,
+          operationType: "initial-supply",
+          walletAddress: account.address,
+          mintAddress: current.mint.address,
+          destinationTokenAccount: current.tokenAccount.address,
+          recipientAddress: account.address,
+          amountRaw: current.validated.initialSupplyRaw,
+          expectedPostState: {
+            mintSupply: current.validated.initialSupplyRaw.toString(10),
+            destinationBalance:
+              current.validated.initialSupplyRaw.toString(10),
+            destinationOwner: account.address,
+            destinationFrozen: false,
+          },
+        };
+        const reconciled = await reconcilePendingOperation({
+          base: operationBase,
+          timeoutMs,
+          verifyExpectedState: async (record) => {
+            const [mint, tokenAccount] = await Promise.all([
+              getVerifiedMint(record.mintAddress),
+              getVerifiedTokenAccount(record.destinationTokenAccount!),
+            ]);
+            return matchesPendingMintDestinationState(
+              record,
+              mint,
+              tokenAccount,
+            );
+          },
+          buildResult: async (signature, record) => {
+            [current.verifiedMint, current.verifiedTokenAccount] =
+              await Promise.all([
+                getVerifiedMint(record.mintAddress),
+                getVerifiedTokenAccount(record.destinationTokenAccount!),
+              ]);
+            if (
+              !matchesPendingMintDestinationState(
+                record,
+                current.verifiedMint,
+                current.verifiedTokenAccount,
+              )
+            ) {
+              throw new TransactionStatusUncertainError(signature, false);
+            }
+            pendingSignatures.initialSupplySignature = signature;
+            reportPendingSetup();
+            onSubmitted(signature);
+            return { signature };
+          },
+        });
+        if (reconciled.outcome === "success") return reconciled.result;
+
         const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
@@ -558,7 +969,15 @@ export async function createTokenOnAlphaNet(
         );
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
-          onSubmitted,
+          (submittedSignature) => {
+            persistPendingTokenOperation(
+              pendingOperationRecord(operationBase, submittedSignature),
+            );
+            submissionOccurred = true;
+            pendingSignatures.initialSupplySignature = submittedSignature;
+            reportPendingSetup();
+            onSubmitted(submittedSignature);
+          },
           timeoutMs,
           signal,
           {
@@ -583,11 +1002,12 @@ export async function createTokenOnAlphaNet(
             },
           },
         );
+        clearVerifiedPendingOperation(operationKey, account.address);
         return { signature };
       },
 
       verifyOnChainState: async () => {
-        signal?.throwIfAborted();
+        if (!submissionOccurred) signal?.throwIfAborted();
         const current = getContext();
         const [verifiedMint, verifiedTokenAccount] = await Promise.all([
           waitForMintState(
@@ -600,7 +1020,7 @@ export async function createTokenOnAlphaNet(
               mint.supply === current.validated.initialSupplyRaw &&
               mint.freezeAuthority === null &&
               !mint.hasFreezeAuthority,
-            signal,
+            submissionOccurred ? undefined : signal,
             "Mint supply or authority did not match after finalization.",
           ),
           waitForTokenAccountState(
@@ -610,7 +1030,7 @@ export async function createTokenOnAlphaNet(
               tokenAccount.owner === account.address &&
               tokenAccount.amount === current.validated.initialSupplyRaw &&
               !tokenAccount.isFrozen,
-            signal,
+            submissionOccurred ? undefined : signal,
             "Token account balance did not match the initial supply.",
           ),
         ]);
@@ -619,6 +1039,7 @@ export async function createTokenOnAlphaNet(
       },
     },
     onProgress,
+    ),
   );
 
   const current = getContext();
@@ -934,6 +1355,35 @@ export async function resumeTokenSetupOnAlphaNet(
     signal?.throwIfAborted();
     mintAddress = canonicalAddress(input.mintAddress, "Mint address");
     await assertActiveWalletExists(account.address, signal);
+    const createMintOperationKey = canonicalTokenOperationKey({
+      operationType: "create-mint",
+      walletAddress: account.address,
+      mintAddress,
+    });
+    const createMintReconciliation = await reconcilePendingOperation({
+      base: {
+        key: createMintOperationKey,
+        operationType: "create-mint",
+        walletAddress: account.address,
+        mintAddress,
+        expectedPostState: {},
+      },
+      timeoutMs,
+      verifyExpectedState: (record) =>
+        observeMintState(record.mintAddress, (nextMint) =>
+          matchesPendingMintOnlyState(record, nextMint),
+        ),
+      buildResult: async (signature, record) => {
+        const nextMint = await getVerifiedMint(record.mintAddress);
+        if (!matchesPendingMintOnlyState(record, nextMint)) {
+          throw new TransactionStatusUncertainError(signature, false);
+        }
+        return nextMint;
+      },
+    });
+    if (createMintReconciliation.outcome === "success") {
+      mint = createMintReconciliation.result;
+    }
     mint = await getVerifiedMint(mintAddress);
     initialSupplyRaw = decimalAmountToRaw(
       input.initialSupply,
@@ -951,7 +1401,52 @@ export async function resumeTokenSetupOnAlphaNet(
       tokenAccountSeed,
     );
     tokenAccountAddress = derivedTokenAccount.address;
-    tokenAccount = await getOptionalVerifiedTokenAccount(tokenAccountAddress);
+    const tokenAccountOperationKey = canonicalTokenOperationKey({
+      operationType: "create-token-account",
+      walletAddress: account.address,
+      mintAddress,
+      destinationTokenAccount: tokenAccountAddress,
+      recipientAddress: account.address,
+    });
+    const tokenAccountOperationBase: PendingOperationBase = {
+      key: tokenAccountOperationKey,
+      operationType: "create-token-account",
+      walletAddress: account.address,
+      mintAddress,
+      destinationTokenAccount: tokenAccountAddress,
+      recipientAddress: account.address,
+      expectedPostState: {
+        destinationBalance: "0",
+        destinationOwner: account.address,
+        destinationFrozen: false,
+      },
+    };
+    const tokenAccountReconciliation = await reconcilePendingOperation({
+      base: tokenAccountOperationBase,
+      timeoutMs,
+      verifyExpectedState: (record) =>
+        observeTokenAccountState(
+          record.destinationTokenAccount!,
+          (nextTokenAccount) =>
+            matchesPendingTokenAccountOnlyState(record, nextTokenAccount),
+        ),
+      buildResult: async (signature, record) => {
+        const nextTokenAccount = await getVerifiedTokenAccount(
+          record.destinationTokenAccount!,
+        );
+        if (!matchesPendingTokenAccountOnlyState(record, nextTokenAccount)) {
+          throw new TransactionStatusUncertainError(signature, false);
+        }
+        return { signature, tokenAccount: nextTokenAccount };
+      },
+    });
+    if (tokenAccountReconciliation.outcome === "success") {
+      tokenAccountSignature = tokenAccountReconciliation.result.signature;
+      tokenAccount = tokenAccountReconciliation.result.tokenAccount;
+      tokenAccountCreated = true;
+    } else {
+      tokenAccount = await getOptionalVerifiedTokenAccount(tokenAccountAddress);
+    }
     let plan = planTokenSetupResume({
       mintAddress,
       ownerAddress: account.address,
@@ -1004,6 +1499,9 @@ export async function resumeTokenSetupOnAlphaNet(
         tokenAccountSignature = await submitAndRequireFinalizedExecution(
           transaction,
           (signature) => {
+            persistPendingTokenOperation(
+              pendingOperationRecord(tokenAccountOperationBase, signature),
+            );
             progress("waiting-account-finalization", {
               signature,
               transactionKind: "token-account",
@@ -1033,6 +1531,10 @@ export async function resumeTokenSetupOnAlphaNet(
           signal,
           "The resumed token account did not match its mint and owner.",
         );
+        clearVerifiedPendingOperation(
+          tokenAccountOperationKey,
+          account.address,
+        );
         tokenAccountCreated = true;
       }
     }
@@ -1040,6 +1542,67 @@ export async function resumeTokenSetupOnAlphaNet(
     mint = await getVerifiedMint(mintAddress);
     tokenAccount =
       tokenAccount ?? (await getVerifiedTokenAccount(tokenAccountAddress));
+    const rawInitialSupply = requireValue(initialSupplyRaw, "Initial supply");
+    const initialSupplyOperationKey = canonicalTokenOperationKey({
+      operationType: "initial-supply",
+      walletAddress: account.address,
+      mintAddress,
+      destinationTokenAccount: tokenAccountAddress,
+      recipientAddress: account.address,
+      amountRaw: rawInitialSupply,
+    });
+    const initialSupplyOperationBase: PendingOperationBase = {
+      key: initialSupplyOperationKey,
+      operationType: "initial-supply",
+      walletAddress: account.address,
+      mintAddress,
+      destinationTokenAccount: tokenAccountAddress,
+      recipientAddress: account.address,
+      amountRaw: rawInitialSupply,
+      expectedPostState: {
+        mintSupply: rawInitialSupply.toString(10),
+        destinationBalance: rawInitialSupply.toString(10),
+        destinationOwner: account.address,
+        destinationFrozen: false,
+      },
+    };
+    const initialSupplyReconciliation = await reconcilePendingOperation({
+      base: initialSupplyOperationBase,
+      timeoutMs,
+      verifyExpectedState: async (record) => {
+        const [nextMint, nextTokenAccount] = await Promise.all([
+          getVerifiedMint(record.mintAddress),
+          getVerifiedTokenAccount(record.destinationTokenAccount!),
+        ]);
+        return matchesPendingMintDestinationState(
+          record,
+          nextMint,
+          nextTokenAccount,
+        );
+      },
+      buildResult: async (signature, record) => {
+        const [nextMint, nextTokenAccount] = await Promise.all([
+          getVerifiedMint(record.mintAddress),
+          getVerifiedTokenAccount(record.destinationTokenAccount!),
+        ]);
+        if (
+          !matchesPendingMintDestinationState(
+            record,
+            nextMint,
+            nextTokenAccount,
+          )
+        ) {
+          throw new TransactionStatusUncertainError(signature, false);
+        }
+        return { signature, mint: nextMint, tokenAccount: nextTokenAccount };
+      },
+    });
+    if (initialSupplyReconciliation.outcome === "success") {
+      initialSupplySignature = initialSupplyReconciliation.result.signature;
+      mint = initialSupplyReconciliation.result.mint;
+      tokenAccount = initialSupplyReconciliation.result.tokenAccount;
+      initialSupplyMinted = true;
+    }
     plan = planTokenSetupResume({
       mintAddress,
       ownerAddress: account.address,
@@ -1055,7 +1618,7 @@ export async function resumeTokenSetupOnAlphaNet(
 
     if (plan.mintInitialSupply) {
       signal?.throwIfAborted();
-      const rawAmount = requireValue(initialSupplyRaw, "Initial supply");
+      const rawAmount = rawInitialSupply;
       const beforeMint = mint;
       const beforeTokenAccount = tokenAccount;
       const transaction = await buildTransactionForSigning({
@@ -1079,6 +1642,9 @@ export async function resumeTokenSetupOnAlphaNet(
       initialSupplySignature = await submitAndRequireFinalizedExecution(
         transaction,
         (signature) => {
+          persistPendingTokenOperation(
+            pendingOperationRecord(initialSupplyOperationBase, signature),
+          );
           progress("waiting-supply-finalization", {
             signature,
             transactionKind: "initial-supply",
@@ -1134,6 +1700,10 @@ export async function resumeTokenSetupOnAlphaNet(
       });
       mint = verified.mint;
       tokenAccount = verified.tokenAccount;
+      clearVerifiedPendingOperation(
+        initialSupplyOperationKey,
+        account.address,
+      );
       initialSupplyMinted = true;
     }
 
@@ -1219,8 +1789,57 @@ export async function createDestinationTokenAccountOnAlphaNet(
     }
     await assertActiveWalletExists(account.address, signal);
     const mint = await getVerifiedMint(preview.mintAddress);
+    const operationKey = canonicalTokenOperationKey({
+      operationType: "destination-account",
+      walletAddress: account.address,
+      mintAddress: preview.mintAddress,
+      destinationTokenAccount: preview.tokenAccountAddress,
+      recipientAddress: preview.destinationOwnerAddress,
+    });
+    const operationBase: PendingOperationBase = {
+      key: operationKey,
+      operationType: "destination-account",
+      walletAddress: account.address,
+      mintAddress: preview.mintAddress,
+      destinationTokenAccount: preview.tokenAccountAddress,
+      recipientAddress: preview.destinationOwnerAddress,
+      expectedPostState: {
+        destinationBalance: "0",
+        destinationOwner: preview.destinationOwnerAddress,
+        destinationFrozen: false,
+      },
+    };
 
-    const ensured = await ensureDestinationTokenAccount(
+    const ensured = await withTokenOperationGuard(
+      operationKey,
+      async () => {
+        const reconciled = await reconcilePendingOperation({
+          base: operationBase,
+          timeoutMs,
+          verifyExpectedState: (record) =>
+            observeTokenAccountState(
+              record.destinationTokenAccount!,
+              (tokenAccount) =>
+                matchesPendingTokenAccountOnlyState(record, tokenAccount),
+            ),
+          buildResult: async (signature, record) => {
+            const tokenAccount = await getVerifiedTokenAccount(
+              record.destinationTokenAccount!,
+            );
+            if (!matchesPendingTokenAccountOnlyState(record, tokenAccount)) {
+              throw new TransactionStatusUncertainError(signature, false);
+            }
+            return {
+              tokenAccount,
+              created: true,
+              signature,
+              existenceChecks: 0,
+            };
+          },
+        });
+        if (reconciled.outcome === "success") return reconciled.result;
+
+        const result = await ensureDestinationTokenAccount(
       {
         tokenAccountAddress: preview.tokenAccountAddress,
         mintAddress: preview.mintAddress,
@@ -1264,6 +1883,9 @@ export async function createDestinationTokenAccountOnAlphaNet(
           return submitAndRequireFinalizedExecution(
             transaction,
             (signature) => {
+              persistPendingTokenOperation(
+                pendingOperationRecord(operationBase, signature),
+              );
               activeSignature = signature;
               progress("waiting-final-consensus", { signature });
             },
@@ -1301,10 +1923,14 @@ export async function createDestinationTokenAccountOnAlphaNet(
               tokenAccount.owner === preview.destinationOwnerAddress &&
               tokenAccount.amount === 0n &&
               !tokenAccount.isFrozen,
-            signal,
+            activeSignature ? undefined : signal,
             "The created destination token account did not match its mint, owner, zero balance, or frozen state.",
           );
         },
+      },
+        );
+        clearVerifiedPendingOperation(operationKey, account.address);
+        return result;
       },
     );
 
@@ -1357,28 +1983,102 @@ export async function mintAdditionalSupplyOnAlphaNet(
   let amountRaw: bigint | null = null;
   let afterMint: MintAccountInfo | null = null;
   let afterDestination: TokenAccountInfo | null = null;
+  let activeSignature: string | undefined;
 
-  const result = await runTokenMutationWorkflow(
-    {
+  onProgress({ stage: "validating" });
+  signal?.throwIfAborted();
+  await assertActiveWalletExists(account.address, signal);
+  [beforeMint, beforeDestination] = await Promise.all([
+    getVerifiedMint(mintAddress),
+    getVerifiedTokenAccount(destinationAddress),
+  ]);
+  amountRaw = decimalAmountToRaw(
+    input.amount,
+    beforeMint.decimals,
+    undefined,
+    "Amount",
+  );
+  const rawAmount = requireValue(amountRaw, "Mint amount");
+  const operationKey = canonicalTokenOperationKey({
+    operationType: "mint-additional",
+    walletAddress: account.address,
+    mintAddress,
+    destinationTokenAccount: destinationAddress,
+    amountRaw: rawAmount,
+  });
+  const operationBase: PendingOperationBase = {
+    key: operationKey,
+    operationType: "mint-additional",
+    walletAddress: account.address,
+    mintAddress,
+    destinationTokenAccount: destinationAddress,
+    amountRaw: rawAmount,
+    expectedPreState: {
+      mintSupply: beforeMint.supply.toString(10),
+      destinationBalance: beforeDestination.amount.toString(10),
+    },
+    expectedPostState: {
+      mintSupply: (beforeMint.supply + rawAmount).toString(10),
+      mintDecimals: beforeMint.decimals,
+      mintCreator: beforeMint.creator,
+      mintAuthority: beforeMint.mintAuthority,
+      mintTicker: beforeMint.ticker,
+      destinationBalance: (beforeDestination.amount + rawAmount).toString(10),
+      destinationOwner: beforeDestination.owner,
+      destinationFrozen: beforeDestination.isFrozen,
+    },
+  };
+
+  const result = await withTokenOperationGuard(
+    operationKey,
+    async () => {
+      const reconciled = await reconcilePendingOperation({
+        base: operationBase,
+        timeoutMs,
+        verifyExpectedState: async (record) => {
+          const [mint, destination] = await Promise.all([
+            getVerifiedMint(record.mintAddress),
+            getVerifiedTokenAccount(record.destinationTokenAccount!),
+          ]);
+          return matchesPendingMintDestinationState(record, mint, destination);
+        },
+        buildResult: async (signature, record) => {
+          const [mint, destination] = await Promise.all([
+            getVerifiedMint(record.mintAddress),
+            getVerifiedTokenAccount(record.destinationTokenAccount!),
+          ]);
+          if (!matchesPendingMintDestinationState(record, mint, destination)) {
+            throw new TransactionStatusUncertainError(signature, false);
+          }
+          afterMint = mint;
+          afterDestination = destination;
+          activeSignature = signature;
+          onProgress({ stage: "completed", signature });
+          return { signature, result: { mint, destination } };
+        },
+      });
+      if (reconciled.outcome === "success") return reconciled.result;
+
+      amountRaw = validateMintToPreflight({
+        mintAddress,
+        destinationAddress,
+        activeWalletAddress: account.address,
+        amount: input.amount,
+        mint: requireValue(beforeMint, "Mint preflight state"),
+        destination: requireValue(
+          beforeDestination,
+          "Destination preflight state",
+        ),
+      });
+
+      try {
+        const workflow = await runTokenMutationWorkflow(
+      {
       validate: async () => {
         signal?.throwIfAborted();
-        await assertActiveWalletExists(account.address, signal);
-        [beforeMint, beforeDestination] = await Promise.all([
-          getVerifiedMint(mintAddress),
-          getVerifiedTokenAccount(destinationAddress),
-        ]);
-        amountRaw = validateMintToPreflight({
-          mintAddress,
-          destinationAddress,
-          activeWalletAddress: account.address,
-          amount: input.amount,
-          mint: beforeMint,
-          destination: beforeDestination,
-        });
       },
       execute: async (callbacks) => {
         signal?.throwIfAborted();
-        const rawAmount = requireValue(amountRaw, "Mint amount");
         const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
@@ -1400,7 +2100,13 @@ export async function mintAdditionalSupplyOnAlphaNet(
         callbacks.onAwaitingFinalConsensus();
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
-          callbacks.onSubmitted,
+          (submittedSignature) => {
+            persistPendingTokenOperation(
+              pendingOperationRecord(operationBase, submittedSignature),
+            );
+            activeSignature = submittedSignature;
+            callbacks.onSubmitted(submittedSignature);
+          },
           timeoutMs,
           signal,
           {
@@ -1435,7 +2141,6 @@ export async function mintAdditionalSupplyOnAlphaNet(
           beforeDestination,
           "Destination preflight state",
         );
-        const rawAmount = requireValue(amountRaw, "Mint amount");
         const verified = await waitForParsedState(
           async () => {
             const [nextMint, nextDestination] = await Promise.all([
@@ -1454,7 +2159,7 @@ export async function mintAdditionalSupplyOnAlphaNet(
                 afterDestination: next.destination,
               }),
             ),
-          signal,
+          activeSignature ? undefined : signal,
           "Mint supply or destination balance did not reflect the additional supply.",
         );
         verifyMintToDeltas({
@@ -1470,6 +2175,16 @@ export async function mintAdditionalSupplyOnAlphaNet(
       },
     },
     onProgress,
+        );
+        clearVerifiedPendingOperation(operationKey, account.address);
+        return workflow;
+      } catch (error) {
+        if (!(error instanceof TransactionStatusUncertainError)) {
+          clearPendingTokenOperation(operationKey, account.address);
+        }
+        throw error;
+      }
+    },
   );
 
   return {
@@ -1507,32 +2222,112 @@ export async function transferTokensOnAlphaNet(
   let afterSource: TokenAccountInfo | null = null;
   let afterDestination: TokenAccountInfo | null = null;
   let mintAddress = "";
+  let activeSignature: string | undefined;
 
-  const result = await runTokenMutationWorkflow(
-    {
+  onProgress({ stage: "validating" });
+  signal?.throwIfAborted();
+  await assertActiveWalletExists(account.address, signal);
+  [beforeSource, beforeDestination] = await Promise.all([
+    getVerifiedTokenAccount(sourceAddress),
+    getVerifiedTokenAccount(destinationAddress),
+  ]);
+  mintAddress = beforeSource.mint;
+  beforeMint = await getVerifiedMint(mintAddress);
+  amountRaw = decimalAmountToRaw(
+    input.amount,
+    beforeMint.decimals,
+    undefined,
+    "Amount",
+  );
+  const rawAmount = requireValue(amountRaw, "Transfer amount");
+  const operationKey = canonicalTokenOperationKey({
+    operationType: "transfer",
+    walletAddress: account.address,
+    mintAddress,
+    sourceTokenAccount: sourceAddress,
+    destinationTokenAccount: destinationAddress,
+    recipientAddress: beforeDestination.owner,
+    amountRaw: rawAmount,
+  });
+  const operationBase: PendingOperationBase = {
+    key: operationKey,
+    operationType: "transfer",
+    walletAddress: account.address,
+    mintAddress,
+    sourceTokenAccount: sourceAddress,
+    destinationTokenAccount: destinationAddress,
+    recipientAddress: beforeDestination.owner,
+    amountRaw: rawAmount,
+    expectedPreState: {
+      mintSupply: beforeMint.supply.toString(10),
+      sourceBalance: beforeSource.amount.toString(10),
+      destinationBalance: beforeDestination.amount.toString(10),
+    },
+    expectedPostState: {
+      mintSupply: beforeMint.supply.toString(10),
+      sourceBalance: (beforeSource.amount - rawAmount).toString(10),
+      sourceOwner: beforeSource.owner,
+      destinationBalance: (beforeDestination.amount + rawAmount).toString(10),
+      destinationOwner: beforeDestination.owner,
+      destinationFrozen: beforeDestination.isFrozen,
+    },
+  };
+
+  const result = await withTokenOperationGuard(
+    operationKey,
+    async () => {
+      const reconciled = await reconcilePendingOperation({
+        base: operationBase,
+        timeoutMs,
+        verifyExpectedState: async (record) => {
+          const [mint, source, destination] = await Promise.all([
+            getVerifiedMint(record.mintAddress),
+            getVerifiedTokenAccount(record.sourceTokenAccount!),
+            getVerifiedTokenAccount(record.destinationTokenAccount!),
+          ]);
+          return matchesPendingTransferState(record, mint, source, destination);
+        },
+        buildResult: async (signature, record) => {
+          const [mint, source, destination] = await Promise.all([
+            getVerifiedMint(record.mintAddress),
+            getVerifiedTokenAccount(record.sourceTokenAccount!),
+            getVerifiedTokenAccount(record.destinationTokenAccount!),
+          ]);
+          if (!matchesPendingTransferState(record, mint, source, destination)) {
+            throw new TransactionStatusUncertainError(signature, false);
+          }
+          afterMint = mint;
+          afterSource = source;
+          afterDestination = destination;
+          activeSignature = signature;
+          onProgress({ stage: "completed", signature });
+          return { signature, result: { mint, source, destination } };
+        },
+      });
+      if (reconciled.outcome === "success") return reconciled.result;
+
+      amountRaw = validateTransferPreflight({
+        mintAddress,
+        sourceAddress,
+        destinationAddress,
+        activeWalletAddress: account.address,
+        amount: input.amount,
+        mint: requireValue(beforeMint, "Mint preflight state"),
+        source: requireValue(beforeSource, "Source preflight state"),
+        destination: requireValue(
+          beforeDestination,
+          "Destination preflight state",
+        ),
+      });
+
+      try {
+        const workflow = await runTokenMutationWorkflow(
+      {
       validate: async () => {
         signal?.throwIfAborted();
-        await assertActiveWalletExists(account.address, signal);
-        [beforeSource, beforeDestination] = await Promise.all([
-          getVerifiedTokenAccount(sourceAddress),
-          getVerifiedTokenAccount(destinationAddress),
-        ]);
-        mintAddress = beforeSource.mint;
-        beforeMint = await getVerifiedMint(mintAddress);
-        amountRaw = validateTransferPreflight({
-          mintAddress,
-          sourceAddress,
-          destinationAddress,
-          activeWalletAddress: account.address,
-          amount: input.amount,
-          mint: beforeMint,
-          source: beforeSource,
-          destination: beforeDestination,
-        });
       },
       execute: async (callbacks) => {
         signal?.throwIfAborted();
-        const rawAmount = requireValue(amountRaw, "Transfer amount");
         const transaction = await buildTransactionForSigning({
           feePayer: { publicKey: account.publicKey },
           program: TOKEN_PROGRAM_ADDRESS,
@@ -1553,7 +2348,13 @@ export async function transferTokensOnAlphaNet(
         callbacks.onAwaitingFinalConsensus();
         const signature = await submitAndRequireFinalizedExecution(
           transaction,
-          callbacks.onSubmitted,
+          (submittedSignature) => {
+            persistPendingTokenOperation(
+              pendingOperationRecord(operationBase, submittedSignature),
+            );
+            activeSignature = submittedSignature;
+            callbacks.onSubmitted(submittedSignature);
+          },
           timeoutMs,
           signal,
           {
@@ -1596,7 +2397,6 @@ export async function transferTokensOnAlphaNet(
           beforeDestination,
           "Destination preflight state",
         );
-        const rawAmount = requireValue(amountRaw, "Transfer amount");
         const verified = await waitForParsedState(
           async () => {
             const [nextMint, nextSource, nextDestination] = await Promise.all([
@@ -1622,7 +2422,7 @@ export async function transferTokensOnAlphaNet(
                 afterDestination: next.destination,
               }),
             ),
-          signal,
+          activeSignature ? undefined : signal,
           "Transfer balances or mint supply did not match the submitted amount.",
         );
         verifyTransferDeltas({
@@ -1641,6 +2441,16 @@ export async function transferTokensOnAlphaNet(
       },
     },
     onProgress,
+        );
+        clearVerifiedPendingOperation(operationKey, account.address);
+        return workflow;
+      } catch (error) {
+        if (!(error instanceof TransactionStatusUncertainError)) {
+          clearPendingTokenOperation(operationKey, account.address);
+        }
+        throw error;
+      }
+    },
   );
 
   return {
@@ -1713,6 +2523,7 @@ async function submitAndRequireFinalizedExecution(
   } = tracking;
   let signature = transaction.getSignature()?.toThruFmt() ?? "";
   let submittedNotified = false;
+  let submissionStarted = false;
   let finalized = false;
   let executionSucceeded = false;
   let finalConsensusNotified = false;
@@ -1736,13 +2547,20 @@ async function submitAndRequireFinalizedExecution(
     return executionSucceeded;
   };
 
+  signal?.throwIfAborted();
+  const wire = transaction.toWire();
+  if (signature && !submittedNotified) {
+    // Persist the public pending-operation record before transport begins.
+    // A storage failure therefore fails closed with no network submission.
+    onSubmitted(signature);
+    submittedNotified = true;
+  }
   try {
+    submissionStarted = true;
     for await (const update of thru.transactions.sendAndTrack(
-      transaction.toWire(),
+      wire,
       { timeoutMs, signal },
     )) {
-      signal?.throwIfAborted();
-
       if (update.signature?.value) {
         const trackedSignature = Signature.from(
           update.signature.value,
@@ -1778,7 +2596,7 @@ async function submitAndRequireFinalizedExecution(
       }
     }
   } catch (error) {
-    if (signal?.aborted || definitiveTrackingFailure || !signature) {
+    if (!submissionStarted || definitiveTrackingFailure || !signature) {
       throw error;
     }
   }
@@ -1792,7 +2610,10 @@ async function submitAndRequireFinalizedExecution(
       signature,
       verifyExpectedState,
       classifyExpectedStateError: classifyTokenPostStateError,
-      signal,
+      // Once sendAndTrack has started, UI cancellation cannot unsend the
+      // transaction. Finish bounded read-only reconciliation independently
+      // so an unmount cannot turn a submitted operation into a safe retry.
+      signal: submissionStarted ? undefined : signal,
       timeoutMs: Math.min(
         timeoutMs,
         TRANSACTION_VISIBILITY_TIMEOUT_MS,

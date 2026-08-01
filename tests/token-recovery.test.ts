@@ -260,3 +260,23 @@ test("verifyAndRecoverTokenOnAlphaNet rejects on decode failure (wrong owner pat
     },
   );
 });
+
+test("denied localStorage reads fail closed without deleting public references", () => {
+  const denied = {
+    getItem(): string | null {
+      throw new DOMException("Storage disabled", "SecurityError");
+    },
+  };
+  assert.deepEqual(loadKnownTokens(denied), []);
+  assert.deepEqual(loadPendingSetups(denied), []);
+});
+
+test("quota failures are reported by public metadata writes", () => {
+  const full = {
+    setItem(): void {
+      throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+    },
+  };
+  assert.throws(() => saveKnownTokens(full, []), /quota/i);
+  assert.throws(() => savePendingSetups(full, []), /quota/i);
+});

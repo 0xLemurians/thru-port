@@ -8,7 +8,7 @@
  * @noble/ed25519 + @noble/hashes + @scure/bip39 tabanlı) kodu ile,
  * bu sekmenin belleğinde gerçekleşir.
  *
- * Bu modül @thru/sdk@0.3.0 üzerinde, npm registry'den indirilip
+ * Bu modül @thru/sdk@0.3.2 üzerinde, npm registry'den indirilip
  * `dist/*.d.ts` dosyaları incelenerek doğrulanmış gerçek API'ye göre yazıldı:
  *   - thru.keys.generateKeyPair()
  *   - thru.keys.fromPrivateKey(privateKey)
@@ -333,7 +333,7 @@ export async function ensureAccountExists(
         if (executionFailure || (executionSucceeded && finalized)) break;
       }
     } catch (error) {
-      if (signal?.aborted || definitiveExecutionFailure || !signature) {
+      if (!submitted || definitiveExecutionFailure || !signature) {
         throw error;
       }
       // The original signed transaction is already submitted. Continue with
@@ -366,7 +366,9 @@ export async function ensureAccountExists(
           /does not match the active wallet/i.test(error.message)
             ? "failure"
             : "pending",
-        signal,
+        // Submission has already started. Caller cancellation must not stop
+        // read-only reconciliation or make an automatic retry appear safe.
+        signal: undefined,
         timeoutMs: verificationTimeoutMs,
       });
       if (verification.outcome === "failure") {
@@ -377,7 +379,10 @@ export async function ensureAccountExists(
       }
     }
 
-    await waitForAccountVisibility(account.address, signal);
+    await waitForAccountVisibility(
+      account.address,
+      submitted ? undefined : signal,
+    );
     UNCERTAIN_ACCOUNT_CREATIONS.delete(account.address);
     return true; // yeni oluşturuldu
   } catch (error) {

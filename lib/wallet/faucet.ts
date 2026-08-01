@@ -105,8 +105,6 @@ export async function withdrawFromFaucet(
     );
   }
 
-  const balanceBefore = await getBalance(account.address).catch(() => 0n);
-
   // Yeni bir keypair henüz zincirde "hesap" olarak var olmayabilir —
   // faucet withdraw denemeden önce bunu garantiye alıyoruz.
   try {
@@ -125,6 +123,7 @@ export async function withdrawFromFaucet(
   }
 
   signal?.throwIfAborted();
+  const balanceBefore = await getBalance(account.address);
   try {
     const result = await attemptFaucetWithdraw(
       account,
@@ -139,6 +138,15 @@ export async function withdrawFromFaucet(
         attempts: 1,
       };
     }
+    // A finalized, successful execution result is transaction-specific and
+    // is stronger evidence than a generic balance movement.
+    if (result.finalized) {
+      return {
+        signature: result.signature,
+        finalized: true,
+        attempts: 1,
+      };
+    }
 
     let postStateConfirmed = false;
     if (!result.finalized && result.signature) {
@@ -146,8 +154,10 @@ export async function withdrawFromFaucet(
         const verification = await verifySubmittedTransaction({
           signature: result.signature,
           verifyExpectedState: async () =>
-            (await getBalance(account.address)) > balanceBefore,
-          signal,
+            (await getBalance(account.address)) === balanceBefore + amount,
+          // The transaction has already been submitted; cancelling the UI
+          // must not cancel read-only reconciliation or permit rebroadcast.
+          signal: undefined,
           timeoutMs: Math.min(
             timeoutMs,
             TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS,
@@ -186,7 +196,8 @@ export async function withdrawFromFaucet(
     const confirmedBalance = await waitForBalanceIncrease(
       account.address,
       balanceBefore,
-      signal,
+      amount,
+      undefined,
     );
     if (confirmedBalance !== null) {
       return {
@@ -206,7 +217,9 @@ export async function withdrawFromFaucet(
       };
     }
   } catch (error) {
-    if (signal?.aborted) throw error;
+    if (signal?.aborted && !(error instanceof SubmittedTransactionUncertainError)) {
+      throw error;
+    }
   }
 
   return {
@@ -261,9 +274,11 @@ async function attemptFaucetWithdraw(
   let finalized = false;
   let failureReason: string | undefined;
   let definitiveTrackingFailure = false;
+  let submissionStarted = false;
 
   signature = transaction.getSignature()?.toThruFmt() ?? "";
   try {
+    submissionStarted = true;
     for await (const update of thru.transactions.sendAndTrack(rawTransaction, {
       timeoutMs,
       signal,
@@ -298,7 +313,7 @@ async function attemptFaucetWithdraw(
       if (failureReason || finalized) break;
     }
   } catch (error) {
-    if (signal?.aborted || definitiveTrackingFailure || !signature) {
+    if (!submissionStarted || definitiveTrackingFailure || !signature) {
       throw error;
     }
     // The signed request has already been submitted. The caller performs
@@ -311,12 +326,13 @@ async function attemptFaucetWithdraw(
 async function waitForBalanceIncrease(
   address: string,
   balanceBefore: bigint,
+  expectedIncrease: bigint,
   signal?: AbortSignal,
 ): Promise<bigint | null> {
   for (let attempt = 0; attempt < 5; attempt++) {
     signal?.throwIfAborted();
     const balance = await getBalance(address).catch(() => null);
-    if (balance !== null && balance > balanceBefore) {
+    if (balance !== null && balance === balanceBefore + expectedIncrease) {
       return balance;
     }
     await abortableDelay(Math.min(500 * 2 ** attempt, 4_000), signal);

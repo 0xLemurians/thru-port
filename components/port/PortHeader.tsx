@@ -38,23 +38,62 @@ export default function PortHeader({
   balance,
   onForgetAccount,
 }: PortHeaderProps) {
-  const [popoverOpen, setPopoverOpen] = React.useState(false);
+  const [popoverTarget, setPopoverTarget] = React.useState<
+    "desktop" | "mobile" | null
+  >(null);
+  const popoverOpen = popoverTarget !== null;
+  const [popoverBusy, setPopoverBusy] = React.useState(false);
   const shortAddress = publicAddress 
     ? `${publicAddress.slice(0, 4)}...${publicAddress.slice(-4)}`
     : null;
 
   const desktopWrapperRef = useRef<HTMLDivElement>(null);
   const mobileWrapperRef = useRef<HTMLDivElement>(null);
+  const lastTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const closePopover = React.useCallback(() => {
+    if (popoverBusy) return;
+    setPopoverTarget(null);
+    requestAnimationFrame(() => lastTriggerRef.current?.focus());
+  }, [popoverBusy]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setPopoverOpen(false);
+      if (e.key === "Escape") {
+        closePopover();
+        return;
+      }
+      if (e.key !== "Tab" || !popoverTarget) return;
+
+      const popover = document.getElementById(
+        `port-wallet-popover-${popoverTarget}`,
+      );
+      if (!popover) return;
+      const focusable = Array.from(
+        popover.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.hasAttribute("hidden"));
+      if (focusable.length === 0) {
+        e.preventDefault();
+        popover.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     }
     function handleClickOutside(e: MouseEvent) {
       const target = e.target as Node;
       if (desktopWrapperRef.current?.contains(target)) return;
       if (mobileWrapperRef.current?.contains(target)) return;
-      setPopoverOpen(false);
+      closePopover();
     }
     if (popoverOpen) {
       window.addEventListener("keydown", handleKeyDown);
@@ -64,7 +103,17 @@ export default function PortHeader({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [popoverOpen]);
+  }, [popoverOpen, popoverTarget, closePopover]);
+
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const frame = requestAnimationFrame(() => {
+      document
+        .getElementById(`port-wallet-popover-${popoverTarget}`)
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [popoverOpen, popoverTarget]);
 
   const handleNav = (id: WorkspaceStage) => {
     if (!accountAvailable && id !== "account") return;
@@ -107,9 +156,12 @@ export default function PortHeader({
                 return (
                   <button
                     key={item.id}
+                    type="button"
                     className={`pc-nav-btn ${currentStage === item.id ? "active" : ""} ${isLocked ? "locked" : ""}`}
                     style={{ cursor: isLocked ? "not-allowed" : "pointer" }}
                     onClick={() => handleNav(item.id)}
+                    disabled={isLocked || isTransitioning}
+                    aria-current={currentStage === item.id ? "page" : undefined}
                     title={isLocked ? "Create or import a wallet to unlock this workspace." : ""}
                   >
                     <span style={{ position: "relative", paddingLeft: isLocked ? "14px" : "0", transition: "padding 300ms ease" }}>
@@ -133,10 +185,16 @@ export default function PortHeader({
             <button
               type="button"
               className={`pc-wallet-status pc-wallet-status-btn${popoverOpen ? " active" : ""}`}
-              aria-expanded={popoverOpen}
+              aria-expanded={popoverTarget === "desktop"}
               aria-haspopup="dialog"
-              onClick={() => {
-                if (account) setPopoverOpen(!popoverOpen);
+              aria-controls="port-wallet-popover-desktop"
+              disabled={!account}
+              onClick={(event) => {
+                if (account) {
+                  lastTriggerRef.current = event.currentTarget;
+                  if (popoverTarget === "desktop") closePopover();
+                  else setPopoverTarget("desktop");
+                }
               }}
               style={{
                 display: "inline-flex",
@@ -170,12 +228,14 @@ export default function PortHeader({
                 </svg>
               )}
             </button>
-            {popoverOpen && account && (
+            {popoverTarget === "desktop" && account && (
               <PortWalletPopover
+                id="port-wallet-popover-desktop"
                 account={account}
                 balance={balance ?? null}
                 health={health}
                 onForgetAccount={onForgetAccount}
+                onBusyChange={setPopoverBusy}
               />
             )}
           </div>
@@ -190,8 +250,10 @@ export default function PortHeader({
            <button
              type="button"
              className={`pc-wallet-status pc-wallet-status-btn${popoverOpen ? " active" : ""}`}
-             aria-expanded={popoverOpen}
+              aria-expanded={popoverTarget === "mobile"}
              aria-haspopup="dialog"
+             aria-controls="port-wallet-popover-mobile"
+             disabled={!account}
              style={{
                display: "inline-flex",
                alignItems: "center",
@@ -206,8 +268,12 @@ export default function PortHeader({
                color: popoverOpen ? "var(--accent)" : "inherit",
                transition: "background 150ms, border-color 150ms, color 150ms",
              }}
-             onClick={() => {
-               if (account) setPopoverOpen(!popoverOpen);
+             onClick={(event) => {
+               if (account) {
+                 lastTriggerRef.current = event.currentTarget;
+                 if (popoverTarget === "mobile") closePopover();
+                 else setPopoverTarget("mobile");
+               }
              }}
            >
              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -225,12 +291,14 @@ export default function PortHeader({
                </svg>
              )}
            </button>
-           {popoverOpen && account && (
+           {popoverTarget === "mobile" && account && (
              <PortWalletPopover
+               id="port-wallet-popover-mobile"
                account={account}
                balance={balance ?? null}
                health={health}
                onForgetAccount={onForgetAccount}
+               onBusyChange={setPopoverBusy}
              />
            )}
         </div>

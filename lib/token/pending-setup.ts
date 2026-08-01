@@ -47,9 +47,9 @@ export interface PendingTokenSetup {
 export function loadPendingSetups(
   storage: Pick<Storage, "getItem">,
 ): PendingTokenSetup[] {
-  const raw = storage.getItem(PENDING_SETUP_STORAGE_KEY);
-  if (!raw) return [];
   try {
+    const raw = storage.getItem(PENDING_SETUP_STORAGE_KEY);
+    if (!raw) return [];
     return normalizePendingSetups(JSON.parse(raw));
   } catch {
     return [];

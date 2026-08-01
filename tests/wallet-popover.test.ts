@@ -133,14 +133,21 @@ test("Wallet trigger source contains chevron-down SVG", async () => {
   assert.ok(file.includes('points="6 9 12 15 18 9"'), "Chevron-down polyline found");
 });
 
-test("aria-expanded reflects open/closed state in PortHeader source", async () => {
+test("each wallet trigger reflects only its own dialog state", async () => {
   const fs = await import("fs/promises");
   const path = await import("path");
   const file = await fs.readFile(
     path.join(process.cwd(), "components/port/PortHeader.tsx"),
     "utf-8"
   );
-  assert.ok(file.includes("aria-expanded={popoverOpen}"), "aria-expanded is bound to popoverOpen");
+  assert.ok(
+    file.includes('aria-expanded={popoverTarget === "desktop"}'),
+    "desktop aria-expanded follows the desktop dialog",
+  );
+  assert.ok(
+    file.includes('aria-expanded={popoverTarget === "mobile"}'),
+    "mobile aria-expanded follows the mobile dialog",
+  );
 });
 
 test("Popover uses high-opacity background style", async () => {

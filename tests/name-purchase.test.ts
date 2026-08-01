@@ -1281,3 +1281,11 @@ test("does not log secrets or add custom analytics tracking", async () => {
   }
   assert.deepEqual(logged, []);
 });
+
+test("disabled Identity purchase engine has no memory-only uncertain deadlock map", () => {
+  const source = readFileSync(
+    join(process.cwd(), "lib/thru/name-service/purchase.ts"),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /UNCERTAIN_PURCHASES/);
+});

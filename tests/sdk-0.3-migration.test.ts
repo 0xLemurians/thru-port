@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   SignatureDomain,
+  TransactionSigningScheme,
   TransactionBuilder,
   attachTransactionSignature,
   buildSignedMessage,
@@ -41,7 +42,7 @@ const fixture = JSON.parse(
       ROOT,
       "tests",
       "fixtures",
-      "thru-transaction-signing-v0.3.0.json",
+      "thru-transaction-signing-v0.3.2.json",
     ),
     "utf8",
   ),
@@ -179,7 +180,7 @@ function allSourceFiles(directory: string): string[] {
   });
 }
 
-test("the installed Thru dependency graph contains only matching 0.3.0 packages", () => {
+test("the installed Thru dependency graph contains only matching 0.3.2 packages", () => {
   const appPackage = JSON.parse(
     readFileSync(path.join(ROOT, "package.json"), "utf8"),
   ) as { dependencies: Record<string, string> };
@@ -204,11 +205,11 @@ test("the installed Thru dependency graph contains only matching 0.3.0 packages"
     ),
   ) as { version: string; dependencies: Record<string, string> };
 
-  assert.equal(appPackage.dependencies["@thru/sdk"], "0.3.0");
-  assert.equal(appPackage.dependencies["@thru/programs"], "0.3.0");
-  assert.equal(installedSdk.version, "0.3.0");
-  assert.equal(installedPrograms.version, "0.3.0");
-  assert.equal(installedPrograms.dependencies["@thru/sdk"], "0.3.0");
+  assert.equal(appPackage.dependencies["@thru/sdk"], "0.3.2");
+  assert.equal(appPackage.dependencies["@thru/programs"], "0.3.2");
+  assert.equal(installedSdk.version, "0.3.2");
+  assert.equal(installedPrograms.version, "0.3.2");
+  assert.equal(installedPrograms.dependencies["@thru/sdk"], "0.3.2");
 
   const sdkEntries = Object.entries(lock.packages).filter(([key]) =>
     /node_modules\/@thru\/sdk$/.test(key),
@@ -218,15 +219,15 @@ test("the installed Thru dependency graph contains only matching 0.3.0 packages"
   );
   assert.deepEqual(
     sdkEntries.map(([, value]) => value.version),
-    ["0.3.0"],
+    ["0.3.2"],
   );
   assert.deepEqual(
     programEntries.map(([, value]) => value.version),
-    ["0.3.0"],
+    ["0.3.2"],
   );
 });
 
-test("official Rust v0.3 golden signature matches Web Crypto and the browser SDK", async () => {
+test("official RFC8032 golden signature remains stable in SDK 0.3.2", async () => {
   assert.match(fixture.warning, /PUBLIC TEST VECTOR ONLY/);
   assert.match(fixture.source, /Rust signer/);
   const body = hexToBytes(fixture.officialRustGoldenBodyHex);
@@ -420,8 +421,20 @@ test("production transaction paths use the centralized official SDK signer only"
     source,
     /legacySigning|domain-signing-legacy|DOMAIN_BLOCK_SIZE/,
   );
+  assert.doesNotMatch(source, /\.legacySign\s*\(/);
+  assert.doesNotMatch(source, /TransactionSigningScheme\.Legacy/);
   assert.doesNotMatch(source, /tn_txn_sign_v1__/);
   assert.doesNotMatch(source, /buildAndSign/);
+
+  const clientSource = readFileSync(
+    path.join(ROOT, "lib", "thru", "client.ts"),
+    "utf8",
+  );
+  assert.match(
+    clientSource,
+    /transactionSigningScheme:\s*TransactionSigningScheme\.Rfc8032/,
+  );
+  assert.equal(TransactionSigningScheme.Rfc8032, "rfc8032");
 
   const directSigners = sourceFiles.filter((file) =>
     /\.sign\(/.test(readFileSync(file, "utf8")),

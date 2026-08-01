@@ -54,6 +54,19 @@ test("newly created wallet enters the one-time private-key screen after persiste
   assert.match(APP_FLOW_SOURCE, /<OneTimePrivateKeyBackup/);
 });
 
+test("new wallet creation does not generate or persist an unused mnemonic", () => {
+  const createBody = APP_FLOW_SOURCE.slice(
+    APP_FLOW_SOURCE.indexOf("async function handleCreateWallet"),
+    APP_FLOW_SOURCE.indexOf("async function handleImportWallet"),
+  );
+  assert.match(createBody, /createNewAccount\(false\)/);
+  assert.doesNotMatch(createBody, /createNewAccount\(true\)/);
+  assert.ok(
+    createBody.indexOf("saveAndVerifyPersistedWallet") <
+      createBody.indexOf("setAccount(persisted)"),
+  );
+});
+
 test("only created and persisted pending wallets enter the one-time screen", () => {
   for (const source of [
     "restored",

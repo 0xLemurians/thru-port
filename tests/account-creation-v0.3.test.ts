@@ -13,7 +13,10 @@ import {
   FAUCET_WITHDRAW_LIMIT,
   withdrawFromFaucet,
 } from "../lib/wallet/faucet";
-import { SAFE_FAUCET_UNCERTAIN_MESSAGE } from "../lib/wallet/faucet-safety";
+import {
+  SAFE_FAUCET_ERROR_MESSAGE,
+  SAFE_FAUCET_UNCERTAIN_MESSAGE,
+} from "../lib/wallet/faucet-safety";
 import { SubmittedTransactionUncertainError } from "../lib/thru/transactions";
 
 function notFound(): Error & { code: number } {
@@ -534,5 +537,92 @@ test("faucet funding does not start while account creation remains uncertain", a
   assert.equal(result.signature, "test-signature-18");
   assert.equal(result.attempts, 0);
   assert.equal(faucetBuildCalls, 0);
+  assert.equal(sendCalls, 1);
+});
+
+test("abort after account-create submission reconciles without rebroadcast", async (t) => {
+  const activeAccount = account(41);
+  const controller = new AbortController();
+  let accountReads = 0;
+  let sendCalls = 0;
+
+  t.mock.method(thru.accounts, "get", async () => {
+    accountReads += 1;
+    if (accountReads === 1) throw notFound();
+    return foundAccount(activeAccount) as never;
+  });
+  t.mock.method(thru.chain, "getChainId", async () => 41);
+  t.mock.method(thru.accounts, "create", async () => ({
+    chainId: 41,
+    startSlot: 900n,
+    sign: async () => undefined,
+    getSignature: () => testSignature(41),
+    toWire: () => new Uint8Array([4, 1]),
+  }) as never);
+  t.mock.method(
+    thru.transactions,
+    "sendAndTrack",
+    async function* () {
+      sendCalls += 1;
+      controller.abort();
+      throw new DOMException("Aborted", "AbortError");
+    },
+  );
+  t.mock.method(thru.transactions, "get", async () => ({
+    executionResult: {
+      vmError: 0,
+      userErrorCode: 0n,
+      executionResult: 0n,
+    },
+  }) as never);
+
+  assert.equal(
+    await ensureAccountExists(activeAccount, { signal: controller.signal }),
+    true,
+  );
+  assert.equal(sendCalls, 1);
+});
+
+test("unrelated balance movement cannot override a finalized faucet failure", async (t) => {
+  const activeAccount = account(42);
+  let accountReads = 0;
+  let sendCalls = 0;
+
+  t.mock.method(thru.accounts, "get", async () => {
+    accountReads += 1;
+    return {
+      ...foundAccount(activeAccount),
+      meta: {
+        balance:
+          accountReads >= 3 ? FAUCET_WITHDRAW_LIMIT : 0n,
+      },
+    } as never;
+  });
+  t.mock.method(thru.transactions, "build", async () => ({
+    chainId: 42,
+    startSlot: 901n,
+    sign: async () => undefined,
+    getSignature: () => ({ toThruFmt: () => "test-faucet-failed-42" }),
+    toWire: () => new Uint8Array([4, 2]),
+  }) as never);
+  t.mock.method(
+    thru.transactions,
+    "sendAndTrack",
+    async function* () {
+      sendCalls += 1;
+      yield successfulUpdate(ConsensusStatus.OBSERVED) as never;
+    },
+  );
+  t.mock.method(thru.transactions, "get", async () => ({
+    executionResult: {
+      vmError: 1,
+      userErrorCode: 0n,
+      executionResult: 0n,
+    },
+  }) as never);
+
+  const result = await withdrawFromFaucet(activeAccount);
+  assert.equal(result.failureReason, SAFE_FAUCET_ERROR_MESSAGE);
+  assert.equal(result.signature, "test-faucet-failed-42");
   assert.equal(sendCalls, 1);
 });

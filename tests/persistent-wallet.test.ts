@@ -285,6 +285,14 @@ test("import-style wallet persistence never creates a pending setup marker", asy
     }),
     false,
   );
+  const restored = await restorePersistedWallet({
+    idb: mockIDB,
+    cryptoObj: globalThis.crypto,
+  });
+  assert.ok(restored);
+  assert.equal(restored.mnemonic, undefined);
+  assert.equal(restored.address, account.address);
+  restored.privateKey.fill(0);
   verified.privateKey.fill(0);
   account.privateKey.fill(0);
 });
