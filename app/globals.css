@@ -2541,3 +2541,61 @@ textarea:focus-visible {
     min-height: 440px;
   }
 }
+
+/* Command Center Base Theme (Dark) */
+:root {
+  --page-bg: #050505;
+  --bg: #030303;
+  --border: rgba(234, 88, 12, 0.15);
+  --border-light: rgba(255, 255, 255, 0.05);
+  --accent: #ea580c;
+  --accent-glow: rgba(234, 88, 12, 0.08);
+  --text-main: #f4f4f5;
+  --text-muted: #8b8b93;
+  --surface: rgba(255, 255, 255, 0.015);
+  --radius: 6px;
+  --font-tech: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --nav-bg: rgba(0, 0, 0, 0.4);
+  --grid-line: rgba(255, 255, 255, 0.015);
+  --success: #10b981;
+  --danger: #ef4444;
+  --danger-hover: rgba(239, 68, 68, 0.1);
+  --danger-border: rgba(239, 68, 68, 0.2);
+  --btn-hover-bg: rgba(255,255,255,0.05);
+  --btn-hover-border: rgba(255,255,255,0.15);
+  --btn-max-hover: rgba(255,255,255,0.1);
+  --alert-info-bg: rgba(59, 130, 246, 0.05);
+  --alert-info-border: rgba(59, 130, 246, 0.2);
+  --alert-info-text: #60a5fa;
+}
+
+/* Command Center Light Theme */
+html[data-theme="light"] {
+  --page-bg: #fcfbf9;
+  --bg: #f4efe9;
+  --border: rgba(217, 74, 8, 0.4);
+  --border-light: rgba(138, 90, 68, 0.15);
+  --accent: #d94a08;
+  --accent-glow: rgba(217, 74, 8, 0.05);
+  --text-main: #1c1917;
+  --text-muted: #44403c;
+  --surface: #fdfdfc;
+  --radius: 6px;
+  --font-tech: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --nav-bg: rgba(247, 244, 239, 0.95);
+  --grid-line: rgba(138, 90, 68, 0.07);
+  --success: #047857;
+  --danger: #b91c1c;
+  --danger-hover: rgba(185, 28, 28, 0.08);
+  --danger-border: rgba(185, 28, 28, 0.25);
+  --btn-hover-bg: rgba(138, 90, 68, 0.06);
+  --btn-hover-border: rgba(138, 90, 68, 0.2);
+  --btn-max-hover: rgba(138, 90, 68, 0.08);
+  --alert-info-bg: rgba(37, 99, 235, 0.05);
+  --alert-info-border: rgba(37, 99, 235, 0.25);
+  --alert-info-text: #1d4ed8;
+}

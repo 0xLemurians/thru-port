@@ -261,3 +261,5 @@ export function useTokenPortfolio(
     clearExternalAssets,
   };
 }
+
+export type TokenPortfolioHook = ReturnType<typeof useTokenPortfolio>;

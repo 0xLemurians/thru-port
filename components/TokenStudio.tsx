@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
-import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
+import type { TokenPortfolioHook } from "@/lib/token/portfolio-hook";
 import type { CreateTokenResult } from "@/lib/token/thru-token";
 import {
   safeTokenReadError,
@@ -22,21 +22,19 @@ interface TokenStudioProps {
   account: ThruAccount | null;
   onBusyChange?: (busy: boolean) => void;
   health?: AlphaNetHealth;
+  portfolioHook: TokenPortfolioHook;
 }
 
 export default function TokenStudio({
   account,
   onBusyChange = () => {},
   health,
+  portfolioHook,
 }: TokenStudioProps) {
   const [activeTab, setActiveTab] = useState<StudioTab>("send");
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
   const [initialSelectDone, setInitialSelectDone] = useState(false);
 
-  // Lift portfolio state to TokenStudio so it can be shared across tabs.
-  const portfolioHook = useTokenPortfolio(account, {
-    networkStatus: health?.status,
-  });
   const networkActionsDisabled = tokenNetworkActionsDisabled(health?.status);
   const networkWarning = tokenNetworkWarning(health?.status);
 
@@ -89,7 +87,7 @@ export default function TokenStudio({
   const selectedToken = ownedPortfolio.find(p => p.mintAddress === selectedTokenMint) || null;
 
   return (
-    <div className="pc-token-studio-root">
+    <div className="pc-token-studio-root" style={{ minHeight: "100%" }}>
       {networkWarning && (
         <p
           className={

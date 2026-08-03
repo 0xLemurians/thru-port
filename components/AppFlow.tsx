@@ -34,14 +34,15 @@ import {
   faucetFailureRequiresManualCheck,
   safeFaucetDisplayMessage,
 } from "@/lib/wallet/faucet-safety";
-import NameStudio from "./NameStudio";
 import TokenStudio from "./TokenStudio";
+import NameStudio from "./NameStudio";
 import type { WorkspaceStage } from "./port/PortHeader";
-import PortShell from "./port/PortShell";
-import PortDashboard from "./port/PortDashboard";
 import OneTimePrivateKeyBackup from "./port/OneTimePrivateKeyBackup";
 import { useAlphaNetHealth } from "./port/useAlphaNetHealth";
 import { shouldShowOneTimePrivateKeyBackup } from "@/lib/wallet/one-time-private-key-backup";
+import CommandShell from "./command/CommandShell";
+import CommandDashboard from "./command/CommandDashboard";
+import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
 
 export default function AppFlow() {
   const [stage, setStage] = useState<WorkspaceStage>("account");
@@ -71,6 +72,11 @@ export default function AppFlow() {
   const removalPromiseRef = useRef<Promise<void> | null>(null);
 
   const health = useAlphaNetHealth();
+
+  // Lifted portfolio hook
+  const portfolioHook = useTokenPortfolio(account, {
+    networkStatus: health?.status,
+  });
 
   const refreshBalance = useCallback(async (address: string) => {
     setBalanceError(null);
@@ -163,10 +169,6 @@ export default function AppFlow() {
     setPersistenceWarning(null);
     let candidate: ThruAccount | null = null;
     try {
-      // The product exposes a one-time private-key backup, not a recovery
-      // phrase. Generate a direct SDK keypair so a mnemonic is never created
-      // or persisted for new wallets. Legacy records that contain a mnemonic
-      // remain readable by the vault parser.
       candidate = await createNewAccount(false);
       const persisted = await saveAndVerifyPersistedWallet(candidate, {
         setupPending: true,
@@ -403,7 +405,7 @@ export default function AppFlow() {
   }
 
   return (
-    <PortShell
+    <CommandShell
       currentStage={stage}
       accountAvailable={Boolean(account)}
       publicAddress={account?.address}
@@ -414,7 +416,7 @@ export default function AppFlow() {
       onForgetAccount={forgetAccount}
     >
       {stage === "account" && (
-        <PortDashboard
+        <CommandDashboard
           account={account}
           balance={balance}
           balanceError={balanceError}
@@ -433,24 +435,20 @@ export default function AppFlow() {
           onForgetAccount={forgetAccount}
           restoreStatus={restoreStatus}
           persistenceWarning={persistenceWarning}
+          portfolioHook={portfolioHook}
         />
       )}
       {stage === "token" && account && (
-        <div style={{ marginTop: 24 }}>
-          <TokenStudio account={account} health={health} />
+        <div style={{ marginTop: 24, flex: 1, overflow: "auto" }}>
+          <TokenStudio account={account} health={health} portfolioHook={portfolioHook} />
         </div>
       )}
       {stage === "name" && account && (
-        <div style={{ marginTop: 24 }}>
-          <NameStudio
-            account={account}
-            health={health}
-            walletReady={
-              restoreStatus === "WALLET_READY" && !persistenceWarning
-            }
-          />
+        <div style={{ padding: "4rem", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%" }}>
+           <NameStudio account={account} health={health} walletReady={true} />
         </div>
       )}
-    </PortShell>
+    </CommandShell>
   );
 }
+

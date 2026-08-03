@@ -421,9 +421,9 @@ test("AppFlow clears the active wallet only after verified vault removal", () =>
   assert.match(appFlowSource, /throw new Error\(WALLET_REMOVAL_ERROR\)/);
 });
 
-test("clean source check: bis_skin_checked and suppressHydrationWarning absent", () => {
+test("clean source check: bis_skin_checked absent and suppressHydrationWarning used correctly", () => {
   const layoutPath = path.join(process.cwd(), "app/layout.tsx");
   const content = fs.readFileSync(layoutPath, "utf-8");
   assert.equal(content.includes("bis_skin_checked"), false, "bis_skin_checked must not be present in layout");
-  assert.equal(content.includes("suppressHydrationWarning"), false, "suppressHydrationWarning must not be present in layout");
+  assert.ok(content.match(/<html[^>]*suppressHydrationWarning/), "suppressHydrationWarning must be present on the html tag for theme hydration");
 });

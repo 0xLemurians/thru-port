@@ -100,8 +100,8 @@ test("AppFlow owns one centralized health result for all workspaces", () => {
     "utf8",
   );
   assert.equal(source.match(/useAlphaNetHealth\(\)/g)?.length, 1);
-  assert.match(source, /<PortShell[\s\S]*health=\{health\}/);
-  assert.match(source, /<PortDashboard[\s\S]*health=\{health\}/);
+  assert.match(source, /<CommandShell[\s\S]*health=\{health\}/);
+  assert.match(source, /<CommandDashboard[\s\S]*health=\{health\}/);
   assert.match(source, /<TokenStudio account=\{account\} health=\{health\}/);
   assert.match(source, /<NameStudio[\s\S]*health=\{health\}/);
 });
