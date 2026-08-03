@@ -108,11 +108,11 @@ export default function CommandShell({
             
             <div className={styles.navDivider}></div>
             
-            <a href="#" className={styles.navLinkSecondary}>
+            <a href="https://thru.org/docs/" target="_blank" rel="noopener noreferrer" aria-label="Open Thru Documentation" className={styles.navLinkSecondary}>
               <span className={styles.navIconSecondary}>⌘</span>
               <span className={styles.navLabelSecondary}>Docs</span>
             </a>
-            <a href="#" className={styles.navLinkSecondary}>
+            <a href="https://scan.thru.org/?rpc=https%3A%2F%2Frpc.alphanet.thru.org" target="_blank" rel="noopener noreferrer" aria-label="Open Thru AlphaNet Explorer" className={styles.navLinkSecondary}>
               <span className={styles.navIconSecondary}>↗</span>
               <span className={styles.navLabelSecondary}>Explorer</span>
             </a>

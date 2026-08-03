@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
-import { formatNativeThruAmount, NATIVE_THRU_BALANCE_UNIT } from "@/lib/wallet/native-balance";
+
 import type { AlphaNetHealth } from "../port/useAlphaNetHealth";
 import PortFaucetPanel from "../port/PortFaucetPanel";
 import WalletBackupDialog from "../port/WalletBackupDialog";
@@ -267,7 +267,7 @@ export default function CommandDashboard({
                 <>
                   <div className={styles.heroContent}>
                     <div className={styles.balanceLabel}>
-                      Total Assets <span className={styles.mockBadge}>Mock Data</span>
+                      Native Balance
                     </div>
                     <div className={styles.balanceAmount}>
                       {balanceError ? (
@@ -276,7 +276,7 @@ export default function CommandDashboard({
                         <span style={{ fontSize: "1.5rem", color: "var(--text-muted)" }}>Loading...</span>
                       ) : (
                         <>
-                           {formatNativeThruAmount(balance)} <span className={styles.balanceUnit}>{NATIVE_THRU_BALANCE_UNIT}</span>
+                           {balance.toString()} <span className={styles.balanceUnit}>native units</span>
                         </>
                       )}
                     </div>
@@ -324,7 +324,6 @@ export default function CommandDashboard({
                         </div>
                         <div className={styles.tokenRight}>
                           <div className={styles.tokenBalance}>{balanceFmt}</div>
-                          <div className={styles.tokenValue}>Mock data</div>
                         </div>
                       </div>
                     );

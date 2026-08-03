@@ -249,3 +249,41 @@ test("balance error notice kart düzenini bozmadan render ediliyor", () => {
   const errorMarkup = "<div className=\"error\">Balance temporarily unavailable</div>";
   assert.ok(errorMarkup.includes("error"));
 });
+
+test("Docs uses exact URL, opens in new tab securely, and is fully clickable", () => {
+  const source = fs.readFileSync(path.join(process.cwd(), "components/command/CommandShell.tsx"), "utf8");
+  assert.match(source, /href="https:\/\/thru\.org\/docs\/"/);
+  assert.match(source, /target="_blank"/);
+  assert.match(source, /rel="noopener noreferrer"/);
+  assert.match(source, /<a[^>]*href="https:\/\/thru\.org\/docs\/"[^>]*>/);
+});
+
+test("Explorer uses exact AlphaNet URL, opens securely, and is not disabled", () => {
+  const source = fs.readFileSync(path.join(process.cwd(), "components/command/CommandShell.tsx"), "utf8");
+  assert.match(source, /href="https:\/\/scan\.thru\.org\/\?rpc=https%3A%2F%2Frpc\.alphanet\.thru\.org"/);
+  assert.match(source, /target="_blank"/);
+  assert.match(source, /rel="noopener noreferrer"/);
+  assert.doesNotMatch(source, /Coming Soon/i);
+});
+
+test("Production dashboard shows 'Native Balance', not 'Total Assets', with 'native units'", () => {
+  const source = fs.readFileSync(path.join(process.cwd(), "components/command/CommandDashboard.tsx"), "utf8");
+  assert.match(source, /Native Balance/);
+  assert.doesNotMatch(source, /Total Assets/);
+  assert.match(source, /native units/);
+  assert.doesNotMatch(source, /formatNativeThruAmount/); // confirms no decimal guessing
+});
+
+test("Production removes mock data badges and hardcoded balances, and no native THRU send", () => {
+  const source = fs.readFileSync(path.join(process.cwd(), "components/command/CommandDashboard.tsx"), "utf8");
+  assert.doesNotMatch(source, /<span className=\{styles\.mockBadge\}>Mock Data<\/span>/);
+  assert.doesNotMatch(source, /115007/);
+  assert.doesNotMatch(source, />Mock data</);
+  // Checking that we don't have native THRU send
+  assert.doesNotMatch(source, /Native THRU send/i);
+});
+
+test("Design preview route retains its mock data indicators", () => {
+  const source = fs.readFileSync(path.join(process.cwd(), "app/design-preview/page.tsx"), "utf8");
+  assert.match(source, /Design preview — mock data/i);
+});
