@@ -1,6 +1,6 @@
 # Thru Port
 
-Thru Port, Thru AlphaNet üzerinde çalışan browser tabanlı bir wallet ve fungible-token dApp'idir. Uygulama Next.js, React ve TypeScript kullanır; zincir erişimi için exact `@thru/sdk@0.3.2` ve `@thru/programs@0.3.2` paketlerine bağlıdır.
+Thru Port, Thru AlphaNet üzerinde çalışan browser tabanlı bir wallet ve fungible-token dApp'idir. Uygulama Next.js, React ve TypeScript kullanır; zincir erişimi için exact `@thru/sdk@0.3.4` ve `@thru/programs@0.3.4` paketlerine bağlıdır.
 
 AlphaNet bir test ağıdır ve sıfırlanabilir. Buradaki test birimlerinin parasal değeri yoktur.
 

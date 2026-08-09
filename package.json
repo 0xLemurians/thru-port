@@ -17,8 +17,8 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
-    "@thru/programs": "0.3.2",
-    "@thru/sdk": "0.3.2",
+    "@thru/programs": "0.3.4",
+    "@thru/sdk": "0.3.4",
     "@vercel/analytics": "^2.0.1",
     "@vercel/speed-insights": "^2.0.0",
     "next": "^15.1.0",

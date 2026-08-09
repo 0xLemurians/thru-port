@@ -42,7 +42,7 @@ const fixture = JSON.parse(
       ROOT,
       "tests",
       "fixtures",
-      "thru-transaction-signing-v0.3.2.json",
+      "thru-transaction-signing-v0.3.4.json",
     ),
     "utf8",
   ),
@@ -180,7 +180,7 @@ function allSourceFiles(directory: string): string[] {
   });
 }
 
-test("the installed Thru dependency graph contains only matching 0.3.2 packages", () => {
+test("the installed Thru dependency graph contains only matching 0.3.4 packages", () => {
   const appPackage = JSON.parse(
     readFileSync(path.join(ROOT, "package.json"), "utf8"),
   ) as { dependencies: Record<string, string> };
@@ -205,11 +205,11 @@ test("the installed Thru dependency graph contains only matching 0.3.2 packages"
     ),
   ) as { version: string; dependencies: Record<string, string> };
 
-  assert.equal(appPackage.dependencies["@thru/sdk"], "0.3.2");
-  assert.equal(appPackage.dependencies["@thru/programs"], "0.3.2");
-  assert.equal(installedSdk.version, "0.3.2");
-  assert.equal(installedPrograms.version, "0.3.2");
-  assert.equal(installedPrograms.dependencies["@thru/sdk"], "0.3.2");
+  assert.equal(appPackage.dependencies["@thru/sdk"], "0.3.4");
+  assert.equal(appPackage.dependencies["@thru/programs"], "0.3.4");
+  assert.equal(installedSdk.version, "0.3.4");
+  assert.equal(installedPrograms.version, "0.3.4");
+  assert.equal(installedPrograms.dependencies["@thru/sdk"], "0.3.4");
 
   const sdkEntries = Object.entries(lock.packages).filter(([key]) =>
     /node_modules\/@thru\/sdk$/.test(key),
@@ -219,15 +219,15 @@ test("the installed Thru dependency graph contains only matching 0.3.2 packages"
   );
   assert.deepEqual(
     sdkEntries.map(([, value]) => value.version),
-    ["0.3.2"],
+    ["0.3.4"],
   );
   assert.deepEqual(
     programEntries.map(([, value]) => value.version),
-    ["0.3.2"],
+    ["0.3.4"],
   );
 });
 
-test("official RFC8032 golden signature remains stable in SDK 0.3.2", async () => {
+test("official RFC8032 golden signature remains stable in SDK 0.3.4", async () => {
   assert.match(fixture.warning, /PUBLIC TEST VECTOR ONLY/);
   assert.match(fixture.source, /Rust signer/);
   const body = hexToBytes(fixture.officialRustGoldenBodyHex);

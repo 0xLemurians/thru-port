@@ -8,7 +8,7 @@
  * @noble/ed25519 + @noble/hashes + @scure/bip39 tabanlı) kodu ile,
  * bu sekmenin belleğinde gerçekleşir.
  *
- * Bu modül @thru/sdk@0.3.2 üzerinde, npm registry'den indirilip
+ * Bu modül @thru/sdk@0.3.4 üzerinde, npm registry'den indirilip
  * `dist/*.d.ts` dosyaları incelenerek doğrulanmış gerçek API'ye göre yazıldı:
  *   - thru.keys.generateKeyPair()
  *   - thru.keys.fromPrivateKey(privateKey)
