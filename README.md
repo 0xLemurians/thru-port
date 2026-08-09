@@ -112,4 +112,5 @@ npm run check
 
 - RPC: `https://rpc.alphanet.thru.org`
 - Explorer: `https://scan.thru.org`
-- Minor documentation update.
+- Minor documentation update..
+- 
