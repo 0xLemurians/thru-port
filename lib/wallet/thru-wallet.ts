@@ -8,7 +8,7 @@
  * @noble/ed25519 + @noble/hashes + @scure/bip39 tabanlı) kodu ile,
  * bu sekmenin belleğinde gerçekleşir.
  *
- * Bu modül @thru/sdk@0.3.4 üzerinde, npm registry'den indirilip
+ * Bu modül @thru/sdk@0.4.1 üzerinde, npm registry'den indirilip
  * `dist/*.d.ts` dosyaları incelenerek doğrulanmış gerçek API'ye göre yazıldı:
  *   - thru.keys.generateKeyPair()
  *   - thru.keys.fromPrivateKey(privateKey)
@@ -22,13 +22,14 @@ import {
   type GeneratedKeyPair,
 } from "@thru/sdk";
 import { MnemonicGenerator, ThruHDWallet } from "@thru/sdk/crypto";
+import { ACCOUNT_CREATION_RESOURCES } from "@thru/programs/resources";
 import {
   ALPHANET_RPC_URL,
   thru,
 } from "../thru/client";
 import {
+  assertFinalizedAccount,
   assertUsableTransactionContext,
-  readFreshChainId,
   signTransactionForSubmission,
   SubmittedTransactionUncertainError,
   verifySubmittedTransaction,
@@ -207,9 +208,8 @@ async function waitForAccountVisibility(
   for (let attempt = 0; attempt < 6; attempt++) {
     signal?.throwIfAborted();
     try {
-      const account = await thru.accounts.get(address, {
-        minConsensus: ConsensusStatus.FINALIZED,
-      });
+      const account = await thru.accounts.get(address);
+      assertFinalizedAccount(account);
       if (account.address.toThruFmt() !== address) {
         throw new Error(
           "The finalized account does not match the active wallet.",
@@ -274,10 +274,9 @@ export async function ensureAccountExists(
   let submittedSignature = "";
   let definitiveExecutionFailure = false;
   try {
-    const chainId = await readFreshChainId(signal);
     const createTx = await thru.accounts.create({
       publicKey: account.publicKey,
-      header: { chainId },
+      header: { ...ACCOUNT_CREATION_RESOURCES },
     });
     signal?.throwIfAborted();
     assertUsableTransactionContext(createTx);
@@ -347,9 +346,8 @@ export async function ensureAccountExists(
         signature,
         verifyExpectedState: async () => {
           try {
-            const createdAccount = await thru.accounts.get(account.address, {
-              minConsensus: ConsensusStatus.FINALIZED,
-            });
+            const createdAccount = await thru.accounts.get(account.address);
+            assertFinalizedAccount(createdAccount);
             if (createdAccount.address.toThruFmt() !== account.address) {
               throw new Error(
                 "The finalized account does not match the active wallet.",

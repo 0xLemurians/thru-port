@@ -1,16 +1,18 @@
+import { BOOTSTRAP_PROGRAM_ADDRESSES } from "@thru/programs/bootstrap-addresses";
+
 export { ALPHANET_RPC_URL } from "../client";
 export const ALPHANET_EXPLORER_ADDRESS_BASE_URL =
   "https://scan.thru.org/address";
 export const ALPHANET_EXPLORER_TRANSACTION_BASE_URL =
   "https://scan.thru.org/tx";
 
-/** Official AlphaNet base Name Service program from the Thru CLI defaults. */
+/** Canonical v0.4.1 bootstrap-managed Name Service program. */
 export const NAME_SERVICE_PROGRAM_ADDRESS =
-  "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAUF";
+  BOOTSTRAP_PROGRAM_ADDRESSES.name_service;
 
-/** Official AlphaNet .thru Registrar program from the Thru CLI defaults. */
+/** Canonical v0.4.1 bootstrap-managed .thru Registrar program. */
 export const REGISTRAR_PROGRAM_ADDRESS =
-  "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYG";
+  BOOTSTRAP_PROGRAM_ADDRESSES.thru_registrar;
 
 export const REGISTRAR_CONFIG_SEED_TEXT = "config";
 export const LEASE_SEED_PREFIX = "lease:";

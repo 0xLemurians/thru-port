@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  classifyPortfolio,
   LatestRequestTracker,
   saveKnownTokens,
   type KnownTokenRecord,
 } from "../lib/token/portfolio";
+import {
+  STALE_TOKEN_REFERENCE_MESSAGE,
+  type TokenPortfolioItem,
+} from "../lib/token/thru-token";
 
 const VALID_ADDRESS = "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKqq";
 
@@ -57,4 +62,17 @@ test("portfolio persistence strips fields other than public references and label
     },
   ]);
   assert.doesNotMatch(stored, /privateKey|mnemonic|must-not-persist/);
+});
+
+test("saved tokens from an unverifiable legacy program remain visible as stale", () => {
+  const stale: TokenPortfolioItem = {
+    mintAddress: VALID_ADDRESS,
+    walletAddress: VALID_ADDRESS,
+    error: STALE_TOKEN_REFERENCE_MESSAGE,
+    tokenAccounts: [],
+  };
+  const classified = classifyPortfolio([stale], VALID_ADDRESS);
+  assert.deepEqual(classified.activeAssets, [stale]);
+  assert.deepEqual(classified.externalAssets, []);
+  assert.match(stale.error ?? "", /unavailable|older AlphaNet/i);
 });

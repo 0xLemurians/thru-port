@@ -2,14 +2,10 @@
  * Thru AlphaNet — Faucet withdraw.
  *
  * @thru/sdk (npm) henüz faucet transaction'ı için hazır bir builder
- * sunmuyor. Bu dosya, Unto-Labs/thru reposundaki resmi Rust CLI
- * implementasyonunu (rpc/cli/crates/thru-core/src/commands/faucet.rs +
- * rpc/thru-base/src/txn_tools.rs) birebir referans alarak TS'e taşır.
+ * sunmuyor. Instruction layout resmi uygulamayla eşleşirken program ve vault
+ * adresleri v0.4.1 bootstrap paketinden alınır.
  *
  * Doğrulanan sabitler (kaynak koddan):
- *  - FAUCET_PROGRAM: 32 byte, hepsi 0x00, son byte 0xFA (txn_tools.rs:31-35)
- *  - FAUCET_ACCOUNT_ADDRESS: "taxoImN8fTEOxXYnvgC6JZ0lN0n0qvZERwz_vlOjX3MkIn"
- *    (faucet.rs:25 — genesis'teki sabit hazine hesabı)
  *  - FAUCET_WITHDRAW_LIMIT: 10_000 (faucet.rs:20 — tek işlemdeki üst sınır)
  *  - Instruction encoding (build_faucet_withdraw_instruction, txn_tools.rs:5725):
  *      u32 LE discriminant(=1 için withdraw)
@@ -24,9 +20,14 @@
  *    yalnızca faucet hazine hesabı rw olarak eklenir → idx 2, recipient idx 0.
  */
 
-import { ConsensusStatus, Signature } from "@thru/sdk";
-import { encodeAddress } from "@thru/sdk/helpers";
+import { ConsensusStatus, Signature, type Account } from "@thru/sdk";
 import {
+  BOOTSTRAP_FAUCET_VAULT_ADDRESS,
+  BOOTSTRAP_PROGRAM_ADDRESSES,
+} from "@thru/programs/bootstrap-addresses";
+import { programResources } from "@thru/programs/resources";
+import {
+  accountReadFinality,
   buildTransactionForSigning,
   signTransactionForSubmission,
   SubmittedTransactionUncertainError,
@@ -36,28 +37,21 @@ import {
 import { thru, type ThruAccount, getBalance, ensureAccountExists } from "./thru-wallet";
 import {
   SAFE_FAUCET_ERROR_MESSAGE,
+  SAFE_FAUCET_UNAVAILABLE_MESSAGE,
   SAFE_FAUCET_UNCERTAIN_MESSAGE,
 } from "./faucet-safety";
 
-export const FAUCET_ACCOUNT_ADDRESS =
-  "taxoImN8fTEOxXYnvgC6JZ0lN0n0qvZERwz_vlOjX3MkIn";
+export const FAUCET_ACCOUNT_ADDRESS = BOOTSTRAP_FAUCET_VAULT_ADDRESS;
+export const FAUCET_PROGRAM_ADDRESS = BOOTSTRAP_PROGRAM_ADDRESSES.faucet;
 
 export const FAUCET_WITHDRAW_LIMIT = 10_000n;
-
-const FAUCET_PROGRAM_BYTES: Uint8Array = (() => {
-  const bytes = new Uint8Array(32);
-  bytes[31] = 0xfa;
-  return bytes;
-})();
-
-let cachedProgramAddress: string | null = null;
-
-async function faucetProgramAddress(): Promise<string> {
-  if (!cachedProgramAddress) {
-    cachedProgramAddress = encodeAddress(FAUCET_PROGRAM_BYTES);
-  }
-  return cachedProgramAddress;
-}
+export const FAUCET_TRANSACTION_RESOURCES = Object.freeze(
+  programResources({
+    computeUnits: 300_000,
+    stateUnits: 10_000,
+    memoryUnits: 10_000,
+  }),
+);
 
 export function buildFaucetWithdrawInstruction(
   faucetAccountIdx: number,
@@ -78,6 +72,47 @@ export interface FaucetWithdrawResult {
   finalized: boolean;
   failureReason?: string;
   attempts: number;
+}
+
+export class FaucetUnavailableError extends Error {
+  constructor() {
+    super(SAFE_FAUCET_UNAVAILABLE_MESSAGE);
+    this.name = "FaucetUnavailableError";
+  }
+}
+
+/**
+ * The v0.4.1 vault address is a PDA created by faucet initialization, not a
+ * genesis account. Fail closed when the current deployment has no matching
+ * program-owned vault so no transaction can be prepared for a guessed target.
+ */
+export async function assertFaucetDeploymentAvailable(
+  readAccount: (address: string) => Promise<Account> = (address) =>
+    thru.accounts.get(address),
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    signal?.throwIfAborted();
+    const program = await readAccount(FAUCET_PROGRAM_ADDRESS);
+    signal?.throwIfAborted();
+    accountReadFinality(program);
+    if (program.meta?.flags.isDeleted || !program.meta?.flags.isProgram) {
+      throw new FaucetUnavailableError();
+    }
+
+    const vault = await readAccount(FAUCET_ACCOUNT_ADDRESS);
+    signal?.throwIfAborted();
+    accountReadFinality(vault);
+    if (
+      vault.meta?.flags.isDeleted ||
+      vault.meta?.owner?.toThruFmt() !== FAUCET_PROGRAM_ADDRESS
+    ) {
+      throw new FaucetUnavailableError();
+    }
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new FaucetUnavailableError();
+  }
 }
 
 /**
@@ -103,6 +138,18 @@ export async function withdrawFromFaucet(
     throw new Error(
       `Faucet withdraw limit is ${FAUCET_WITHDRAW_LIMIT} per transaction.`,
     );
+  }
+
+  try {
+    await assertFaucetDeploymentAvailable(undefined, signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return {
+      signature: "",
+      finalized: false,
+      failureReason: SAFE_FAUCET_UNAVAILABLE_MESSAGE,
+      attempts: 0,
+    };
   }
 
   // Yeni bir keypair henüz zincirde "hesap" olarak var olmayabilir —
@@ -236,21 +283,18 @@ async function attemptFaucetWithdraw(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<Omit<FaucetWithdrawResult, "attempts">> {
-  const programAddress = await faucetProgramAddress();
   signal?.throwIfAborted();
   const transaction = await buildTransactionForSigning({
     feePayer: {
       publicKey: account.publicKey,
     },
-    program: programAddress,
+    program: FAUCET_PROGRAM_ADDRESS,
     accounts: {
       readWrite: [FAUCET_ACCOUNT_ADDRESS],
     },
     header: {
       fee: 0n,
-      computeUnits: 300_000,
-      stateUnits: 10_000,
-      memoryUnits: 10_000,
+      ...FAUCET_TRANSACTION_RESOURCES,
       expiryAfter: 100,
     },
     instructionData: async ({ getAccountIndex }) =>

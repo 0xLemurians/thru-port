@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createThruClient, Pubkey } from "@thru/sdk";
+import { BOOTSTRAP_PROGRAM_ADDRESSES } from "@thru/programs/bootstrap-addresses";
 import type { TokenAccountInfo } from "@thru/programs/token";
 import {
   assertDestinationTokenAccountIdentity,
@@ -14,15 +15,14 @@ import {
   waitForTransactionVisibility,
 } from "../lib/token/transaction-status";
 
-const TOKEN_PROGRAM =
-  "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKqq";
+const TOKEN_PROGRAM = BOOTSTRAP_PROGRAM_ADDRESSES.token;
 const MINT = "tappwydh_hcIBjPaYFySSCLQA0O6nNzVpZ11AH6SjWs458";
 const ACTIVE_WALLET =
   "taBI9fwnX5fT_sJ0cdKKyCLyk72TLw6Rz4wwb-SFdU8aKD";
 const DESTINATION_OWNER =
   "tazAmiPNdE28AWH3wPl23zr9Nllg-q6kplDDXOnBS3f9m9";
 const EXPECTED_DESTINATION_ACCOUNT =
-  "tanMwL-Q-2kDrxyQ_msVYElBw1z80bbCUnNLjZ1KR2_7Rv";
+  "ta2ourpnq7f88E9-qmxwQfK-2c_KL7ZBMkPekvUxOX31IZ";
 const thru = createThruClient({
   baseUrl: "https://rpc.alphanet.thru.org",
 });
@@ -195,7 +195,7 @@ test("wrong Token Program ownership is rejected", () => {
         TOKEN_PROGRAM,
         MINT,
       ),
-    /not owned by the official Token Program/,
+    /unavailable or belongs to an older AlphaNet program deployment/,
   );
 });
 

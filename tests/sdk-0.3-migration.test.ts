@@ -14,10 +14,32 @@ import {
   type BuildTransactionOptions,
 } from "@thru/sdk";
 import {
+  BOOTSTRAP_FAUCET_VAULT_ADDRESS,
+  BOOTSTRAP_PROGRAM_ADDRESSES,
+} from "@thru/programs/bootstrap-addresses";
+import {
+  ACCOUNT_CREATION_RESOURCES,
+  programResources,
+} from "@thru/programs/resources";
+import {
+  assertExplicitTransactionResources,
   assertUsableTransactionContext,
   buildTransactionForSigning,
-  readFreshChainId,
 } from "../lib/thru/transactions";
+import {
+  FAUCET_ACCOUNT_ADDRESS,
+  FAUCET_PROGRAM_ADDRESS,
+  FAUCET_TRANSACTION_RESOURCES,
+} from "../lib/wallet/faucet";
+import { accountFromPrivateKey } from "../lib/wallet/thru-wallet";
+import {
+  NAME_SERVICE_PROGRAM_ADDRESS,
+  REGISTRAR_PROGRAM_ADDRESS,
+} from "../lib/thru/name-service/constants";
+import {
+  TOKEN_PROGRAM_ADDRESS,
+  TOKEN_TRANSACTION_RESOURCES,
+} from "../lib/token/thru-token";
 
 interface SigningFixture {
   fixture: string;
@@ -42,7 +64,7 @@ const fixture = JSON.parse(
       ROOT,
       "tests",
       "fixtures",
-      "thru-transaction-signing-v0.3.4.json",
+      "thru-transaction-signing-v0.4.1.json",
     ),
     "utf8",
   ),
@@ -180,7 +202,7 @@ function allSourceFiles(directory: string): string[] {
   });
 }
 
-test("the installed Thru dependency graph contains only matching 0.3.4 packages", () => {
+test("the installed Thru dependency graph contains only matching 0.4.1 packages", () => {
   const appPackage = JSON.parse(
     readFileSync(path.join(ROOT, "package.json"), "utf8"),
   ) as { dependencies: Record<string, string> };
@@ -205,11 +227,11 @@ test("the installed Thru dependency graph contains only matching 0.3.4 packages"
     ),
   ) as { version: string; dependencies: Record<string, string> };
 
-  assert.equal(appPackage.dependencies["@thru/sdk"], "0.3.4");
-  assert.equal(appPackage.dependencies["@thru/programs"], "0.3.4");
-  assert.equal(installedSdk.version, "0.3.4");
-  assert.equal(installedPrograms.version, "0.3.4");
-  assert.equal(installedPrograms.dependencies["@thru/sdk"], "0.3.4");
+  assert.equal(appPackage.dependencies["@thru/sdk"], "0.4.1");
+  assert.equal(appPackage.dependencies["@thru/programs"], "0.4.1");
+  assert.equal(installedSdk.version, "0.4.1");
+  assert.equal(installedPrograms.version, "0.4.1");
+  assert.equal(installedPrograms.dependencies["@thru/sdk"], "0.4.1");
 
   const sdkEntries = Object.entries(lock.packages).filter(([key]) =>
     /node_modules\/@thru\/sdk$/.test(key),
@@ -219,15 +241,15 @@ test("the installed Thru dependency graph contains only matching 0.3.4 packages"
   );
   assert.deepEqual(
     sdkEntries.map(([, value]) => value.version),
-    ["0.3.4"],
+    ["0.4.1"],
   );
   assert.deepEqual(
     programEntries.map(([, value]) => value.version),
-    ["0.3.4"],
+    ["0.4.1"],
   );
 });
 
-test("official RFC8032 golden signature remains stable in SDK 0.3.4", async () => {
+test("official RFC8032 golden signature remains stable in SDK 0.4.1", async () => {
   assert.match(fixture.warning, /PUBLIC TEST VECTOR ONLY/);
   assert.match(fixture.source, /Rust signer/);
   const body = hexToBytes(fixture.officialRustGoldenBodyHex);
@@ -261,7 +283,7 @@ test("official RFC8032 golden signature remains stable in SDK 0.3.4", async () =
   );
 });
 
-test("v0.3 unsigned body, signing message, signature, and signed wire match independently", async () => {
+test("v0.4.1 unsigned body, signing message, signature, and signed wire remain byte-identical", async () => {
   const seed = hexToBytes(fixture.publicTestSeedHex);
   const independentBody = independentTransactionBody();
   const transaction = new TransactionBuilder().build(
@@ -303,7 +325,7 @@ test("v0.3 unsigned body, signing message, signature, and signed wire match inde
   assert.equal(bytesToHex(transaction.toWire()), fixture.signedWireHex);
 });
 
-test("body mutation and the legacy 0.2.39 signature fail v0.3 verification", async () => {
+test("body mutation and the legacy 0.2.39 signature fail v0.4.1 verification", async () => {
   const publicKey = hexToBytes(fixture.publicKeyHex);
   const signature = hexToBytes(fixture.signatureHex);
   const mutated = hexToBytes(fixture.unsignedTransactionBodyHex);
@@ -374,37 +396,68 @@ test("fresh transaction context is validated and an abort blocks later signing",
   assert.equal(validTransaction.getSignature(), undefined);
 });
 
-test("account-create chain IDs are fresh, validated, and never hardcoded", async () => {
-  const reads: number[] = [];
+test("v0.4.1 canonical program addresses are used by every migrated path", () => {
+  assert.equal(TOKEN_PROGRAM_ADDRESS, BOOTSTRAP_PROGRAM_ADDRESSES.token);
+  assert.equal(FAUCET_PROGRAM_ADDRESS, BOOTSTRAP_PROGRAM_ADDRESSES.faucet);
+  assert.equal(FAUCET_ACCOUNT_ADDRESS, BOOTSTRAP_FAUCET_VAULT_ADDRESS);
   assert.equal(
-    await readFreshChainId(undefined, async () => {
-      reads.push(23);
-      return 23;
-    }),
-    23,
+    NAME_SERVICE_PROGRAM_ADDRESS,
+    BOOTSTRAP_PROGRAM_ADDRESSES.name_service,
   );
-  assert.deepEqual(reads, [23]);
-  await assert.rejects(
-    () => readFreshChainId(undefined, async () => 0),
-    /chain ID/,
+  assert.equal(
+    REGISTRAR_PROGRAM_ADDRESS,
+    BOOTSTRAP_PROGRAM_ADDRESSES.thru_registrar,
   );
+});
 
-  let releaseRead!: (value: number) => void;
-  const controller = new AbortController();
-  const pending = readFreshChainId(
-    controller.signal,
-    () =>
-      new Promise((resolve) => {
-        releaseRead = resolve;
-      }),
-  );
-  controller.abort();
-  releaseRead(23);
+test("all v0.4.1 write paths use explicit non-zero resource budgets", async () => {
+  const budgets = [
+    ACCOUNT_CREATION_RESOURCES,
+    TOKEN_TRANSACTION_RESOURCES,
+    FAUCET_TRANSACTION_RESOURCES,
+    programResources({ stateUnits: 10_000 }),
+  ];
+  for (const budget of budgets) {
+    assert.ok(budget.computeUnits > 0);
+    assert.ok(budget.stateUnits > 0);
+    assert.ok(budget.memoryUnits > 0);
+    assert.doesNotThrow(() =>
+      assertExplicitTransactionResources({ header: budget }),
+    );
+  }
+
+  let buildCalled = false;
   await assert.rejects(
-    pending,
-    (error: unknown) =>
-      error instanceof DOMException && error.name === "AbortError",
+    () =>
+      buildTransactionForSigning(
+        {
+          feePayer: { publicKey: new Uint8Array(32) },
+          program: new Uint8Array(32),
+        },
+        undefined,
+        async () => {
+          buildCalled = true;
+          throw new Error("builder must not run");
+        },
+      ),
+    /compute units/i,
   );
+  assert.equal(buildCalled, false);
+});
+
+test("the same private key still derives the same address and public key", async () => {
+  const seed = hexToBytes(fixture.publicTestSeedHex);
+  const first = await accountFromPrivateKey(seed);
+  const second = await accountFromPrivateKey(seed);
+  try {
+    assert.equal(first.address, second.address);
+    assert.equal(bytesToHex(first.publicKey), fixture.publicKeyHex);
+    assert.equal(bytesToHex(second.publicKey), fixture.publicKeyHex);
+  } finally {
+    first.privateKey.fill(0);
+    second.privateKey.fill(0);
+    seed.fill(0);
+  }
 });
 
 test("production transaction paths use the centralized official SDK signer only", () => {

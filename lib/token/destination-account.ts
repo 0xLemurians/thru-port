@@ -7,6 +7,13 @@ import {
 
 export const RAW_ZERO_TOKEN_ACCOUNT_SEED_LENGTH = 32;
 
+export class TokenProgramOwnershipError extends Error {
+  constructor() {
+    super("The saved token is unavailable or belongs to an older AlphaNet program deployment.");
+    this.name = "TokenProgramOwnershipError";
+  }
+}
+
 export interface DestinationTokenAccountPreview {
   mintAddress: string;
   destinationOwnerAddress: string;
@@ -81,9 +88,8 @@ export function assertOfficialTokenProgramOwnership(
   address: string,
 ): void {
   if (actualOwner !== tokenProgramAddress) {
-    throw new Error(
-      `On-chain account ${address} is not owned by the official Token Program.`,
-    );
+    void address;
+    throw new TokenProgramOwnershipError();
   }
 }
 

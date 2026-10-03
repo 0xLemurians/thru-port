@@ -116,8 +116,10 @@ export function useTokenPortfolio(
         signal: controller.signal,
       });
       if (!requestTrackerRef.current.isCurrent(request)) return;
-      const controlledPortfolio = nextPortfolio.filter((item) =>
-        isCreatedTokenControlledByWallet(item, walletAddress),
+      const controlledPortfolio = nextPortfolio.filter(
+        (item) =>
+          isCreatedTokenControlledByWallet(item, walletAddress) ||
+          (item.walletAddress === walletAddress && Boolean(item.error)),
       );
       let enrichedRecords = recordsToRefresh;
       for (const item of controlledPortfolio) {

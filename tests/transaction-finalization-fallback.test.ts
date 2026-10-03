@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AccountConsensusPendingError,
   SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
   SubmittedTransactionUncertainError,
+  accountReadFinality,
+  assertFinalizedAccount,
   verifySubmittedTransaction,
 } from "../lib/thru/transactions";
 import { verifyTransferDeltas } from "../lib/token/operations";
+import { ConsensusStatus } from "@thru/sdk";
 import type {
   MintAccountInfo,
   TokenAccountInfo,
@@ -20,6 +24,53 @@ function successfulExecution() {
     executionResult: 0n,
   };
 }
+
+test("INCLUDED is readable but remains provisional for normal account views", () => {
+  assert.equal(
+    accountReadFinality({ consensusStatus: ConsensusStatus.INCLUDED }),
+    "provisional",
+  );
+  assert.throws(
+    () => assertFinalizedAccount({ consensusStatus: ConsensusStatus.INCLUDED }),
+    AccountConsensusPendingError,
+  );
+});
+
+test("FINALIZED and CLUSTER_EXECUTED retain authoritative read behavior", () => {
+  for (const consensusStatus of [
+    ConsensusStatus.FINALIZED,
+    ConsensusStatus.CLUSTER_EXECUTED,
+  ]) {
+    assert.equal(accountReadFinality({ consensusStatus }), "finalized");
+    assert.doesNotThrow(() => assertFinalizedAccount({ consensusStatus }));
+  }
+});
+
+test("INCLUDED post-state cannot finalize transaction reconciliation", async () => {
+  let clock = 0;
+  await assert.rejects(
+    () =>
+      verifySubmittedTransaction({
+        signature: SIGNATURE,
+        readFinalizedTransaction: async () => {
+          throw new Error("transaction not finalized");
+        },
+        verifyExpectedState: async () => {
+          assertFinalizedAccount({
+            consensusStatus: ConsensusStatus.INCLUDED,
+          });
+          return true;
+        },
+        timeoutMs: 1,
+        initialBackoffMs: 1,
+        now: () => clock,
+        sleep: async (delay) => {
+          clock += delay;
+        },
+      }),
+    SubmittedTransactionUncertainError,
+  );
+});
 
 test("finalized read-only transaction execution confirms success", async () => {
   let postStateReads = 0;

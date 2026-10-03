@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { Pubkey, type Account } from "@thru/sdk";
+import { ConsensusStatus, Pubkey, type Account } from "@thru/sdk";
 import {
   TokenAccount,
   TokenMintAccount,
@@ -22,6 +22,7 @@ import {
 import {
   TOKEN_PROGRAM_ADDRESS,
   discoverControlledTokensOnAlphaNet,
+  fetchTokenPortfolioOnAlphaNet,
   type CreatedTokenDiscoveryDependencies,
 } from "../lib/token/thru-token";
 import { thru } from "../lib/wallet/thru-wallet";
@@ -86,6 +87,7 @@ function tokenProgramAccount(address: string, data: Uint8Array): Account {
       dataSize: data.length,
     },
     data: { data },
+    consensusStatus: ConsensusStatus.INCLUDED,
   } as unknown as Account;
 }
 
@@ -302,6 +304,35 @@ test("official history discovery includes creator or current authority and exclu
     discovered.some((record) => record.mintAddress === FOREIGN_MINT),
     false,
   );
+});
+
+test("INCLUDED point-account responses remain usable for normal portfolio reads", async (t) => {
+  const tokenAddress = publicAddress(31);
+  const accounts = new Map<string, Account>([
+    [CONTROLLED_MINT, mintAccount(CONTROLLED_MINT, WALLET, WALLET, "CTRL")],
+    [
+      tokenAddress,
+      tokenAccount(tokenAddress, CONTROLLED_MINT, WALLET, 25n),
+    ],
+  ]);
+  t.mock.method(thru.accounts, "get", async (address: string) => {
+    const account = accounts.get(address);
+    if (!account) throw new Error("mock account not found");
+    return account;
+  });
+
+  const [portfolio] = await fetchTokenPortfolioOnAlphaNet([
+    {
+      mintAddress: CONTROLLED_MINT,
+      walletAddress: WALLET,
+      tokenAccountAddresses: [tokenAddress],
+    },
+  ]);
+
+  assert.equal(portfolio.error, undefined);
+  assert.equal(portfolio.mint?.ticker, "CTRL");
+  assert.equal(portfolio.tokenAccounts[0].error, undefined);
+  assert.equal(portfolio.tokenAccounts[0].state?.amount, 25n);
 });
 
 test("discovery is bounded and uses no signing, submission, faucet, or private key path", async () => {

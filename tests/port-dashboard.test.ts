@@ -5,6 +5,7 @@ import path from "node:path";
 import type { NetworkStatus } from "../lib/network/alphanet-health";
 import {
   SAFE_FAUCET_ERROR_MESSAGE,
+  SAFE_FAUCET_UNAVAILABLE_MESSAGE,
   SAFE_FAUCET_UNCERTAIN_MESSAGE,
   faucetFailureRequiresManualCheck,
   isFaucetActionDisabled,
@@ -186,12 +187,20 @@ test("Faucet errors are always rendered as the safe approved message", () => {
     SAFE_FAUCET_UNCERTAIN_MESSAGE,
   );
   assert.equal(
+    safeFaucetDisplayMessage(SAFE_FAUCET_UNAVAILABLE_MESSAGE),
+    SAFE_FAUCET_UNAVAILABLE_MESSAGE,
+  );
+  assert.equal(
     faucetFailureRequiresManualCheck(SAFE_FAUCET_UNCERTAIN_MESSAGE),
     true,
   );
   assert.equal(
     faucetFailureRequiresManualCheck(SAFE_FAUCET_ERROR_MESSAGE),
     false,
+  );
+  assert.equal(
+    faucetFailureRequiresManualCheck(SAFE_FAUCET_UNAVAILABLE_MESSAGE),
+    true,
   );
   assert.match(source, /safeFaucetDisplayMessage\(faucetError\)/);
   assert.match(

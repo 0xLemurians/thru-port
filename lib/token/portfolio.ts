@@ -407,6 +407,14 @@ export function classifyPortfolio(
       externalAssets.push(item);
       continue;
     }
+    if (
+      item.error &&
+      activeWalletAddress &&
+      item.walletAddress === activeWalletAddress
+    ) {
+      activeAssets.push(item);
+      continue;
+    }
     const isCreator = activeWalletAddress && item.mint?.creator === activeWalletAddress;
     const isMintAuthority = activeWalletAddress && item.mint?.mintAuthority === activeWalletAddress;
 

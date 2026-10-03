@@ -2,19 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ConsensusStatus,
+  Pubkey,
   SubmissionStatus,
+  type Account,
 } from "@thru/sdk";
+import { ACCOUNT_CREATION_RESOURCES } from "@thru/programs/resources";
 import {
   ensureAccountExists,
   thru,
   type ThruAccount,
 } from "../lib/wallet/thru-wallet";
 import {
+  FAUCET_ACCOUNT_ADDRESS,
+  FAUCET_PROGRAM_ADDRESS,
   FAUCET_WITHDRAW_LIMIT,
+  FaucetUnavailableError,
+  assertFaucetDeploymentAvailable,
   withdrawFromFaucet,
 } from "../lib/wallet/faucet";
 import {
   SAFE_FAUCET_ERROR_MESSAGE,
+  SAFE_FAUCET_UNAVAILABLE_MESSAGE,
   SAFE_FAUCET_UNCERTAIN_MESSAGE,
 } from "../lib/wallet/faucet-safety";
 import { SubmittedTransactionUncertainError } from "../lib/thru/transactions";
@@ -38,7 +46,31 @@ function foundAccount(activeAccount: ThruAccount) {
     address: {
       toThruFmt: () => activeAccount.address,
     },
+    consensusStatus: ConsensusStatus.FINALIZED,
   };
+}
+
+function faucetDeploymentAccount(address: string): Account | undefined {
+  if (address === FAUCET_PROGRAM_ADDRESS) {
+    return {
+      address: Pubkey.from(address),
+      consensusStatus: ConsensusStatus.INCLUDED,
+      meta: {
+        flags: { isDeleted: false, isProgram: true },
+      },
+    } as unknown as Account;
+  }
+  if (address === FAUCET_ACCOUNT_ADDRESS) {
+    return {
+      address: Pubkey.from(address),
+      consensusStatus: ConsensusStatus.INCLUDED,
+      meta: {
+        flags: { isDeleted: false, isProgram: false },
+        owner: Pubkey.from(FAUCET_PROGRAM_ADDRESS),
+      },
+    } as unknown as Account;
+  }
+  return undefined;
 }
 
 function testSignature(byte: number) {
@@ -60,17 +92,20 @@ function successfulUpdate(
   };
 }
 
-test("account creation uses the active wallet, a fresh v0.3 chain ID, and one finalized submission", async (t) => {
+test("account creation uses the active wallet, official v0.4.1 resources, and one finalized submission", async (t) => {
   const activeAccount = account(11);
   let accountReads = 0;
-  let chainReads = 0;
   let createCalls = 0;
   let signCalls = 0;
   let sendCalls = 0;
   let capturedCreate:
     | {
         publicKey?: Uint8Array;
-        header?: { chainId?: number };
+        header?: {
+          computeUnits?: number;
+          stateUnits?: number;
+          memoryUnits?: number;
+        };
       }
     | undefined;
 
@@ -79,13 +114,13 @@ test("account creation uses the active wallet, a fresh v0.3 chain ID, and one fi
     if (accountReads === 1) throw notFound();
     return foundAccount(activeAccount) as never;
   });
-  t.mock.method(thru.chain, "getChainId", async () => {
-    chainReads += 1;
-    return 23;
-  });
   t.mock.method(thru.accounts, "create", async (options: {
     publicKey: Uint8Array;
-    header?: { chainId?: number };
+    header?: {
+      computeUnits?: number;
+      stateUnits?: number;
+      memoryUnits?: number;
+    };
   }) => {
     createCalls += 1;
     capturedCreate = options;
@@ -111,13 +146,12 @@ test("account creation uses the active wallet, a fresh v0.3 chain ID, and one fi
   );
 
   assert.equal(await ensureAccountExists(activeAccount), true);
-  assert.equal(chainReads, 1);
   assert.equal(createCalls, 1);
   assert.equal(signCalls, 1);
   assert.equal(sendCalls, 1);
   assert.equal(accountReads, 2);
   assert.deepEqual(capturedCreate?.publicKey, activeAccount.publicKey);
-  assert.equal(capturedCreate?.header?.chainId, 23);
+  assert.deepEqual(capturedCreate?.header, ACCOUNT_CREATION_RESOURCES);
 });
 
 test("account creation requires post-state account existence after finalized execution", async (t) => {
@@ -330,13 +364,13 @@ test("an interrupted account tracker falls back without rebroadcasting", async (
 test("concurrent account creation calls cannot submit twice", async (t) => {
   const activeAccount = account(14);
   let accountReads = 0;
-  let releaseChainRead: ((value: number) => void) | undefined;
-  let markChainReadStarted: (() => void) | undefined;
-  const chainReadStarted = new Promise<void>((resolve) => {
-    markChainReadStarted = resolve;
+  let releaseCreate: (() => void) | undefined;
+  let markCreateStarted: (() => void) | undefined;
+  const createStarted = new Promise<void>((resolve) => {
+    markCreateStarted = resolve;
   });
-  const pendingChainId = new Promise<number>((resolve) => {
-    releaseChainRead = resolve;
+  const pendingCreate = new Promise<void>((resolve) => {
+    releaseCreate = resolve;
   });
   let sendCalls = 0;
 
@@ -345,17 +379,17 @@ test("concurrent account creation calls cannot submit twice", async (t) => {
     if (accountReads <= 2) throw notFound();
     return foundAccount(activeAccount) as never;
   });
-  t.mock.method(thru.chain, "getChainId", async () => {
-    markChainReadStarted?.();
-    return pendingChainId;
+  t.mock.method(thru.accounts, "create", async () => {
+    markCreateStarted?.();
+    await pendingCreate;
+    return {
+      chainId: 26,
+      startSlot: 503n,
+      sign: async () => undefined,
+      getSignature: () => testSignature(14),
+      toWire: () => new Uint8Array([3, 0, 6]),
+    } as never;
   });
-  t.mock.method(thru.accounts, "create", async () => ({
-    chainId: 26,
-    startSlot: 503n,
-    sign: async () => undefined,
-    getSignature: () => testSignature(14),
-    toWire: () => new Uint8Array([3, 0, 6]),
-  }) as never);
   t.mock.method(
     thru.transactions,
     "sendAndTrack",
@@ -366,14 +400,80 @@ test("concurrent account creation calls cannot submit twice", async (t) => {
   );
 
   const first = ensureAccountExists(activeAccount);
-  await chainReadStarted;
+  await createStarted;
   await assert.rejects(
     () => ensureAccountExists(activeAccount),
     /already in progress/i,
   );
-  releaseChainRead?.(26);
+  releaseCreate?.();
   assert.equal(await first, true);
   assert.equal(sendCalls, 1);
+});
+
+test("a missing derived faucet vault produces a safe unavailable error", async () => {
+  await assert.rejects(
+    () =>
+      assertFaucetDeploymentAvailable(async (address) => {
+        if (address === FAUCET_PROGRAM_ADDRESS) {
+          return faucetDeploymentAccount(address)!;
+        }
+        throw notFound();
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof FaucetUnavailableError);
+      assert.equal(error.message, SAFE_FAUCET_UNAVAILABLE_MESSAGE);
+      return true;
+    },
+  );
+});
+
+test("an invalid faucet vault owner prevents transaction preparation", async (t) => {
+  const activeAccount = account(46);
+  let createCalls = 0;
+  let buildCalls = 0;
+  let sendCalls = 0;
+
+  t.mock.method(thru.accounts, "get", async (address: string) => {
+    if (address === FAUCET_PROGRAM_ADDRESS) {
+      return faucetDeploymentAccount(address);
+    }
+    if (address === FAUCET_ACCOUNT_ADDRESS) {
+      return {
+        ...faucetDeploymentAccount(address)!,
+        meta: {
+          flags: { isDeleted: false, isProgram: false },
+          owner: Pubkey.from(new Uint8Array(32).fill(99)),
+        },
+      } as never;
+    }
+    throw new Error("wallet reads must not start for an unavailable faucet");
+  });
+  t.mock.method(thru.accounts, "create", async () => {
+    createCalls += 1;
+    throw new Error("account creation must not start");
+  });
+  t.mock.method(thru.transactions, "build", async () => {
+    buildCalls += 1;
+    throw new Error("faucet transaction must not be built");
+  });
+  t.mock.method(
+    thru.transactions,
+    "sendAndTrack",
+    async function* () {
+      sendCalls += 1;
+    },
+  );
+
+  const result = await withdrawFromFaucet(activeAccount);
+  assert.deepEqual(result, {
+    signature: "",
+    finalized: false,
+    failureReason: SAFE_FAUCET_UNAVAILABLE_MESSAGE,
+    attempts: 0,
+  });
+  assert.equal(createCalls, 0);
+  assert.equal(buildCalls, 0);
+  assert.equal(sendCalls, 0);
 });
 
 test("faucet funding proceeds only after fallback-verified account creation", async (t) => {
@@ -383,7 +483,9 @@ test("faucet funding proceeds only after fallback-verified account creation", as
   let faucetBuildCalls = 0;
   let sendCalls = 0;
 
-  t.mock.method(thru.accounts, "get", async () => {
+  t.mock.method(thru.accounts, "get", async (address: string) => {
+    const deployment = faucetDeploymentAccount(address);
+    if (deployment) return deployment;
     accountReads += 1;
     if (accountReads <= 2) throw notFound();
     return {
@@ -446,7 +548,9 @@ test("faucet funding uses read-only fallback after an early tracker end", async 
   let sendCalls = 0;
   let finalizedReads = 0;
 
-  t.mock.method(thru.accounts, "get", async () => {
+  t.mock.method(thru.accounts, "get", async (address: string) => {
+    const deployment = faucetDeploymentAccount(address);
+    if (deployment) return deployment;
     accountReads += 1;
     return {
       ...foundAccount(activeAccount),
@@ -501,7 +605,9 @@ test("faucet funding does not start while account creation remains uncertain", a
   let faucetBuildCalls = 0;
   let sendCalls = 0;
 
-  t.mock.method(thru.accounts, "get", async () => {
+  t.mock.method(thru.accounts, "get", async (address: string) => {
+    const deployment = faucetDeploymentAccount(address);
+    if (deployment) return deployment;
     throw notFound();
   });
   t.mock.method(thru.chain, "getChainId", async () => 30);
@@ -588,7 +694,9 @@ test("unrelated balance movement cannot override a finalized faucet failure", as
   let accountReads = 0;
   let sendCalls = 0;
 
-  t.mock.method(thru.accounts, "get", async () => {
+  t.mock.method(thru.accounts, "get", async (address: string) => {
+    const deployment = faucetDeploymentAccount(address);
+    if (deployment) return deployment;
     accountReads += 1;
     return {
       ...foundAccount(activeAccount),

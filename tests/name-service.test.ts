@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { Pubkey } from "@thru/sdk";
+import { BOOTSTRAP_PROGRAM_ADDRESSES } from "@thru/programs/bootstrap-addresses";
 import {
   parseDomainData,
   parseLeaseData,
@@ -34,8 +35,7 @@ import {
 
 const ROOT_REGISTRAR =
   "taG7mAFPWH786OckjT8fuirjgaaF070YxPjJGE32NIctNm";
-const TOKEN_PROGRAM =
-  "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKqq";
+const TOKEN_PROGRAM = BOOTSTRAP_PROGRAM_ADDRESSES.token;
 const OWNER = "taBI9fwnX5fT_sJ0cdKKyCLyk72TLw6Rz4wwb-SFdU8aKD";
 const TREASURER =
   "ta8QDb9ErMQaavd-pyeOMoyYS4HuwvjlEw5S6kF73m9R2S";
@@ -145,18 +145,18 @@ function chainAccount(
 test("uses the official AlphaNet Name Service and Registrar addresses", () => {
   assert.equal(
     NAME_SERVICE_PROGRAM_ADDRESS,
-    "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAUF",
+    BOOTSTRAP_PROGRAM_ADDRESSES.name_service,
   );
   assert.equal(
     REGISTRAR_PROGRAM_ADDRESS,
-    "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYG",
+    BOOTSTRAP_PROGRAM_ADDRESSES.thru_registrar,
   );
 });
 
 test("derives the official Registrar config address from padded config seed", () => {
   assert.equal(
     deriveRegistrarConfigAddress(),
-    "taI-BFbVYdM6ZtUldRu_t0Q7QcNAmCHE6qbVuzpgcRaGuE",
+    "taLjMDKiBDra1EGIKoF_7B-tGFJMnf8MejLDu3VVWTRJRQ",
   );
 });
 
@@ -164,11 +164,11 @@ test("derives domain and lease addresses from official formulas", async () => {
   const raw = validateNameLabel("mert").bytes;
   assert.equal(
     await deriveDomainAddress(ROOT_REGISTRAR, raw),
-    "taZoHjV5_HTOnNmaLngXYmlXsFxVhEGiKiJLhFpk5xSm5a",
+    "tatmQgupGUVMMX1X9mYozM1qvDgIiN2xwZ85PJ8_wF0QvD",
   );
   assert.equal(
     await deriveLeaseAddress(raw),
-    "taUBtyoAOVodS3ZqJUxKUyZy6t8LCGKbQaSMrSiwMZPawL",
+    "taNYSQ2he-_mK6XXZ-51cpvQVW-9nKErqX5u8DmudngO4R",
   );
 });
 

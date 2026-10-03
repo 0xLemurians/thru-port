@@ -10,6 +10,8 @@ import {
   type Transaction,
 } from "@thru/sdk";
 import { StateProofType } from "@thru/sdk/proto";
+import { BOOTSTRAP_PROGRAM_ADDRESSES } from "@thru/programs/bootstrap-addresses";
+import { programResources } from "@thru/programs/resources";
 import {
   createInitializeAccountInstruction,
   createInitializeMintInstruction,
@@ -28,6 +30,9 @@ import {
   type ThruAccount,
 } from "@/lib/wallet/thru-wallet";
 import {
+  AccountConsensusPendingError,
+  accountReadFinality,
+  assertFinalizedAccount,
   buildTransactionForSigning,
   signTransactionForSubmission,
   SubmittedTransactionUncertainError,
@@ -71,6 +76,7 @@ import {
   buildDestinationInitializeAccountArgs,
   deriveDestinationTokenAccount,
   ensureDestinationTokenAccount,
+  TokenProgramOwnershipError,
   type DestinationTokenAccountPreview,
 } from "./destination-account";
 import {
@@ -86,8 +92,12 @@ import {
   isTransactionNotFoundError,
 } from "./transaction-status";
 
-export const TOKEN_PROGRAM_ADDRESS =
-  "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKqq";
+export const TOKEN_PROGRAM_ADDRESS = BOOTSTRAP_PROGRAM_ADDRESSES.token;
+export const TOKEN_TRANSACTION_RESOURCES = Object.freeze(
+  programResources({ stateUnits: 10_000 }),
+);
+export const STALE_TOKEN_REFERENCE_MESSAGE =
+  "The saved token is unavailable or belongs to an older AlphaNet program deployment.";
 
 const FINALIZATION_TIMEOUT_MS = 60_000;
 const REFRESH_ATTEMPTS = 7;
@@ -695,6 +705,7 @@ export async function createTokenOnAlphaNet(
           accounts: {
             readWrite: [current.mint.address],
           },
+          header: { ...TOKEN_TRANSACTION_RESOURCES },
           instructionData: createInitializeMintInstruction({
             mintAccountBytes: current.mint.bytes,
             decimals: current.validated.decimals,
@@ -825,6 +836,7 @@ export async function createTokenOnAlphaNet(
             readWrite: [current.tokenAccount.address],
             readOnly: [current.mint.address],
           },
+          header: { ...TOKEN_TRANSACTION_RESOURCES },
           instructionData: createInitializeAccountInstruction({
             tokenAccountBytes: current.tokenAccount.bytes,
             mintAccountBytes: current.mint.bytes,
@@ -954,6 +966,7 @@ export async function createTokenOnAlphaNet(
               current.tokenAccount.address,
             ],
           },
+          header: { ...TOKEN_TRANSACTION_RESOURCES },
           instructionData: createMintToInstruction({
             mintAccountBytes: current.mint.bytes,
             destinationAccountBytes: current.tokenAccount.bytes,
@@ -1074,14 +1087,14 @@ export async function fetchTokenPortfolioOnAlphaNet(
     records.map(async (record): Promise<TokenPortfolioItem> => {
       signal?.throwIfAborted();
       const mintResult = await settleTokenRead(() =>
-        getVerifiedMint(record.mintAddress),
+        getReadableMint(record.mintAddress),
       );
       const tokenAccounts = await Promise.all(
         record.tokenAccountAddresses.map(
           async (address): Promise<TokenPortfolioAccount> => {
             signal?.throwIfAborted();
             const result = await settleTokenRead(() =>
-              getVerifiedTokenAccount(address),
+              getReadableTokenAccount(address),
             );
             signal?.throwIfAborted();
             if (!result.value) {
@@ -1167,10 +1180,10 @@ const defaultCreatedTokenDiscoveryDependencies: CreatedTokenDiscoveryDependencie
         nextPageToken: result.page?.nextPageToken,
       };
     },
-    getAccount(address) {
-      return thru.accounts.get(address, {
-        minConsensus: ConsensusStatus.FINALIZED,
-      });
+    async getAccount(address) {
+      const account = await thru.accounts.get(address);
+      accountReadFinality(account);
+      return account;
     },
   };
 
@@ -1483,6 +1496,7 @@ export async function resumeTokenSetupOnAlphaNet(
             readWrite: [tokenAccountAddress],
             readOnly: [mintAddress],
           },
+          header: { ...TOKEN_TRANSACTION_RESOURCES },
           instructionData: createInitializeAccountInstruction({
             tokenAccountBytes: derivedTokenAccount.bytes,
             mintAccountBytes: Pubkey.from(mintAddress).toBytes(),
@@ -1627,6 +1641,7 @@ export async function resumeTokenSetupOnAlphaNet(
         accounts: {
           readWrite: [mintAddress, tokenAccountAddress],
         },
+        header: { ...TOKEN_TRANSACTION_RESOURCES },
         instructionData: createMintToInstruction({
           mintAccountBytes: Pubkey.from(mintAddress).toBytes(),
           destinationAccountBytes: Pubkey.from(tokenAccountAddress).toBytes(),
@@ -1868,6 +1883,7 @@ export async function createDestinationTokenAccountOnAlphaNet(
                 preview.destinationOwnerAddress,
               ],
             },
+            header: { ...TOKEN_TRANSACTION_RESOURCES },
             instructionData: createInitializeAccountInstruction(
               buildDestinationInitializeAccountArgs({
                 preview,
@@ -2085,6 +2101,7 @@ export async function mintAdditionalSupplyOnAlphaNet(
           accounts: {
             readWrite: [mintAddress, destinationAddress],
           },
+          header: { ...TOKEN_TRANSACTION_RESOURCES },
           instructionData: createMintToInstruction({
             mintAccountBytes: Pubkey.from(mintAddress).toBytes(),
             destinationAccountBytes: Pubkey.from(destinationAddress).toBytes(),
@@ -2334,6 +2351,7 @@ export async function transferTokensOnAlphaNet(
           accounts: {
             readWrite: [sourceAddress, destinationAddress],
           },
+          header: { ...TOKEN_TRANSACTION_RESOURCES },
           instructionData: createTransferInstruction({
             sourceAccountBytes: Pubkey.from(sourceAddress).toBytes(),
             destinationAccountBytes: Pubkey.from(destinationAddress).toBytes(),
@@ -2477,9 +2495,8 @@ async function assertActiveWalletExists(
 ): Promise<void> {
   signal?.throwIfAborted();
   try {
-    const wallet = await thru.accounts.get(address, {
-      minConsensus: ConsensusStatus.FINALIZED,
-    });
+    const wallet = await thru.accounts.get(address);
+    assertFinalizedAccount(wallet);
     if (wallet.meta?.flags.isDeleted) {
       throw new Error("The active wallet account is deleted on AlphaNet.");
     }
@@ -2650,6 +2667,7 @@ function classifyTokenPostStateError(
   if (isAccountNotFoundError(error) || isTransactionNotFoundError(error)) {
     return "pending";
   }
+  if (error instanceof AccountConsensusPendingError) return "pending";
   const message = error instanceof Error ? error.message : String(error);
   return /\b(?:rpc|grpc|proxy|upstream|transport|connection|disconnect|reset|refused|unavailable|socket|network|timeout|fetch)\b/i.test(
     message,
@@ -2687,14 +2705,26 @@ function assertExecutionSucceeded(result: {
 }
 
 async function getVerifiedMint(address: string): Promise<MintAccountInfo> {
-  const account = await getTokenProgramAccount(address);
+  const account = await getTokenProgramAccount(address, "finalized");
+  return parseMintAccountData(account);
+}
+
+async function getReadableMint(address: string): Promise<MintAccountInfo> {
+  const account = await getTokenProgramAccount(address, "readable");
   return parseMintAccountData(account);
 }
 
 async function getVerifiedTokenAccount(
   address: string,
 ): Promise<TokenAccountInfo> {
-  const account = await getTokenProgramAccount(address);
+  const account = await getTokenProgramAccount(address, "finalized");
+  return parseTokenAccountData(account);
+}
+
+async function getReadableTokenAccount(
+  address: string,
+): Promise<TokenAccountInfo> {
+  const account = await getTokenProgramAccount(address, "readable");
   return parseTokenAccountData(account);
 }
 
@@ -2737,10 +2767,16 @@ export async function observeTokenAccountState(
   }
 }
 
-async function getTokenProgramAccount(address: string): Promise<Account> {
-  const account = await thru.accounts.get(address, {
-    minConsensus: ConsensusStatus.FINALIZED,
-  });
+async function getTokenProgramAccount(
+  address: string,
+  policy: "readable" | "finalized",
+): Promise<Account> {
+  const account = await thru.accounts.get(address);
+  if (policy === "finalized") {
+    assertFinalizedAccount(account);
+  } else {
+    accountReadFinality(account);
+  }
   const owner = account.meta?.owner?.toThruFmt();
   assertOfficialTokenProgramOwnership(owner, TOKEN_PROGRAM_ADDRESS, address);
   return account;
@@ -2835,6 +2871,9 @@ async function settleTokenRead<T>(
   try {
     return { value: await read() };
   } catch (error) {
+    if (error instanceof TokenProgramOwnershipError) {
+      return { error: STALE_TOKEN_REFERENCE_MESSAGE };
+    }
     return {
       error: error instanceof Error ? error.message : String(error),
     };

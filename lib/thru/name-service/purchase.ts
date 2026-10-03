@@ -14,6 +14,7 @@ import {
 import { deriveDestinationTokenAccount } from "../../token/destination-account";
 import { TOKEN_AMOUNT_MAX_RAW } from "../../token/validation";
 import {
+  assertFinalizedAccount,
   buildTransactionForSigning,
   SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
   signTransactionForSubmission,
@@ -651,8 +652,9 @@ async function defaultReadTokenAccount(
   let account;
   try {
     account = await abortable(
-      thru.accounts.get(address, {
-        minConsensus: ConsensusStatus.FINALIZED,
+      thru.accounts.get(address).then((value) => {
+        assertFinalizedAccount(value);
+        return value;
       }),
       signal,
     );

@@ -1,11 +1,20 @@
 import {
   ConsensusStatus,
+  type Account,
   type BuildTransactionOptions,
   type Transaction,
 } from "@thru/sdk";
 import { thru } from "./client";
 
 const MAX_CHAIN_ID = 0xffff;
+const FINAL_ACCOUNT_CONSENSUS = new Set<ConsensusStatus>([
+  ConsensusStatus.FINALIZED,
+  ConsensusStatus.CLUSTER_EXECUTED,
+]);
+const READABLE_ACCOUNT_CONSENSUS = new Set<ConsensusStatus>([
+  ConsensusStatus.INCLUDED,
+  ...FINAL_ACCOUNT_CONSENSUS,
+]);
 export const TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS = 45_000;
 export const SAFE_TRANSACTION_UNCERTAIN_MESSAGE =
   "The transaction was submitted, but final confirmation is still unavailable. Check the Explorer before trying again.";
@@ -42,6 +51,15 @@ export class SubmittedTransactionUncertainError extends Error {
   }
 }
 
+export class AccountConsensusPendingError extends Error {
+  constructor() {
+    super("The requested account state is not finalized yet.");
+    this.name = "AccountConsensusPendingError";
+  }
+}
+
+export type AccountReadFinality = "provisional" | "finalized";
+
 export interface VerifySubmittedTransactionOptions {
   signature: string;
   readFinalizedTransaction?: () => Promise<FinalizedTransactionLike>;
@@ -59,6 +77,56 @@ export interface VerifySubmittedTransactionOptions {
 
 function throwIfAborted(signal?: AbortSignal): void {
   signal?.throwIfAborted();
+}
+
+/**
+ * SDK 0.4.1 returns consensus metadata on point account reads instead of
+ * accepting minConsensus in AccountQueryOptions. Final-state callers fail
+ * closed until the returned account version is finalized/cluster-executed.
+ */
+export function assertFinalizedAccount(
+  account: Pick<Account, "consensusStatus">,
+): void {
+  if (
+    account.consensusStatus === undefined ||
+    !FINAL_ACCOUNT_CONSENSUS.has(account.consensusStatus)
+  ) {
+    throw new AccountConsensusPendingError();
+  }
+}
+
+/**
+ * Normal read-only surfaces may display the current INCLUDED ledger version,
+ * but callers can still distinguish it from authoritative final state. This
+ * policy must never be used to prove a submitted transaction succeeded.
+ */
+export function accountReadFinality(
+  account: Pick<Account, "consensusStatus">,
+): AccountReadFinality {
+  if (
+    account.consensusStatus === undefined ||
+    !READABLE_ACCOUNT_CONSENSUS.has(account.consensusStatus)
+  ) {
+    throw new AccountConsensusPendingError();
+  }
+  return FINAL_ACCOUNT_CONSENSUS.has(account.consensusStatus)
+    ? "finalized"
+    : "provisional";
+}
+
+export function assertExplicitTransactionResources(
+  options: Pick<BuildTransactionOptions, "header">,
+): void {
+  const resources = [
+    ["compute units", options.header?.computeUnits],
+    ["state units", options.header?.stateUnits],
+    ["memory units", options.header?.memoryUnits],
+  ] as const;
+  for (const [label, value] of resources) {
+    if (!Number.isSafeInteger(value) || (value ?? 0) <= 0) {
+      throw new Error(`Transaction ${label} must be explicitly greater than zero.`);
+    }
+  }
 }
 
 export function assertUsableTransactionContext(
@@ -80,7 +148,7 @@ export function assertUsableTransactionContext(
 }
 
 /**
- * @thru/sdk 0.3.4 fetches the fee-payer nonce, finalized slot, and chain ID
+ * @thru/sdk 0.4.1 fetches the fee-payer nonce, finalized slot, and chain ID
  * while building. The result is checked before it may reach a signing call.
  */
 export async function buildTransactionForSigning(
@@ -91,6 +159,7 @@ export async function buildTransactionForSigning(
   ) => Promise<Transaction> = (input) => thru.transactions.build(input),
 ): Promise<Transaction> {
   throwIfAborted(signal);
+  assertExplicitTransactionResources(options);
   const transaction = await build(options);
   throwIfAborted(signal);
   assertUsableTransactionContext(transaction);
@@ -110,27 +179,6 @@ export async function signTransactionForSubmission(
   throwIfAborted(signal);
   await transaction.sign(privateKey);
   throwIfAborted(signal);
-}
-
-/**
- * Account creation uses the SDK's specialized proof builder, which does not
- * fetch chain ID itself. Resolve and validate it freshly for every attempt.
- */
-export async function readFreshChainId(
-  signal?: AbortSignal,
-  readChainId: () => Promise<number> = () => thru.chain.getChainId(),
-): Promise<number> {
-  throwIfAborted(signal);
-  const chainId = await readChainId();
-  throwIfAborted(signal);
-  if (
-    !Number.isInteger(chainId) ||
-    chainId <= 0 ||
-    chainId > MAX_CHAIN_ID
-  ) {
-    throw new Error("The current AlphaNet chain ID is unavailable.");
-  }
-  return chainId;
 }
 
 function executionFailed(result: TransactionExecutionResultLike): boolean {
