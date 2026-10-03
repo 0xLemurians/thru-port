@@ -1,5 +1,6 @@
 import React from "react";
-import type { NetworkStatus } from "./useAlphaNetHealth";
+import type { NetworkStatus } from "./useNetworkHealth";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 interface PortNetworkStatusProps {
   status: NetworkStatus;
@@ -26,7 +27,7 @@ export default function PortNetworkStatus({ status }: PortNetworkStatusProps) {
       title="RPC reachability status — not a guarantee of full network health."
       style={{ display: "flex", alignItems: "center", gap: "6px" }}
     >
-      <span>ALPHANET</span>
+      <span>{THRU_NETWORK.displayName.toUpperCase()}</span>
       <span
         style={{
           width: "6px",

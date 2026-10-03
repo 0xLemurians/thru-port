@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import { formatRawAmount } from "@thru/programs/token";
 import {
-  createTokenOnAlphaNet,
+  createTokenOnBetanet,
   type CreateTokenResult,
 } from "@/lib/token/thru-token";
 import {
@@ -21,7 +21,8 @@ import {
   type PendingTokenSetup,
 } from "@/lib/token/pending-setup";
 import { explorerAddressUrl, type ThruAccount } from "@/lib/wallet/thru-wallet";
-import type { NetworkStatus } from "@/components/port/useAlphaNetHealth";
+import { explorerTransactionUrl, THRU_NETWORK } from "@/lib/thru/network";
+import type { NetworkStatus } from "@/components/port/useNetworkHealth";
 import {
   safeTokenActionError,
   tokenNetworkActionsDisabled,
@@ -72,7 +73,7 @@ export default function TokenCreateForm({
     return formatRawAmount(result.initialSupplyRaw, result.decimals);
   }, [result]);
 
-  // Pending-setup hooks passed down to createTokenOnAlphaNet.
+  // Pending-setup hooks passed down to createTokenOnBetanet.
   function handlePendingSetupAvailable(setup: Omit<PendingTokenSetup, "savedAt">) {
     const record: PendingTokenSetup = { ...setup, savedAt: Date.now() };
     try {
@@ -122,7 +123,7 @@ export default function TokenCreateForm({
     setSignatures({});
 
     try {
-      const created = await createTokenOnAlphaNet(
+      const created = await createTokenOnBetanet(
         account,
         {
           name,
@@ -214,7 +215,7 @@ export default function TokenCreateForm({
       <div className="token-section-header">
         <div>
           <p className="eyebrow token-eyebrow">Create</p>
-          <h3>Create a new AlphaNet token</h3>
+          <h3>Create a new {THRU_NETWORK.displayName} token</h3>
         </div>
       </div>
 
@@ -353,7 +354,7 @@ export default function TokenCreateForm({
                 {Object.entries(signatures).map(([key, sig]) => (
                   <div key={key}>
                     <span>{key}: </span>
-                    <a href={`https://scan.thru.org/tx/${sig}`} target="_blank" rel="noreferrer" className="mono">
+                    <a href={explorerTransactionUrl(sig)} target="_blank" rel="noreferrer" className="mono">
                       {sig.slice(0, 10)}...{sig.slice(-8)}
                     </a>
                   </div>

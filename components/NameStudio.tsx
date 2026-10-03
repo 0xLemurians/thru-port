@@ -1,11 +1,12 @@
 "use client";
 
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
-import type { AlphaNetHealth } from "./port/useAlphaNetHealth";
+import type { NetworkHealth } from "./port/useNetworkHealth";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 interface NameStudioProps {
   account: ThruAccount;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   walletReady: boolean;
 }
 
@@ -16,9 +17,9 @@ export default function NameStudio(_props: NameStudioProps) {
       <div className="name-studio-header">
         <div>
           <p className="eyebrow token-eyebrow">Identity · .thru names</p>
-          <h2 className="panel-title">Registration unavailable on AlphaNet</h2>
+          <h2 className="panel-title">Registration unavailable on {THRU_NETWORK.displayName}</h2>
         </div>
-        <span className="workspace-nav-tag">ALPHANET</span>
+        <span className="workspace-nav-tag">{THRU_NETWORK.displayName.toUpperCase()}</span>
       </div>
 
       <div
@@ -28,7 +29,7 @@ export default function NameStudio(_props: NameStudioProps) {
         style={{ marginTop: 18 }}
       >
         <p style={{ margin: 0 }}>
-          .thru registrations are not currently available on AlphaNet.
+          Registrations are currently unavailable on {THRU_NETWORK.displayName}.
           We&apos;ll announce on X when registration becomes available.
         </p>
       </div>

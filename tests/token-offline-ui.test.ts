@@ -4,8 +4,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { buildTokenSidebarEntries } from "../components/port/token/PortTokenSidebar";
 import {
-  ALPHANET_RPC_DEGRADED_MESSAGE,
-  ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+  NETWORK_RPC_DEGRADED_MESSAGE,
+  NETWORK_RPC_UNAVAILABLE_MESSAGE,
 } from "../lib/thru/name-service/constants";
 import {
   invokeTokenNetworkAction,
@@ -44,7 +44,7 @@ const GLOBAL_STYLES = readFileSync(
 test("Tokens renders the centralized safe offline warning", () => {
   assert.equal(
     tokenNetworkWarning("Offline"),
-    ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+    NETWORK_RPC_UNAVAILABLE_MESSAGE,
   );
   assert.match(
     TOKEN_STUDIO_SOURCE,
@@ -61,16 +61,16 @@ test("Tokens has only one page-level offline warning", () => {
     ).length,
     1,
   );
-  assert.doesNotMatch(TOKEN_SEND_SOURCE, /Cannot transfer tokens while AlphaNet/);
+  assert.doesNotMatch(TOKEN_SEND_SOURCE, /Cannot transfer tokens while Betanet/);
 });
 
 test("raw token transport failures are mapped to the safe message", () => {
   const raw =
     "[unavailable] upstream connect error: connection refused at https://rpc.invalid";
-  assert.equal(safeTokenReadError(new Error(raw)), ALPHANET_RPC_UNAVAILABLE_MESSAGE);
+  assert.equal(safeTokenReadError(new Error(raw)), NETWORK_RPC_UNAVAILABLE_MESSAGE);
   assert.equal(
     safeTokenActionError(new Error(raw), "Token action failed."),
-    ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+    NETWORK_RPC_UNAVAILABLE_MESSAGE,
   );
   assert.doesNotMatch(PORTFOLIO_HOOK_SOURCE, /error\.message/);
 });
@@ -158,7 +158,7 @@ test("offline portfolio reads are skipped without deleting saved records", () =>
 });
 
 test("degraded mode warns but continues to permit safe reads", () => {
-  assert.equal(tokenNetworkWarning("Degraded"), ALPHANET_RPC_DEGRADED_MESSAGE);
+  assert.equal(tokenNetworkWarning("Degraded"), NETWORK_RPC_DEGRADED_MESSAGE);
   assert.equal(tokenNetworkReadAllowed("Degraded"), true);
   assert.equal(tokenNetworkActionsDisabled("Degraded"), false);
 });

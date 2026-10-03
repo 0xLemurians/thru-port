@@ -18,12 +18,12 @@ test("Source içinde hardcoded 'mert' bulunmaz", async () => {
   assert.equal(/mert/i.test(dashFile), false);
 });
 
-test("Identity is replaced by the AlphaNet registration notice", async () => {
+test("Identity is replaced by the Betanet registration notice", async () => {
   const studioFile = await fs.readFile(
     path.join(process.cwd(), "components/NameStudio.tsx"),
     "utf-8"
   );
-  assert.match(studioFile, /registrations are not currently available on AlphaNet/);
+  assert.match(studioFile, /Registrations are currently unavailable on \{THRU_NETWORK\.displayName\}/);
   assert.doesNotMatch(studioFile, /NameRegisterForm|NameLookupForm/);
 });
 
@@ -49,7 +49,7 @@ test("Metadata title yeni ürün adıdır", async () => {
     path.join(process.cwd(), "app/layout.tsx"),
     "utf-8"
   );
-  assert.ok(layoutFile.includes('title: "Thru Port — AlphaNet Wallet & Token Studio"'));
+  assert.match(layoutFile, /title: `Thru Port — \$\{THRU_NETWORK\.displayName\} Wallet & Token Studio`/);
 });
 
 test("Local label derivation deterministiktir", () => {

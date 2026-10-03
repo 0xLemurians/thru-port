@@ -1,19 +1,19 @@
 export type NetworkStatus = "Checking" | "Online" | "Degraded" | "Offline";
 
-export type AlphaNetProbeStatus = Exclude<NetworkStatus, "Checking">;
+export type NetworkProbeStatus = Exclude<NetworkStatus, "Checking">;
 
-export interface AlphaNetHeightSnapshot {
+export interface NetworkHeightSnapshot {
   finalized: bigint;
   locallyExecuted: bigint;
   clusterExecuted: bigint;
 }
 
-export interface AlphaNetHealthProbeOptions {
+export interface NetworkHealthProbeOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
 }
 
-export interface AlphaNetHealthProbeToken {
+export interface NetworkHealthProbeToken {
   readonly sequence: number;
   readonly signal: AbortSignal;
 }
@@ -24,12 +24,12 @@ function isNonNegativeBigInt(value: unknown): value is bigint {
   return typeof value === "bigint" && value >= 0n;
 }
 
-export function isUsableAlphaNetHeightSnapshot(
+export function isUsableNetworkHeightSnapshot(
   value: unknown,
-): value is AlphaNetHeightSnapshot {
+): value is NetworkHeightSnapshot {
   if (typeof value !== "object" || value === null) return false;
 
-  const snapshot = value as Partial<AlphaNetHeightSnapshot>;
+  const snapshot = value as Partial<NetworkHeightSnapshot>;
   if (
     !isNonNegativeBigInt(snapshot.finalized) ||
     !isNonNegativeBigInt(snapshot.locallyExecuted) ||
@@ -38,10 +38,6 @@ export function isUsableAlphaNetHeightSnapshot(
     return false;
   }
 
-  // @thru/sdk maps omitted protobuf height fields to 0n. A positive
-  // finalized height and execution heights at least as recent are therefore
-  // required before the response is usable network state rather than merely
-  // a successful transport response.
   return (
     snapshot.finalized > 0n &&
     snapshot.locallyExecuted >= snapshot.finalized &&
@@ -49,17 +45,17 @@ export function isUsableAlphaNetHeightSnapshot(
   );
 }
 
-export async function probeAlphaNetHealth(
+export async function probeNetworkHealth(
   readHeight: () => Promise<unknown>,
-  options: AlphaNetHealthProbeOptions = {},
-): Promise<AlphaNetProbeStatus> {
+  options: NetworkHealthProbeOptions = {},
+): Promise<NetworkProbeStatus> {
   const { timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS, signal } = options;
   let timeout: ReturnType<typeof setTimeout> | null = null;
   let rejectUnavailable: (() => void) | null = null;
 
   const unavailable = new Promise<never>((_, reject) => {
     rejectUnavailable = () => {
-      reject(new DOMException("AlphaNet health probe unavailable", "AbortError"));
+      reject(new DOMException("Network health probe unavailable", "AbortError"));
     };
 
     if (signal?.aborted) {
@@ -79,7 +75,7 @@ export async function probeAlphaNetHealth(
       Promise.resolve().then(readHeight),
       unavailable,
     ]);
-    return isUsableAlphaNetHeightSnapshot(snapshot) ? "Online" : "Degraded";
+    return isUsableNetworkHeightSnapshot(snapshot) ? "Online" : "Degraded";
   } catch {
     return "Offline";
   } finally {
@@ -90,11 +86,11 @@ export async function probeAlphaNetHealth(
   }
 }
 
-export class AlphaNetHealthProbeSequence {
+export class NetworkHealthProbeSequence {
   private sequence = 0;
   private controller: AbortController | null = null;
 
-  begin(): AlphaNetHealthProbeToken {
+  begin(): NetworkHealthProbeToken {
     this.controller?.abort();
     this.controller = new AbortController();
     this.sequence += 1;
@@ -104,7 +100,7 @@ export class AlphaNetHealthProbeSequence {
     };
   }
 
-  isCurrent(token: AlphaNetHealthProbeToken): boolean {
+  isCurrent(token: NetworkHealthProbeToken): boolean {
     return (
       token.sequence === this.sequence &&
       !token.signal.aborted &&

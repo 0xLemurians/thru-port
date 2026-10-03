@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  resumeTokenSetupOnAlphaNet,
+  resumeTokenSetupOnBetanet,
   type ResumeTokenSetupResult,
   type TokenPortfolioItem,
 } from "@/lib/token/thru-token";
@@ -13,6 +13,7 @@ import {
   type TokenResumeStage,
 } from "@/lib/token/resume";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { explorerTransactionUrl } from "@/lib/thru/network";
 
 interface ResumeTokenSetupProps {
   account: ThruAccount;
@@ -65,7 +66,7 @@ export default function ResumeTokenSetup({
     setProgress({ stage: "validating" });
 
     try {
-      const next = await resumeTokenSetupOnAlphaNet(
+      const next = await resumeTokenSetupOnBetanet(
         account,
         { mintAddress, initialSupply },
         {
@@ -324,7 +325,7 @@ function TransactionLink({
   return (
     <a
       className="transaction-link"
-      href={`https://scan.thru.org/tx/${signature}`}
+      href={explorerTransactionUrl(signature)}
       target="_blank"
       rel="noreferrer"
       title={signature}

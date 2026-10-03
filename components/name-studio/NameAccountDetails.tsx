@@ -3,6 +3,7 @@ import type {
   SnapshotAccount,
   DomainState,
 } from "@/lib/thru/name-service/account-types";
+import { THRU_NETWORK } from "@/lib/thru/network";
 import {
   NAME_DOMAIN_INVALID_MESSAGE,
   NAME_NOT_FOUND_MESSAGE,
@@ -113,7 +114,7 @@ export default function NameAccountDetails({
         <div className="name-section-heading">
           <div>
             <p className="eyebrow token-eyebrow">Registrar config</p>
-            <h3 id="config-title">Official AlphaNet registry</h3>
+            <h3 id="config-title">Official {THRU_NETWORK.displayName} registry</h3>
           </div>
           <ExplorerAddressLink
             address={snapshot.configAddress}

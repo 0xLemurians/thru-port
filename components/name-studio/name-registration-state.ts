@@ -1,7 +1,7 @@
-import type { NetworkStatus } from "../port/useAlphaNetHealth";
+import type { NetworkStatus } from "../port/useNetworkHealth";
 import {
-  ALPHANET_RPC_DEGRADED_MESSAGE,
-  ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+  NETWORK_RPC_DEGRADED_MESSAGE,
+  NETWORK_RPC_UNAVAILABLE_MESSAGE,
   nameExplorerAddressUrl,
   nameExplorerTransactionUrl,
 } from "@/lib/thru/name-service/constants";
@@ -17,6 +17,7 @@ import {
   type PurchaseThruNameResult,
 } from "@/lib/thru/name-service/purchase";
 import { SAFE_TRANSACTION_UNCERTAIN_MESSAGE } from "@/lib/thru/transactions";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 export const REGISTRATION_AVAILABILITY_STATES = [
   "idle",
@@ -121,7 +122,7 @@ export async function checkRegistrationAvailability(
       status: "rpc-offline",
       label,
       quote: null,
-      message: ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+      message: NETWORK_RPC_UNAVAILABLE_MESSAGE,
     };
   }
 
@@ -154,7 +155,7 @@ export async function checkRegistrationAvailability(
           status: "rpc-offline",
           label,
           quote: null,
-          message: ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+          message: NETWORK_RPC_UNAVAILABLE_MESSAGE,
         };
       }
     }
@@ -180,11 +181,11 @@ export function safeRegistrationErrorMessage(error: unknown): string {
     case "NAME_UNAVAILABLE":
       return "This .thru name is unavailable.";
     case "RPC_UNAVAILABLE":
-      return ALPHANET_RPC_UNAVAILABLE_MESSAGE;
+      return NETWORK_RPC_UNAVAILABLE_MESSAGE;
     case "CONFIG_NOT_FOUND":
-      return "The AlphaNet registrar configuration was not found.";
+      return `The ${THRU_NETWORK.displayName} registrar configuration was not found.`;
     case "CONFIG_INVALID":
-      return "The AlphaNet registrar configuration is invalid.";
+      return `The ${THRU_NETWORK.displayName} registrar configuration is invalid.`;
     case "PAYER_TOKEN_ACCOUNT_NOT_FOUND":
       return "Your wallet does not have the required payment token account.";
     case "PAYER_TOKEN_ACCOUNT_INVALID":
@@ -237,7 +238,7 @@ export function canRegisterName(input: {
 
 export interface RegistrationConfirmation {
   fullName: string;
-  network: "AlphaNet";
+  network: typeof THRU_NETWORK.displayName;
   registrationPeriod: "1 year";
   exactPrice: string;
   owner: string;
@@ -251,12 +252,12 @@ export function createRegistrationConfirmation(
 ): RegistrationConfirmation {
   return {
     fullName: `${quote.label}.thru`,
-    network: "AlphaNet",
+    network: THRU_NETWORK.displayName,
     registrationPeriod: "1 year",
     exactPrice: `${quote.price.toString()} raw units`,
     owner: quote.walletAddress,
     paymentTokenAccount: quote.payerTokenAccount,
-    resetWarning: "AlphaNet may reset and remove this registration.",
+    resetWarning: `${THRU_NETWORK.displayName} may reset and remove this registration.`,
     transactionWarning:
       "Confirming signs and submits an on-chain transaction.",
   };
@@ -310,10 +311,10 @@ export function registrationNetworkWarning(
   status: NetworkStatus,
 ): string | null {
   if (status === "Degraded") {
-    return ALPHANET_RPC_DEGRADED_MESSAGE;
+    return NETWORK_RPC_DEGRADED_MESSAGE;
   }
   if (status === "Offline") {
-    return ALPHANET_RPC_UNAVAILABLE_MESSAGE;
+    return NETWORK_RPC_UNAVAILABLE_MESSAGE;
   }
   return null;
 }

@@ -1,10 +1,14 @@
 import { BOOTSTRAP_PROGRAM_ADDRESSES } from "@thru/programs/bootstrap-addresses";
+import {
+  NETWORK_RPC_DEGRADED_MESSAGE,
+  NETWORK_RPC_UNAVAILABLE_MESSAGE,
+  explorerAddressUrl,
+  explorerTransactionUrl,
+  THRU_NETWORK,
+} from "../network";
 
-export { ALPHANET_RPC_URL } from "../client";
-export const ALPHANET_EXPLORER_ADDRESS_BASE_URL =
-  "https://scan.thru.org/address";
-export const ALPHANET_EXPLORER_TRANSACTION_BASE_URL =
-  "https://scan.thru.org/tx";
+export { THRU_RPC_URL } from "../client";
+export { NETWORK_RPC_DEGRADED_MESSAGE, NETWORK_RPC_UNAVAILABLE_MESSAGE };
 
 /** Canonical v0.4.1 bootstrap-managed Name Service program. */
 export const NAME_SERVICE_PROGRAM_ADDRESS =
@@ -22,7 +26,7 @@ export const NAME_RECORD_KEY_MAX_BYTES = 32;
 export const NAME_RECORD_VALUE_MAX_BYTES = 256;
 
 export const NAME_NOT_FOUND_MESSAGE =
-  "Not found on the latest AlphaNet snapshot.";
+  `Not found on the latest ${THRU_NETWORK.displayName} snapshot.`;
 export const NAME_SNAPSHOT_WARNING =
   "This is a snapshot only and does not reserve the name.";
 export const NAME_DOMAIN_INVALID_MESSAGE =
@@ -31,11 +35,6 @@ export const NAME_LEASE_INVALID_MESSAGE =
   "The lease account data could not be verified safely.";
 export const LEASE_TIMESTAMP_WARNING =
   "Timestamp unit not officially verified.";
-export const ALPHANET_RPC_UNAVAILABLE_MESSAGE =
-  "AlphaNet RPC is currently unavailable. Try again later.";
-export const ALPHANET_RPC_DEGRADED_MESSAGE =
-  "AlphaNet RPC is degraded. Reads may fail, and final checks remain authoritative.";
-
 export const NAME_SECURITY_MESSAGES = [
   "Names are case-sensitive.",
   "Alice and alice derive different addresses.",
@@ -44,9 +43,9 @@ export const NAME_SECURITY_MESSAGES = [
 ] as const;
 
 export function nameExplorerAddressUrl(address: string): string {
-  return `${ALPHANET_EXPLORER_ADDRESS_BASE_URL}/${address}`;
+  return explorerAddressUrl(address);
 }
 
 export function nameExplorerTransactionUrl(signature: string): string {
-  return `${ALPHANET_EXPLORER_TRANSACTION_BASE_URL}/${signature}`;
+  return explorerTransactionUrl(signature);
 }

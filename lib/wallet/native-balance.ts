@@ -1,5 +1,5 @@
 /**
- * AlphaNet account balances are exposed by the official SDK as uint64 values
+ * Betanet account balances are exposed by the official SDK as uint64 values
  * in "native units". SDK 0.4.1 does not publish a decimal-denomination
  * constant for native THRU, so the UI must not invent one.
  */

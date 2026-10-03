@@ -1,5 +1,6 @@
 import type { Account } from "@thru/sdk";
 import { thru } from "../client";
+import { THRU_NETWORK } from "../network";
 import {
   accountDataBytes,
   assertAccountOwnedBy,
@@ -52,7 +53,7 @@ async function abortable<T>(
   });
 }
 
-export const alphaNetReadonlyAccountReader: ReadonlyAccountReader = {
+export const networkReadonlyAccountReader: ReadonlyAccountReader = {
   async get(address, signal) {
     return abortable<Account>(
       thru.accounts.get(address),
@@ -152,7 +153,7 @@ export async function lookupThruName(
     reader?: ReadonlyAccountReader;
   } = {},
 ): Promise<NameLookupSnapshot> {
-  const { signal, reader = alphaNetReadonlyAccountReader } = options;
+  const { signal, reader = networkReadonlyAccountReader } = options;
   const validated = validateNameLabel(input);
   signal?.throwIfAborted();
 
@@ -160,7 +161,9 @@ export async function lookupThruName(
   const configAccount = await reader.get(configAddress, signal);
   signal?.throwIfAborted();
   if (configAccount.meta?.flags?.isDeleted) {
-    throw new Error("The official AlphaNet Registrar config is deleted.");
+    throw new Error(
+      `The official ${THRU_NETWORK.displayName} Registrar config is deleted.`,
+    );
   }
   assertAccountOwnedBy(
     configAccount,
@@ -172,7 +175,7 @@ export async function lookupThruName(
   );
   if (config.nameServiceProgramId !== NAME_SERVICE_PROGRAM_ADDRESS) {
     throw new Error(
-      `Registrar config points to ${config.nameServiceProgramId}, not the official AlphaNet Name Service program.`,
+      `Registrar config points to ${config.nameServiceProgramId}, not the official ${THRU_NETWORK.displayName} Name Service program.`,
     );
   }
 

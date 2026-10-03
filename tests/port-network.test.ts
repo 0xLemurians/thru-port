@@ -3,19 +3,19 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import {
-  AlphaNetHealthProbeSequence,
-  isUsableAlphaNetHeightSnapshot,
-  probeAlphaNetHealth,
+  NetworkHealthProbeSequence,
+  isUsableNetworkHeightSnapshot,
+  probeNetworkHealth,
   type NetworkStatus,
-} from "../lib/network/alphanet-health";
+} from "../lib/network/network-health";
 
 test("transport success without usable height state is Degraded, not Online", async () => {
-  assert.equal(await probeAlphaNetHealth(async () => ({})), "Degraded");
+  assert.equal(await probeNetworkHealth(async () => ({})), "Degraded");
 });
 
 test("SDK-style empty height response is Degraded", async () => {
   assert.equal(
-    await probeAlphaNetHealth(async () => ({
+    await probeNetworkHealth(async () => ({
       finalized: 0n,
       locallyExecuted: 0n,
       clusterExecuted: 0n,
@@ -30,13 +30,13 @@ test("positive internally consistent SDK height state is Online", async () => {
     locallyExecuted: 102n,
     clusterExecuted: 101n,
   };
-  assert.equal(isUsableAlphaNetHeightSnapshot(snapshot), true);
-  assert.equal(await probeAlphaNetHealth(async () => snapshot), "Online");
+  assert.equal(isUsableNetworkHeightSnapshot(snapshot), true);
+  assert.equal(await probeNetworkHealth(async () => snapshot), "Online");
 });
 
 test("partial or inconsistent height state is Degraded", async () => {
   assert.equal(
-    await probeAlphaNetHealth(async () => ({
+    await probeNetworkHealth(async () => ({
       finalized: 100n,
       locallyExecuted: 99n,
       clusterExecuted: 101n,
@@ -44,7 +44,7 @@ test("partial or inconsistent height state is Degraded", async () => {
     "Degraded",
   );
   assert.equal(
-    await probeAlphaNetHealth(async () => ({
+    await probeNetworkHealth(async () => ({
       finalized: 100n,
       locallyExecuted: 102n,
     })),
@@ -54,7 +54,7 @@ test("partial or inconsistent height state is Degraded", async () => {
 
 test("RPC rejection is Offline", async () => {
   assert.equal(
-    await probeAlphaNetHealth(async () => {
+    await probeNetworkHealth(async () => {
       throw new Error("transport unavailable");
     }),
     "Offline",
@@ -63,7 +63,7 @@ test("RPC rejection is Offline", async () => {
 
 test("RPC timeout is Offline", async () => {
   assert.equal(
-    await probeAlphaNetHealth(
+    await probeNetworkHealth(
       () => new Promise<never>(() => {}),
       { timeoutMs: 5 },
     ),
@@ -72,7 +72,7 @@ test("RPC timeout is Offline", async () => {
 });
 
 test("a stale probe cannot overwrite a newer status", () => {
-  const sequence = new AlphaNetHealthProbeSequence();
+  const sequence = new NetworkHealthProbeSequence();
   const olderProbe = sequence.begin();
   const newerProbe = sequence.begin();
   let status: NetworkStatus = "Checking";
@@ -87,7 +87,7 @@ test("a stale probe cannot overwrite a newer status", () => {
 });
 
 test("visibility cancellation invalidates the active probe", () => {
-  const sequence = new AlphaNetHealthProbeSequence();
+  const sequence = new NetworkHealthProbeSequence();
   const activeProbe = sequence.begin();
   sequence.cancel();
   assert.equal(activeProbe.signal.aborted, true);
@@ -99,7 +99,7 @@ test("AppFlow owns one centralized health result for all workspaces", () => {
     path.join(process.cwd(), "components/AppFlow.tsx"),
     "utf8",
   );
-  assert.equal(source.match(/useAlphaNetHealth\(\)/g)?.length, 1);
+  assert.equal(source.match(/useNetworkHealth\(\)/g)?.length, 1);
   assert.match(source, /<CommandShell[\s\S]*health=\{health\}/);
   assert.match(source, /<CommandDashboard[\s\S]*health=\{health\}/);
   assert.match(source, /<TokenStudio account=\{account\} health=\{health\}/);

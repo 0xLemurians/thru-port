@@ -1,5 +1,5 @@
 /**
- * Thru AlphaNet — tarayıcı-native cüzdan modülü.
+ * Thru Betanet — tarayıcı-native cüzdan modülü.
  *
  * KRİTİK GÜVENLİK KURALI:
  * Bu dosyadaki hiçbir fonksiyon private key'i fetch/XMLHttpRequest ile
@@ -24,9 +24,13 @@ import {
 import { MnemonicGenerator, ThruHDWallet } from "@thru/sdk/crypto";
 import { ACCOUNT_CREATION_RESOURCES } from "@thru/programs/resources";
 import {
-  ALPHANET_RPC_URL,
+  THRU_RPC_URL,
   thru,
 } from "../thru/client";
+import {
+  explorerAddressUrl,
+  explorerTransactionUrl,
+} from "../thru/network";
 import {
   assertFinalizedAccount,
   assertUsableTransactionContext,
@@ -35,12 +39,12 @@ import {
   verifySubmittedTransaction,
 } from "../thru/transactions";
 
-export { ALPHANET_RPC_URL, thru };
-
-// Resmi Thru block explorer'ı (scan.thru.org) — adres sayfası deseni doğrulandı.
-export function explorerAddressUrl(address: string): string {
-  return `https://scan.thru.org/address/${address}`;
-}
+export {
+  THRU_RPC_URL,
+  thru,
+  explorerAddressUrl,
+  explorerTransactionUrl,
+};
 
 export interface ThruAccount {
   address: string;
@@ -59,7 +63,7 @@ export function isAccountNotFoundError(err: unknown): boolean {
 }
 
 /**
- * Yepyeni bir Thru AlphaNet hesabı üretir.
+ * Yepyeni bir Thru Betanet hesabı üretir.
  *
  * İki üretim yolu sunuyoruz:
  *  - withMnemonic = true  → 12 kelimelik BIP-39 mnemonic'ten SLIP-0010 ile türetilir.

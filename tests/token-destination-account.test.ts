@@ -14,6 +14,7 @@ import { upsertKnownToken } from "../lib/token/portfolio";
 import {
   waitForTransactionVisibility,
 } from "../lib/token/transaction-status";
+import { THRU_NETWORK } from "../lib/thru/network";
 
 const TOKEN_PROGRAM = BOOTSTRAP_PROGRAM_ADDRESSES.token;
 const MINT = "tappwydh_hcIBjPaYFySSCLQA0O6nNzVpZ11AH6SjWs458";
@@ -24,7 +25,7 @@ const DESTINATION_OWNER =
 const EXPECTED_DESTINATION_ACCOUNT =
   "ta2ourpnq7f88E9-qmxwQfK-2c_KL7ZBMkPekvUxOX31IZ";
 const thru = createThruClient({
-  baseUrl: "https://rpc.alphanet.thru.org",
+  baseUrl: THRU_NETWORK.rpcUrl,
 });
 
 function destinationAccount(
@@ -195,7 +196,7 @@ test("wrong Token Program ownership is rejected", () => {
         TOKEN_PROGRAM,
         MINT,
       ),
-    /unavailable or belongs to an older AlphaNet program deployment/,
+    /unavailable or belongs to another network or program deployment/,
   );
 });
 

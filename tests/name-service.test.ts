@@ -142,7 +142,7 @@ function chainAccount(
   };
 }
 
-test("uses the official AlphaNet Name Service and Registrar addresses", () => {
+test("uses the official Betanet Name Service and Registrar addresses", () => {
   assert.equal(
     NAME_SERVICE_PROGRAM_ADDRESS,
     BOOTSTRAP_PROGRAM_ADDRESSES.name_service,
@@ -386,7 +386,7 @@ test("reports missing Domain and Lease as snapshot not-found states", async () =
   assert.equal(snapshot.lease.status, "not-found");
   assert.equal(
     NAME_NOT_FOUND_MESSAGE,
-    "Not found on the latest AlphaNet snapshot.",
+    "Not found on the latest Betanet snapshot.",
   );
   assert.match(NAME_SNAPSHOT_WARNING, /snapshot only/i);
   assert.doesNotMatch(NAME_SNAPSHOT_WARNING, /\bavailable\b/i);

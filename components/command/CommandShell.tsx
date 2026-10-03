@@ -2,16 +2,17 @@
 
 import React, { useState, useEffect } from "react";
 import type { WorkspaceStage } from "../port/PortHeader";
-import type { AlphaNetHealth } from "../port/useAlphaNetHealth";
+import type { NetworkHealth } from "../port/useNetworkHealth";
 import styles from "./command.module.css";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { explorerHomeUrl, THRU_NETWORK } from "@/lib/thru/network";
 
 interface CommandShellProps {
   currentStage: WorkspaceStage;
   accountAvailable: boolean;
   publicAddress?: string | null;
   onStageChange: (stage: WorkspaceStage) => void;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   account?: ThruAccount | null;
   balance?: bigint | null;
   onForgetAccount?: () => void | Promise<void>;
@@ -112,7 +113,7 @@ export default function CommandShell({
               <span className={styles.navIconSecondary}>⌘</span>
               <span className={styles.navLabelSecondary}>Docs</span>
             </a>
-            <a href="https://scan.thru.org/?rpc=https%3A%2F%2Frpc.alphanet.thru.org" target="_blank" rel="noopener noreferrer" aria-label="Open Thru AlphaNet Explorer" className={styles.navLinkSecondary}>
+            <a href={explorerHomeUrl()} target="_blank" rel="noopener noreferrer" aria-label={`Open Thru ${THRU_NETWORK.displayName} Explorer`} className={styles.navLinkSecondary}>
               <span className={styles.navIconSecondary}>↗</span>
               <span className={styles.navLabelSecondary}>Explorer</span>
             </a>

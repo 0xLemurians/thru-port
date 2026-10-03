@@ -38,7 +38,7 @@ import TokenStudio from "./TokenStudio";
 import NameStudio from "./NameStudio";
 import type { WorkspaceStage } from "./port/PortHeader";
 import OneTimePrivateKeyBackup from "./port/OneTimePrivateKeyBackup";
-import { useAlphaNetHealth } from "./port/useAlphaNetHealth";
+import { useNetworkHealth } from "./port/useNetworkHealth";
 import { shouldShowOneTimePrivateKeyBackup } from "@/lib/wallet/one-time-private-key-backup";
 import CommandShell from "./command/CommandShell";
 import CommandDashboard from "./command/CommandDashboard";
@@ -68,10 +68,11 @@ export default function AppFlow() {
   const [retryInfo, setRetryInfo] = useState<string | null>(null);
   const [lastSignature, setLastSignature] = useState<string | null>(null);
   const faucetControllerRef = useRef<AbortController | null>(null);
+  const balanceRequestRef = useRef(0);
   const walletOperationRef = useRef(false);
   const removalPromiseRef = useRef<Promise<void> | null>(null);
 
-  const health = useAlphaNetHealth();
+  const health = useNetworkHealth();
 
   // Lifted portfolio hook
   const portfolioHook = useTokenPortfolio(account, {
@@ -79,11 +80,14 @@ export default function AppFlow() {
   });
 
   const refreshBalance = useCallback(async (address: string) => {
+    const requestId = ++balanceRequestRef.current;
     setBalanceError(null);
     try {
       const bal = await getBalance(address);
+      if (requestId !== balanceRequestRef.current) return;
       setBalance(bal);
     } catch (err) {
+      if (requestId !== balanceRequestRef.current) return;
       if (isAccountNotFoundError(err)) {
         setBalance(0n);
         return;
@@ -104,6 +108,7 @@ export default function AppFlow() {
   useEffect(
     () => () => {
       faucetControllerRef.current?.abort();
+      balanceRequestRef.current += 1;
     },
     [],
   );
@@ -148,8 +153,19 @@ export default function AppFlow() {
       setFaucetError(null);
       setLastSignature(null);
       setRetryInfo(null);
-      void refreshBalance(account.address);
+      if (health.status === "Online" || health.status === "Degraded") {
+        void refreshBalance(account.address);
+      } else {
+        balanceRequestRef.current += 1;
+        setBalance(null);
+        setBalanceError(
+          health.status === "Offline"
+            ? "Balance unavailable while RPC is offline."
+            : "Balance check is pending RPC availability.",
+        );
+      }
     } else {
+      balanceRequestRef.current += 1;
       setBalance(null);
       setBalanceError(null);
     }

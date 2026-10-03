@@ -9,7 +9,7 @@ import React, {
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import { clearSecretInputs } from "@/lib/wallet/wallet-backup";
 import PortSafetyRail from "./PortSafetyRail";
-import type { AlphaNetHealth } from "./useAlphaNetHealth";
+import type { NetworkHealth } from "./useNetworkHealth";
 import {
   formatNativeThruAmount,
   NATIVE_THRU_BALANCE_UNIT,
@@ -17,6 +17,7 @@ import {
 import PortFaucetPanel from "./PortFaucetPanel";
 import PortFooter from "./PortFooter";
 import WalletBackupDialog from "./WalletBackupDialog";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 type WalletImportMode = "hidden" | "hex" | "backup";
 
@@ -32,7 +33,7 @@ interface PortDashboardProps {
     value: string,
   ) => Promise<boolean>;
   onImportBackup: (file: File, password: string) => Promise<boolean>;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   faucetState?: "idle" | "requesting" | "confirming" | "success" | "error";
   faucetError?: string | null;
   retryInfo?: string | null;
@@ -184,7 +185,7 @@ export default function PortDashboard({
           
           <div className="pc-hero">
             <div className="pc-anim-bottom" style={{ animationDelay: "0ms" }}>
-              <p className="pc-hero-eyebrow">AlphaNet Workspace</p>
+              <p className="pc-hero-eyebrow">{THRU_NETWORK.displayName} Workspace</p>
               
               {!account ? (
                 <>
@@ -386,7 +387,7 @@ export default function PortDashboard({
                 </div>
                 <div className="pc-info-row">
                   <span className="pc-info-key">Network</span>
-                  <span className="pc-info-val">AlphaNet</span>
+                  <span className="pc-info-val">{THRU_NETWORK.displayName}</span>
                 </div>
                 <div className="pc-info-row">
                   <span className="pc-info-key">RPC status</span>
@@ -418,7 +419,7 @@ export default function PortDashboard({
                 </div>
                 <div className="pc-info-row pc-anim-bottom" style={{ animationDelay: "100ms" }}>
                   <span className="pc-info-key">Network</span>
-                  <span className="pc-info-val">AlphaNet</span>
+                  <span className="pc-info-val">{THRU_NETWORK.displayName}</span>
                 </div>
                 <div className="pc-info-row pc-anim-bottom" style={{ animationDelay: "125ms" }}>
                   <span className="pc-info-key">RPC status</span>

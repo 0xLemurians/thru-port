@@ -4,6 +4,7 @@ import { Pubkey, Signature } from "@thru/sdk";
 import {
   PENDING_TOKEN_OPERATION_SCHEMA_VERSION,
   PENDING_TOKEN_OPERATION_STORAGE_KEY,
+  LEGACY_ALPHANET_PENDING_TOKEN_OPERATION_STORAGE_KEY,
   PendingOperationJournalError,
   canonicalTokenOperationKey,
   findPendingTokenOperation,
@@ -130,6 +131,35 @@ test("public journal survives a storage reload and remains wallet-scoped", () =>
   assert.equal(
     findPendingTokenOperation(reloaded, record.key, address(9)),
     undefined,
+  );
+});
+
+test("legacy AlphaNet pending operations are not reconciled on Betanet", async () => {
+  const storage = new MemoryStorage();
+  const record = operation();
+  storage.values.set(
+    LEGACY_ALPHANET_PENDING_TOKEN_OPERATION_STORAGE_KEY,
+    JSON.stringify([record]),
+  );
+  let verificationCalls = 0;
+
+  assert.deepEqual(loadPendingTokenOperations(storage, record.createdAt + 1), []);
+  const result = await reconcilePendingTokenOperationJournal({
+    key: record.key,
+    walletAddress: WALLET,
+    storage,
+    now: () => record.createdAt + 2,
+    verify: async () => {
+      verificationCalls += 1;
+      return "success";
+    },
+  });
+
+  assert.deepEqual(result, { outcome: "none" });
+  assert.equal(verificationCalls, 0);
+  assert.equal(
+    storage.values.has(LEGACY_ALPHANET_PENDING_TOKEN_OPERATION_STORAGE_KEY),
+    true,
   );
 });
 

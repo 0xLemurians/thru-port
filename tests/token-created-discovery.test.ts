@@ -21,8 +21,8 @@ import {
 } from "../lib/token/portfolio";
 import {
   TOKEN_PROGRAM_ADDRESS,
-  discoverControlledTokensOnAlphaNet,
-  fetchTokenPortfolioOnAlphaNet,
+  discoverControlledTokensOnBetanet,
+  fetchTokenPortfolioOnBetanet,
   type CreatedTokenDiscoveryDependencies,
 } from "../lib/token/thru-token";
 import { thru } from "../lib/wallet/thru-wallet";
@@ -283,7 +283,7 @@ test("official history discovery includes creator or current authority and exclu
       tokenAccount(controlledTokenAccount, CONTROLLED_MINT, WALLET, 0n),
     ],
   ]);
-  const discovered = await discoverControlledTokensOnAlphaNet(WALLET, {
+  const discovered = await discoverControlledTokensOnBetanet(WALLET, {
     dependencies: discoveryDependencies(accounts, [
       CONTROLLED_MINT,
       CREATED_MINT,
@@ -321,7 +321,7 @@ test("INCLUDED point-account responses remain usable for normal portfolio reads"
     return account;
   });
 
-  const [portfolio] = await fetchTokenPortfolioOnAlphaNet([
+  const [portfolio] = await fetchTokenPortfolioOnBetanet([
     {
       mintAddress: CONTROLLED_MINT,
       walletAddress: WALLET,
@@ -349,7 +349,7 @@ test("discovery is bounded and uses no signing, submission, faucet, or private k
       throw new Error("unexpected account read");
     },
   };
-  const discovered = await discoverControlledTokensOnAlphaNet(WALLET, {
+  const discovered = await discoverControlledTokensOnBetanet(WALLET, {
     dependencies,
     maxTransactions: 1,
     maxCandidates: 1,
@@ -362,7 +362,7 @@ test("discovery is bounded and uses no signing, submission, faucet, or private k
     "utf8",
   );
   const discoverySource = source.slice(
-    source.indexOf("export async function discoverControlledTokensOnAlphaNet"),
+    source.indexOf("export async function discoverControlledTokensOnBetanet"),
     source.indexOf("export function isCreatedTokenControlledByWallet"),
   );
   assert.doesNotMatch(
@@ -389,7 +389,7 @@ test("an RPC discovery failure never deletes retained public records", async () 
     },
   ];
   await assert.rejects(
-    discoverControlledTokensOnAlphaNet(WALLET, {
+    discoverControlledTokensOnBetanet(WALLET, {
       dependencies: {
         async listTransactionsForAccount() {
           throw new Error("mock offline");

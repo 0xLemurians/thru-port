@@ -5,6 +5,7 @@ import {
   type Transaction,
 } from "@thru/sdk";
 import { thru } from "./client";
+import { THRU_NETWORK } from "./network";
 
 const MAX_CHAIN_ID = 0xffff;
 const FINAL_ACCOUNT_CONSENSUS = new Set<ConsensusStatus>([
@@ -117,15 +118,19 @@ export function accountReadFinality(
 export function assertExplicitTransactionResources(
   options: Pick<BuildTransactionOptions, "header">,
 ): void {
-  const resources = [
-    ["compute units", options.header?.computeUnits],
-    ["state units", options.header?.stateUnits],
-    ["memory units", options.header?.memoryUnits],
-  ] as const;
-  for (const [label, value] of resources) {
-    if (!Number.isSafeInteger(value) || (value ?? 0) <= 0) {
-      throw new Error(`Transaction ${label} must be explicitly greater than zero.`);
-    }
+  const computeUnits = options.header?.computeUnits;
+  const stateUnits = options.header?.stateUnits;
+  const memoryUnits = options.header?.memoryUnits;
+  if (!Number.isSafeInteger(computeUnits) || (computeUnits ?? 0) <= 0) {
+    throw new Error("Transaction compute units must be explicitly greater than zero.");
+  }
+  if (!Number.isSafeInteger(memoryUnits) || (memoryUnits ?? 0) <= 0) {
+    throw new Error("Transaction memory units must be explicitly greater than zero.");
+  }
+  // Some official v0.4.1 builders, including faucet withdraw, explicitly use
+  // zero state units. Missing or negative values still fail closed.
+  if (!Number.isSafeInteger(stateUnits) || (stateUnits ?? -1) < 0) {
+    throw new Error("Transaction state units must be explicitly non-negative.");
   }
 }
 
@@ -137,13 +142,18 @@ export function assertUsableTransactionContext(
     transaction.chainId <= 0 ||
     transaction.chainId > MAX_CHAIN_ID
   ) {
-    throw new Error("The current AlphaNet chain ID is unavailable.");
+    throw new Error(`The current ${THRU_NETWORK.displayName} chain ID is unavailable.`);
+  }
+  if (transaction.chainId !== THRU_NETWORK.expectedChainId) {
+    throw new Error(
+      `The RPC chain ID does not match ${THRU_NETWORK.displayName}.`,
+    );
   }
   if (
     typeof transaction.startSlot !== "bigint" ||
     transaction.startSlot <= 0n
   ) {
-    throw new Error("The current AlphaNet finalized slot is unavailable.");
+    throw new Error(`The current ${THRU_NETWORK.displayName} finalized slot is unavailable.`);
   }
 }
 

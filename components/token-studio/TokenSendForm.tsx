@@ -3,10 +3,11 @@ import { type TokenPortfolioItem } from "@/lib/token/thru-token";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import { formatRawAmount } from "@thru/programs/token";
 import { decimalAmountToRaw } from "@/lib/token/validation";
-import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
+import type { NetworkHealth } from "@/components/port/useNetworkHealth";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { safeTokenActionError } from "@/lib/token/network-state";
 import { tokenDisplayLabels } from "@/lib/token/portfolio";
+import { explorerTransactionUrl } from "@/lib/thru/network";
 
 export default function TokenSendForm({
   account,
@@ -20,7 +21,7 @@ export default function TokenSendForm({
   portfolio: TokenPortfolioItem[];
   onBusyChange: (busy: boolean) => void;
   selectedTokenMint?: string;
-  health?: AlphaNetHealth;
+  health?: NetworkHealth;
   onSuccess?: () => void;
 }) {
   const [transferDestination, setTransferDestination] = useState("");
@@ -194,7 +195,7 @@ export default function TokenSendForm({
           {result && (
             <div>
               <p className="success">Transfer successful!</p>
-              <a href={`https://scan.thru.org/tx/${result.signature}`} target="_blank" rel="noreferrer" className="mono">
+              <a href={explorerTransactionUrl(result.signature)} target="_blank" rel="noreferrer" className="mono">
                 View on Explorer ↗
               </a>
             </div>

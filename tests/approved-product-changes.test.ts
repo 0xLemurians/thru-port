@@ -45,8 +45,8 @@ test("pending-token safety persistence and automatic workflow hooks remain", () 
   assert.match(tokenCreate, /savePendingSetups\(window\.localStorage/);
 });
 
-test("Identity is an AlphaNet notice with no registration request controls", () => {
-  assert.match(identity, /not currently available on AlphaNet/);
+test("Identity is a Betanet notice with no registration request controls", () => {
+  assert.match(identity, /Registrations are currently unavailable on \{THRU_NETWORK\.displayName\}/);
   assert.match(identity, /announce on X when registration becomes available/);
   assert.doesNotMatch(identity, /Check Availability|Confirm registration|Register\s*</);
   assert.doesNotMatch(

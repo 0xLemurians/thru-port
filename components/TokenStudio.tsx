@@ -16,12 +16,12 @@ import PortTokenWorkspace from "./port/token/PortTokenWorkspace";
 
 type StudioTab = "create" | "send";
 
-import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
+import type { NetworkHealth } from "@/components/port/useNetworkHealth";
 
 interface TokenStudioProps {
   account: ThruAccount | null;
   onBusyChange?: (busy: boolean) => void;
-  health?: AlphaNetHealth;
+  health?: NetworkHealth;
   portfolioHook: TokenPortfolioHook;
 }
 

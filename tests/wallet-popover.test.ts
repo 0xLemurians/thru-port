@@ -95,7 +95,7 @@ test("lib/token and package files are not changed", () => {
   assert.ok(true);
 });
 
-test("Transfer is blocked if AlphaNet is offline or checking", () => {
+test("Transfer is blocked if Betanet is offline or checking", () => {
   assert.ok(true);
 });
 

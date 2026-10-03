@@ -1,5 +1,5 @@
 /**
- * Thru AlphaNet — Faucet withdraw.
+ * Thru Betanet — Faucet withdraw.
  *
  * @thru/sdk (npm) henüz faucet transaction'ı için hazır bir builder
  * sunmuyor. Instruction layout resmi uygulamayla eşleşirken program ve vault
@@ -48,7 +48,7 @@ export const FAUCET_WITHDRAW_LIMIT = 10_000n;
 export const FAUCET_TRANSACTION_RESOURCES = Object.freeze(
   programResources({
     computeUnits: 300_000,
-    stateUnits: 10_000,
+    stateUnits: 0,
     memoryUnits: 10_000,
   }),
 );
@@ -105,7 +105,8 @@ export async function assertFaucetDeploymentAvailable(
     accountReadFinality(vault);
     if (
       vault.meta?.flags.isDeleted ||
-      vault.meta?.owner?.toThruFmt() !== FAUCET_PROGRAM_ADDRESS
+      vault.meta?.owner?.toThruFmt() !== FAUCET_PROGRAM_ADDRESS ||
+      (vault.meta?.balance ?? 0n) <= 0n
     ) {
       throw new FaucetUnavailableError();
     }

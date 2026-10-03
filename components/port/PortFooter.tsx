@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { explorerHomeUrl, THRU_NETWORK } from "@/lib/thru/network";
 
 export default function PortFooter() {
   return (
@@ -52,7 +53,7 @@ export default function PortFooter() {
       `}</style>
       <div className="pc-footer-content">
         <div className="pc-footer-left">
-          PORT <span className="pc-footer-slash">{"//"}</span> Browser-native tools for Thru AlphaNet
+          PORT <span className="pc-footer-slash">{"//"}</span> Browser-native tools for Thru {THRU_NETWORK.displayName}
         </div>
         <div className="pc-footer-center">
           <span>
@@ -72,7 +73,7 @@ export default function PortFooter() {
         </div>
         <div className="pc-footer-right">
           <a href="https://docs.thru.org" target="_blank" rel="noopener noreferrer" aria-label="Documentation">Documentation ↗</a>
-          <a href="https://scan.thru.org" target="_blank" rel="noopener noreferrer" aria-label="Explorer">Explorer ↗</a>
+          <a href={explorerHomeUrl()} target="_blank" rel="noopener noreferrer" aria-label={`${THRU_NETWORK.displayName} Explorer`}>Explorer ↗</a>
         </div>
       </div>
     </footer>

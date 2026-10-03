@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  createDestinationTokenAccountOnAlphaNet,
+  createDestinationTokenAccountOnBetanet,
   previewDestinationTokenAccount,
   type CreateDestinationTokenAccountResult,
   type TokenPortfolioItem,
@@ -14,6 +14,7 @@ import {
   type TokenMutationStage,
 } from "@/lib/token/workflow";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { explorerTransactionUrl } from "@/lib/thru/network";
 
 interface CreateDestinationTokenAccountProps {
   account: ThruAccount;
@@ -86,7 +87,7 @@ export default function CreateDestinationTokenAccount({
     setProgress({ stage: "validating" });
 
     try {
-      const next = await createDestinationTokenAccountOnAlphaNet(
+      const next = await createDestinationTokenAccountOnBetanet(
         account,
         {
           mintAddress: preview.mintAddress,
@@ -348,7 +349,7 @@ function TransactionLink({ signature }: { signature: string }) {
   return (
     <a
       className="transaction-link"
-      href={`https://scan.thru.org/tx/${signature}`}
+      href={explorerTransactionUrl(signature)}
       target="_blank"
       rel="noreferrer"
       title={signature}

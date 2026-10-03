@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  discoverControlledTokensOnAlphaNet,
-  fetchTokenPortfolioOnAlphaNet,
+  discoverControlledTokensOnBetanet,
+  fetchTokenPortfolioOnBetanet,
   isCreatedTokenControlledByWallet,
   type TokenPortfolioItem,
 } from "./thru-token";
@@ -15,7 +15,7 @@ import {
   type KnownTokenRecord,
 } from "./portfolio";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
-import type { NetworkStatus } from "@/components/port/useAlphaNetHealth";
+import type { NetworkStatus } from "@/components/port/useNetworkHealth";
 import {
   safeTokenReadError,
   tokenNetworkReadAllowed,
@@ -35,7 +35,7 @@ function discoverCreatedTokensOnce(
 ): Promise<KnownTokenRecord[]> {
   const existing = discoveryInFlight.get(walletAddress);
   if (existing) return existing;
-  const pending = discoverControlledTokensOnAlphaNet(walletAddress).finally(
+  const pending = discoverControlledTokensOnBetanet(walletAddress).finally(
     () => {
       if (discoveryInFlight.get(walletAddress) === pending) {
         discoveryInFlight.delete(walletAddress);
@@ -112,7 +112,7 @@ export function useTokenPortfolio(
         recordsToRefresh,
         walletAddress,
       );
-      const nextPortfolio = await fetchTokenPortfolioOnAlphaNet(filtered, {
+      const nextPortfolio = await fetchTokenPortfolioOnBetanet(filtered, {
         signal: controller.signal,
       });
       if (!requestTrackerRef.current.isCurrent(request)) return;

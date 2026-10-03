@@ -4,7 +4,7 @@ import {
   tokenDisplayLabels,
   type KnownTokenRecord,
 } from "@/lib/token/portfolio";
-import type { NetworkStatus } from "@/components/port/useAlphaNetHealth";
+import type { NetworkStatus } from "@/components/port/useNetworkHealth";
 import {
   invokeTokenNetworkAction,
   tokenNetworkActionsDisabled,

@@ -6,9 +6,9 @@ import path from "node:path";
 const readme = readFileSync(path.join(process.cwd(), "README.md"), "utf8");
 
 test("README documents the active Thru Port wallet and token application", () => {
-  assert.match(readme, /Thru AlphaNet/);
-  assert.match(readme, /@thru\/sdk@0\.3\.4/);
-  assert.match(readme, /@thru\/programs@0\.3\.4/);
+  assert.match(readme, /Thru Betanet/);
+  assert.match(readme, /@thru\/sdk@0\.4\.1/);
+  assert.match(readme, /@thru\/programs@0\.4\.1/);
   assert.match(readme, /32-byte Ed25519 private key importu/);
   assert.match(readme, /IndexedDB/);
   assert.match(readme, /Token transferi/);

@@ -11,6 +11,7 @@ import {
   upsertPendingSetup,
   removePendingSetup,
   pendingSetupsForWallet,
+  PENDING_SETUP_STORAGE_KEY,
   type PendingTokenSetup,
 } from "../lib/token/pending-setup";
 import {
@@ -111,7 +112,7 @@ test("pending setups for wallet are filtered correctly after reload", () => {
   const RAW_ACCT_B   = "taAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACCCC";
   // Write raw JSON so we can use distinct addresses without Pubkey validation.
   storage.setItem(
-    "thru.tokenStudio.alphanet.pendingSetups.v1",
+    PENDING_SETUP_STORAGE_KEY,
     JSON.stringify([
       makePending({ walletAddress: ADDR_A, mintAddress: ADDR_A }),
       {
@@ -217,7 +218,7 @@ test("pending setups older than TTL are dropped on load", () => {
   });
   // Write directly to bypass normalisation in savePendingSetups.
   storage.setItem(
-    "thru.tokenStudio.alphanet.pendingSetups.v1",
+    PENDING_SETUP_STORAGE_KEY,
     JSON.stringify([expired]),
   );
   const loaded = loadPendingSetups(storage);
@@ -225,11 +226,11 @@ test("pending setups older than TTL are dropped on load", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12. verifyAndRecoverTokenOnAlphaNet rejects when on-chain fetch fails.
+// 12. verifyAndRecoverTokenOnBetanet rejects when on-chain fetch fails.
 //     Uses a Node.js test mock so no real RPC call is made.
 // ---------------------------------------------------------------------------
-test("verifyAndRecoverTokenOnAlphaNet rejects on decode failure (wrong owner path)", async (t) => {
-  const { verifyAndRecoverTokenOnAlphaNet } = await import("../lib/token/thru-token");
+test("verifyAndRecoverTokenOnBetanet rejects on decode failure (wrong owner path)", async (t) => {
+  const { verifyAndRecoverTokenOnBetanet } = await import("../lib/token/thru-token");
   const { thru } = await import("@/lib/wallet/thru-wallet");
 
   // Patch thru.accounts.get to return a raw account with empty data.
@@ -247,7 +248,7 @@ test("verifyAndRecoverTokenOnAlphaNet rejects on decode failure (wrong owner pat
 
   await assert.rejects(
     () =>
-      verifyAndRecoverTokenOnAlphaNet({
+      verifyAndRecoverTokenOnBetanet({
         mintAddress: ADDR_A,
         tokenAccountAddress: ADDR_A,
         name: "MVP Test",

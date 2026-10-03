@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { TokenPortfolioItem } from "@/lib/token/thru-token";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 function shortAddress(address: string): string {
   if (address.length <= 20) return address;
@@ -71,7 +72,7 @@ export default function PortTokenQuickActions({
       <div className="pc-token-qa-info">
         <div className="pc-token-qa-info-row">
           <span className="key">Network</span>
-          <span className="val">AlphaNet</span>
+          <span className="val">{THRU_NETWORK.displayName}</span>
         </div>
         <div className="pc-token-qa-info-row">
           <span className="key">Authority</span>

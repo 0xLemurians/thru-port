@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import type { NetworkStatus } from "../lib/network/alphanet-health";
+import type { NetworkStatus } from "../lib/network/network-health";
+import { explorerHomeUrl } from "../lib/thru/network";
 import {
   SAFE_FAUCET_ERROR_MESSAGE,
   SAFE_FAUCET_UNAVAILABLE_MESSAGE,
@@ -60,7 +61,7 @@ function getFaucetRequestStatus(healthStatus: string, faucetState: string) {
 }
 
 function getFaucetWarning(healthStatus: string) {
-  if (healthStatus === "Degraded") return "AlphaNet RPC is unstable.";
+  if (healthStatus === "Degraded") return "Betanet RPC is unstable.";
   return null;
 }
 
@@ -100,7 +101,7 @@ test("RPC Degraded durumunda Faucet ve Retry disabled", () => {
 });
 
 test("RPC Degraded durumunda amber uyarı gösteriliyor", () => {
-  assert.equal(getFaucetWarning("Degraded"), "AlphaNet RPC is unstable.");
+  assert.equal(getFaucetWarning("Degraded"), "Betanet RPC is unstable.");
 });
 
 test("double-submit engelleniyor", () => {
@@ -172,7 +173,7 @@ test("Faucet errors are always rendered as the safe approved message", () => {
   );
   assert.equal(
     SAFE_FAUCET_ERROR_MESSAGE,
-    "The faucet request could not be completed. Try again when AlphaNet is available.",
+    "The faucet request could not be completed. Try again when Betanet is available.",
   );
   assert.equal(
     SAFE_FAUCET_UNCERTAIN_MESSAGE,
@@ -267,9 +268,10 @@ test("Docs uses exact URL, opens in new tab securely, and is fully clickable", (
   assert.match(source, /<a[^>]*href="https:\/\/thru\.org\/docs\/"[^>]*>/);
 });
 
-test("Explorer uses exact AlphaNet URL, opens securely, and is not disabled", () => {
+test("Explorer uses the Betanet-scoped URL, opens securely, and is not disabled", () => {
   const source = fs.readFileSync(path.join(process.cwd(), "components/command/CommandShell.tsx"), "utf8");
-  assert.match(source, /href="https:\/\/scan\.thru\.org\/\?rpc=https%3A%2F%2Frpc\.alphanet\.thru\.org"/);
+  assert.equal(explorerHomeUrl(), "https://scan.thru.org/?network=betanet");
+  assert.match(source, /href=\{explorerHomeUrl\(\)\}/);
   assert.match(source, /target="_blank"/);
   assert.match(source, /rel="noopener noreferrer"/);
   assert.doesNotMatch(source, /Coming Soon/i);

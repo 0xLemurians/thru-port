@@ -8,8 +8,10 @@ import {
   getBalance,
   hexToBytes,
   explorerAddressUrl,
+  explorerTransactionUrl,
   isAccountNotFoundError,
 } from "@/lib/wallet/thru-wallet";
+import { THRU_NETWORK } from "@/lib/thru/network";
 import { clearSecretInputs } from "@/lib/wallet/wallet-backup";
 import {
   withdrawFromFaucet,
@@ -219,7 +221,7 @@ export default function AccountPanel({
         <div className="panel">
           <h2 className="panel-title">Set up your account</h2>
           <p className="panel-sub">
-            Create a new AlphaNet account or restore an existing one. Signing
+            Create a new {THRU_NETWORK.displayName} account or restore an existing one. Signing
             happens locally; the network receives public account data and
             signed transactions, never your recovery phrase or private key.
           </p>
@@ -312,7 +314,7 @@ export default function AccountPanel({
         </h2>
         {currentStep === 2 && (
           <p className="panel-sub">
-            Pull free AlphaNet test units from Thru&apos;s on-chain faucet —
+            Pull free {THRU_NETWORK.displayName} test units from Thru&apos;s on-chain faucet —
             signed and submitted right here in your browser.
           </p>
         )}
@@ -431,7 +433,7 @@ export default function AccountPanel({
                 {lastSignature && (
                   <a
                     className="mono"
-                    href={`https://scan.thru.org/tx/${lastSignature}`}
+                    href={explorerTransactionUrl(lastSignature)}
                     target="_blank"
                     rel="noopener noreferrer"
                   >
@@ -449,7 +451,7 @@ export default function AccountPanel({
               <a
                 className="mono"
                 style={{ color: "inherit" }}
-                href={`https://scan.thru.org/tx/${lastSignature}`}
+                href={explorerTransactionUrl(lastSignature)}
                 target="_blank"
                 rel="noreferrer"
               >

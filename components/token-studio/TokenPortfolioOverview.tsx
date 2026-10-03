@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { THRU_NETWORK } from "@/lib/thru/network";
 import { classifyPortfolio } from "@/lib/token/portfolio";
 import PortfolioCard from "./PortfolioCard";
 
@@ -47,7 +48,7 @@ export default function TokenPortfolioOverview({
         <div>
           <p className="eyebrow token-eyebrow">Overview</p>
           <h3 id="token-portfolio-title">
-            {account ? "Active wallet assets" : "Saved public AlphaNet assets on this browser"}
+            {account ? "Active wallet assets" : `Saved public ${THRU_NETWORK.displayName} assets on this browser`}
           </h3>
         </div>
         <button
@@ -82,7 +83,7 @@ export default function TokenPortfolioOverview({
 
       {(!account || activeAssets.length === 0) && externalAssets.length === 0 && !refreshing && (
         <div className="portfolio-empty">
-          No saved public AlphaNet assets on this browser.
+          No saved public {THRU_NETWORK.displayName} assets on this browser.
         </div>
       )}
 

@@ -74,5 +74,5 @@ test("saved tokens from an unverifiable legacy program remain visible as stale",
   const classified = classifyPortfolio([stale], VALID_ADDRESS);
   assert.deepEqual(classified.activeAssets, [stale]);
   assert.deepEqual(classified.externalAssets, []);
-  assert.match(stale.error ?? "", /unavailable|older AlphaNet/i);
+  assert.match(stale.error ?? "", /unavailable|another network/i);
 });

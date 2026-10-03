@@ -1,6 +1,9 @@
 import { Pubkey, Signature } from "@thru/sdk";
+import { networkStorageKey } from "@/lib/thru/network";
 
 export const PENDING_TOKEN_OPERATION_STORAGE_KEY =
+  networkStorageKey("thru.tokenStudio.pendingOperations", 1);
+export const LEGACY_ALPHANET_PENDING_TOKEN_OPERATION_STORAGE_KEY =
   "thru.tokenStudio.alphanet.pendingOperations.v1";
 export const PENDING_TOKEN_OPERATION_SCHEMA_VERSION = 1 as const;
 

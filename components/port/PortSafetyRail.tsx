@@ -1,12 +1,13 @@
 "use client";
 
 import React from "react";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 export default function PortSafetyRail() {
   return (
     <div className="pc-safety-rail pc-anim-safety-rail">
       <div className="pc-sr-item pc-anim-mask" style={{ animationDelay: "100ms" }}>
-        <span className="pc-sr-title">ALPHANET TESTNET</span>
+        <span className="pc-sr-title">{THRU_NETWORK.displayName.toUpperCase()} TESTNET</span>
         <span className="pc-sr-desc">Experimental network</span>
       </div>
       <div className="pc-sr-item pc-anim-mask" style={{ animationDelay: "170ms" }}>
@@ -19,7 +20,7 @@ export default function PortSafetyRail() {
       </div>
       <div className="pc-sr-item pc-anim-mask" style={{ animationDelay: "310ms" }}>
         <span className="pc-sr-title">NETWORK MAY RESET</span>
-        <span className="pc-sr-desc">AlphaNet state may change or reset</span>
+        <span className="pc-sr-desc">{THRU_NETWORK.displayName} state may change or reset</span>
       </div>
     </div>
   );

@@ -38,6 +38,7 @@ import {
   SubmittedTransactionUncertainError,
   verifySubmittedTransaction,
 } from "@/lib/thru/transactions";
+import { THRU_NETWORK } from "@/lib/thru/network";
 import {
   runTokenCreationWorkflow,
   runTokenMutationWorkflow,
@@ -97,7 +98,7 @@ export const TOKEN_TRANSACTION_RESOURCES = Object.freeze(
   programResources({ stateUnits: 10_000 }),
 );
 export const STALE_TOKEN_REFERENCE_MESSAGE =
-  "The saved token is unavailable or belongs to an older AlphaNet program deployment.";
+  "The saved token is unavailable or belongs to another network or program deployment.";
 
 const FINALIZATION_TIMEOUT_MS = 60_000;
 const REFRESH_ATTEMPTS = 7;
@@ -474,7 +475,7 @@ export interface RecoverTokenResult {
  *
  * Throws a descriptive Error if any on-chain check fails.
  */
-export async function verifyAndRecoverTokenOnAlphaNet(
+export async function verifyAndRecoverTokenOnBetanet(
   input: RecoverTokenInput,
   options: { signal?: AbortSignal } = {},
 ): Promise<RecoverTokenResult> {
@@ -571,7 +572,7 @@ export interface CreateTokenOptions {
   onSetupComplete?: (mintAddress: string) => void;
 }
 
-export async function createTokenOnAlphaNet(
+export async function createTokenOnBetanet(
   account: ThruAccount,
   input: CreateTokenInput,
   options: CreateTokenOptions,
@@ -1078,7 +1079,7 @@ export async function createTokenOnAlphaNet(
   };
 }
 
-export async function fetchTokenPortfolioOnAlphaNet(
+export async function fetchTokenPortfolioOnBetanet(
   records: KnownTokenRecord[],
   options: { signal?: AbortSignal } = {},
 ): Promise<TokenPortfolioItem[]> {
@@ -1187,7 +1188,7 @@ const defaultCreatedTokenDiscoveryDependencies: CreatedTokenDiscoveryDependencie
     },
   };
 
-export async function discoverControlledTokensOnAlphaNet(
+export async function discoverControlledTokensOnBetanet(
   walletAddress: string,
   options: CreatedTokenDiscoveryOptions = {},
 ): Promise<KnownTokenRecord[]> {
@@ -1337,7 +1338,7 @@ export function isCreatedTokenControlledByWallet(
   );
 }
 
-export async function resumeTokenSetupOnAlphaNet(
+export async function resumeTokenSetupOnBetanet(
   account: ThruAccount,
   input: ResumeTokenSetupInput,
   options: ResumeTokenSetupOptions,
@@ -1776,7 +1777,7 @@ export function previewDestinationTokenAccount(
   });
 }
 
-export async function createDestinationTokenAccountOnAlphaNet(
+export async function createDestinationTokenAccountOnBetanet(
   account: ThruAccount,
   input: CreateDestinationTokenAccountInput,
   options: TokenMutationOptions,
@@ -1983,7 +1984,7 @@ export async function createDestinationTokenAccountOnAlphaNet(
   }
 }
 
-export async function mintAdditionalSupplyOnAlphaNet(
+export async function mintAdditionalSupplyOnBetanet(
   account: ThruAccount,
   input: MintAdditionalSupplyInput,
   options: TokenMutationOptions,
@@ -2217,7 +2218,7 @@ export async function mintAdditionalSupplyOnAlphaNet(
   };
 }
 
-export async function transferTokensOnAlphaNet(
+export async function transferTokensOnBetanet(
   account: ThruAccount,
   input: TransferTokenInput,
   options: TokenMutationOptions,
@@ -2498,7 +2499,9 @@ async function assertActiveWalletExists(
     const wallet = await thru.accounts.get(address);
     assertFinalizedAccount(wallet);
     if (wallet.meta?.flags.isDeleted) {
-      throw new Error("The active wallet account is deleted on AlphaNet.");
+      throw new Error(
+        `The active wallet account is deleted on ${THRU_NETWORK.displayName}.`,
+      );
     }
   } catch (error) {
     if (isAccountNotFoundError(error)) {

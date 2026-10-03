@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
-  transferTokensOnAlphaNet,
-  createDestinationTokenAccountOnAlphaNet,
+  transferTokensOnBetanet,
+  createDestinationTokenAccountOnBetanet,
   previewDestinationTokenAccount,
   type TransferTokenResult
 } from "@/lib/token/thru-token";
@@ -83,7 +83,7 @@ export function useTokenTransfer({
         destinationOwnerAddress: transferDestination
       });
 
-      const createResult = await createDestinationTokenAccountOnAlphaNet(
+      const createResult = await createDestinationTokenAccountOnBetanet(
         account,
         {
           mintAddress: preview.mintAddress,
@@ -106,7 +106,7 @@ export function useTokenTransfer({
       // Step 2: Transfer tokens
       setProgressLabel("Sending token...");
 
-      const next = await transferTokensOnAlphaNet(
+      const next = await transferTokensOnBetanet(
         account,
         {
           sourceAddress: transferSource,

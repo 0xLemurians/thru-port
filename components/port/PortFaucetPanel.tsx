@@ -1,17 +1,21 @@
-import type { AlphaNetHealth } from "./useAlphaNetHealth";
+import type { NetworkHealth } from "./useNetworkHealth";
 import { FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
 import {
   faucetFailureRequiresManualCheck,
   isFaucetActionDisabled,
   safeFaucetDisplayMessage,
 } from "@/lib/wallet/faucet-safety";
+import {
+  explorerTransactionUrl,
+  THRU_NETWORK,
+} from "@/lib/thru/network";
 
 interface PortFaucetPanelProps {
   faucetState: "idle" | "requesting" | "confirming" | "success" | "error";
   faucetError: string | null;
   retryInfo: string | null;
   lastSignature: string | null;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   onRequest: () => void;
   onCancel: () => void;
 }
@@ -35,19 +39,19 @@ export default function PortFaucetPanel({
 
   return (
     <div className="panel" style={{ marginTop: 24 }}>
-      <h2 className="panel-title">ALPHANET FAUCET</h2>
+      <h2 className="panel-title">{THRU_NETWORK.displayName.toUpperCase()} FAUCET</h2>
       
       {isRpcChecking && (
-        <p className="hint">Checking AlphaNet RPC…</p>
+        <p className="hint">Checking {THRU_NETWORK.displayName} RPC…</p>
       )}
       
       {isRpcOffline && (
-        <p className="error">AlphaNet RPC is currently offline.</p>
+        <p className="error">{THRU_NETWORK.displayName} RPC is currently offline.</p>
       )}
 
       {health.status === "Degraded" && (
         <div style={{ color: "#f59e0b", marginBottom: 12, fontSize: 14 }}>
-          AlphaNet RPC is unstable. The request may take longer or fail.
+          {THRU_NETWORK.displayName} RPC is unstable. The request may take longer or fail.
         </div>
       )}
 
@@ -58,7 +62,7 @@ export default function PortFaucetPanel({
             <a
               className="mono"
               style={{ color: "inherit" }}
-              href={`https://scan.thru.org/tx/${lastSignature}`}
+              href={explorerTransactionUrl(lastSignature)}
               target="_blank"
               rel="noopener noreferrer"
               aria-label="View transaction on Explorer"
@@ -109,7 +113,7 @@ export default function PortFaucetPanel({
             {lastSignature && (
               <a
                 className="mono"
-                href={`https://scan.thru.org/tx/${lastSignature}`}
+                href={explorerTransactionUrl(lastSignature)}
                 target="_blank"
                 rel="noopener noreferrer"
               >

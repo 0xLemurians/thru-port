@@ -9,7 +9,7 @@ export const RAW_ZERO_TOKEN_ACCOUNT_SEED_LENGTH = 32;
 
 export class TokenProgramOwnershipError extends Error {
   constructor() {
-    super("The saved token is unavailable or belongs to an older AlphaNet program deployment.");
+    super("The saved token is unavailable or belongs to another network or program deployment.");
     this.name = "TokenProgramOwnershipError";
   }
 }

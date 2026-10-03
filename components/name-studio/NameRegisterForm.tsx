@@ -7,10 +7,11 @@ import {
   purchaseThruName,
   type PurchaseProgressStage,
 } from "@/lib/thru/name-service/purchase";
-import { ALPHANET_RPC_UNAVAILABLE_MESSAGE } from "@/lib/thru/name-service/constants";
+import { NETWORK_RPC_UNAVAILABLE_MESSAGE } from "@/lib/thru/name-service/constants";
 import { utf8ByteLength } from "@/lib/thru/name-service/validation";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
-import type { AlphaNetHealth } from "../port/useAlphaNetHealth";
+import type { NetworkHealth } from "../port/useNetworkHealth";
+import { THRU_NETWORK } from "@/lib/thru/network";
 import {
   REGISTRATION_PROGRESS_LABELS,
   canRegisterName,
@@ -32,7 +33,7 @@ import {
 
 interface NameRegisterFormProps {
   account: ThruAccount;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   walletReady: boolean;
 }
 
@@ -61,7 +62,7 @@ export default function NameRegisterForm({
   const networkWarning = registrationNetworkWarning(health.status);
   const primaryNetworkWarning =
     ui.availability === "rpc-offline"
-      ? ALPHANET_RPC_UNAVAILABLE_MESSAGE
+      ? NETWORK_RPC_UNAVAILABLE_MESSAGE
       : networkWarning;
   const rpcUnavailable =
     health.status === "Offline" || ui.availability === "rpc-offline";
@@ -300,7 +301,7 @@ export default function NameRegisterForm({
         retryBlocked,
         result: null,
         error: retryBlocked
-          ? `${safeRegistrationErrorMessage(error)} Do not retry this name until its AlphaNet state is independently confirmed.`
+          ? `${safeRegistrationErrorMessage(error)} Do not retry this name until its ${THRU_NETWORK.displayName} state is independently confirmed.`
           : safeRegistrationErrorMessage(error),
       }));
     } finally {
@@ -329,7 +330,7 @@ export default function NameRegisterForm({
           <p className="eyebrow token-eyebrow">Register a name</p>
           <h3 id="name-register-title">Claim a one-year .thru identity</h3>
         </div>
-        <span className="workspace-nav-tag">ALPHANET</span>
+        <span className="workspace-nav-tag">{THRU_NETWORK.displayName.toUpperCase()}</span>
       </div>
 
       <p className="panel-sub">
@@ -402,7 +403,7 @@ export default function NameRegisterForm({
             }
           >
             {ui.availability === "checking"
-              ? "Checking AlphaNet..."
+              ? `Checking ${THRU_NETWORK.displayName}...`
               : ui.availability === "validating"
                 ? "Validating..."
                 : "Check availability"}

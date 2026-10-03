@@ -4,8 +4,8 @@ import { join } from "node:path";
 import test from "node:test";
 import type { NameLookupSnapshot } from "../lib/thru/name-service/account-types";
 import {
-  ALPHANET_RPC_DEGRADED_MESSAGE,
-  ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+  NETWORK_RPC_DEGRADED_MESSAGE,
+  NETWORK_RPC_UNAVAILABLE_MESSAGE,
 } from "../lib/thru/name-service/constants";
 import {
   PURCHASE_PROGRESS_STAGES,
@@ -313,18 +313,18 @@ test("raw upstream and transport failures are never rendered", () => {
     /\{domain\.error\}|\{lease\.error\}/,
   );
   assert.equal(
-    ALPHANET_RPC_UNAVAILABLE_MESSAGE,
-    "AlphaNet RPC is currently unavailable. Try again later.",
+    NETWORK_RPC_UNAVAILABLE_MESSAGE,
+    "Betanet RPC is currently unavailable. Try again later.",
   );
 });
 
-test("Identity renders the AlphaNet-unavailable notice without RPC errors", () => {
+test("Identity renders the Betanet-unavailable notice without RPC errors", () => {
   assert.match(
     STUDIO_SOURCE,
-    /\.thru registrations are not currently available on AlphaNet/,
+    /Registrations are currently unavailable on \{THRU_NETWORK\.displayName\}/,
   );
   assert.match(STUDIO_SOURCE, /announce on X when registration becomes available/);
-  assert.doesNotMatch(STUDIO_SOURCE, /ALPHANET_RPC_UNAVAILABLE_MESSAGE/);
+  assert.doesNotMatch(STUDIO_SOURCE, /NETWORK_RPC_UNAVAILABLE_MESSAGE/);
 });
 
 test("read-only lookup and Refresh actions are disabled while offline", () => {
@@ -376,7 +376,7 @@ test("degraded read-only lookup remains permitted with a warning", () => {
     nameLookupActionsDisabled(false, "Degraded"),
     false,
   );
-  assert.match(ALPHANET_RPC_DEGRADED_MESSAGE, /degraded/i);
+  assert.match(NETWORK_RPC_DEGRADED_MESSAGE, /degraded/i);
 });
 
 test("disabled registration and lookup buttons use neutral styling", () => {
@@ -514,12 +514,12 @@ test("confirmation includes exact name, network, wallet, price, and payment acco
   const confirmation = createRegistrationConfirmation(readyQuote());
   assert.deepEqual(confirmation, {
     fullName: "Mert.thru",
-    network: "AlphaNet",
+    network: "Betanet",
     registrationPeriod: "1 year",
     exactPrice: "123456789012345678 raw units",
     owner: "wallet-address",
     paymentTokenAccount: "payer-token-address",
-    resetWarning: "AlphaNet may reset and remove this registration.",
+    resetWarning: "Betanet may reset and remove this registration.",
     transactionWarning:
       "Confirming signs and submits an on-chain transaction.",
   });
@@ -601,9 +601,9 @@ test("verified ownership produces success Explorer links", () => {
     postState: verifiedSnapshot(),
   };
   assert.deepEqual(registrationExplorerLinks(result), {
-    domain: "https://scan.thru.org/address/domain-address",
-    lease: "https://scan.thru.org/address/lease-address",
-    transaction: "https://scan.thru.org/tx/transaction-signature",
+    domain: "https://scan.thru.org/address/domain-address?network=betanet",
+    lease: "https://scan.thru.org/address/lease-address?network=betanet",
+    transaction: "https://scan.thru.org/tx/transaction-signature?network=betanet",
   });
   assert.match(COMPONENT_SOURCE, /Registered to your wallet/);
 });

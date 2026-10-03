@@ -3,9 +3,10 @@
 import React, { useRef, useEffect } from "react";
 import PortMark from "./PortMark";
 import PortNetworkStatus from "./PortNetworkStatus";
-import type { AlphaNetHealth } from "./useAlphaNetHealth";
+import type { NetworkHealth } from "./useNetworkHealth";
 import PortWalletPopover from "./PortWalletPopover";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 export type WorkspaceStage = "account" | "token" | "name";
 
@@ -15,7 +16,7 @@ interface PortHeaderProps {
   publicAddress?: string | null;
   onStageChange: (stage: WorkspaceStage) => void;
   isTransitioning: boolean;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   account?: ThruAccount | null;
   balance?: bigint | null;
   onForgetAccount?: () => void | Promise<void>;
@@ -137,7 +138,7 @@ export default function PortHeader({
           <div className="pc-header-left">
             <div className="pc-brand">
               <PortMark />
-              <span className="pc-brand-name">THRU ALPHANET</span>
+              <span className="pc-brand-name">THRU {THRU_NETWORK.displayName.toUpperCase()}</span>
             </div>
 
             <div className="pc-v-divider" />
@@ -244,7 +245,7 @@ export default function PortHeader({
 
       {/* Mobile Header */}
       <header className="pc-mobile-header" style={{ zIndex: 110 }}>
-        <span className="pc-brand-name">THRU ALPHANET</span>
+        <span className="pc-brand-name">THRU {THRU_NETWORK.displayName.toUpperCase()}</span>
         <div ref={mobileWrapperRef} style={{ display: "flex", gap: "12px", alignItems: "center" }}>
            <PortNetworkStatus status={health.status} />
            <button

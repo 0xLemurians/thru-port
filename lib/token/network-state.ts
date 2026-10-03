@@ -1,17 +1,17 @@
-import type { NetworkStatus } from "@/components/port/useAlphaNetHealth";
+import type { NetworkStatus } from "@/components/port/useNetworkHealth";
 import {
-  ALPHANET_RPC_DEGRADED_MESSAGE,
-  ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+  NETWORK_RPC_DEGRADED_MESSAGE,
+  NETWORK_RPC_UNAVAILABLE_MESSAGE,
 } from "@/lib/thru/name-service/constants";
 
 export function tokenNetworkWarning(
   status: NetworkStatus | undefined,
 ): string | null {
   if (status === "Offline") {
-    return ALPHANET_RPC_UNAVAILABLE_MESSAGE;
+    return NETWORK_RPC_UNAVAILABLE_MESSAGE;
   }
   if (status === "Degraded") {
-    return ALPHANET_RPC_DEGRADED_MESSAGE;
+    return NETWORK_RPC_DEGRADED_MESSAGE;
   }
   return null;
 }
@@ -40,7 +40,7 @@ export function invokeTokenNetworkAction(
 }
 
 export function safeTokenReadError(error: unknown): string | null {
-  return error == null ? null : ALPHANET_RPC_UNAVAILABLE_MESSAGE;
+  return error == null ? null : NETWORK_RPC_UNAVAILABLE_MESSAGE;
 }
 
 const UNSAFE_NETWORK_ERROR_PATTERN =
@@ -57,7 +57,7 @@ export function safeTokenActionError(
       : "";
   if (!message || UNSAFE_NETWORK_ERROR_PATTERN.test(message)) {
     return message
-      ? ALPHANET_RPC_UNAVAILABLE_MESSAGE
+      ? NETWORK_RPC_UNAVAILABLE_MESSAGE
       : fallback;
   }
   return message;

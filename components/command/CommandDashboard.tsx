@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 
-import type { AlphaNetHealth } from "../port/useAlphaNetHealth";
+import type { NetworkHealth } from "../port/useNetworkHealth";
 import PortFaucetPanel from "../port/PortFaucetPanel";
 import WalletBackupDialog from "../port/WalletBackupDialog";
 import { clearSecretInputs } from "@/lib/wallet/wallet-backup";
@@ -13,6 +13,7 @@ import { formatRawAmount } from "@thru/programs/token";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { decimalAmountToRaw } from "@/lib/token/validation";
 import { safeTokenActionError } from "@/lib/token/network-state";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 type WalletImportMode = "hidden" | "hex" | "backup";
 
@@ -25,7 +26,7 @@ interface CommandDashboardProps {
   onCreateWallet: () => void | Promise<boolean>;
   onImportWallet: (kind: "hex", value: string) => Promise<boolean>;
   onImportBackup: (file: File, password: string) => Promise<boolean>;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   faucetState?: "idle" | "requesting" | "confirming" | "success" | "error";
   faucetError?: string | null;
   retryInfo?: string | null;
@@ -199,7 +200,7 @@ export default function CommandDashboard({
               <div className={styles.heroHeader}>
                 <div className={styles.networkBadgeInline}>
                   <div className={styles.dot}></div>
-                  <span className={styles.networkName}>AlphaNet</span>
+                  <span className={styles.networkName}>{THRU_NETWORK.displayName}</span>
                 </div>
                 {account ? (
                   <div className={styles.statusIndicator}>Workspace Unlocked</div>

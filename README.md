@@ -1,8 +1,8 @@
 # Thru Port
 
-Thru Port, Thru AlphaNet üzerinde çalışan browser tabanlı bir wallet ve fungible-token dApp'idir. Uygulama Next.js, React ve TypeScript kullanır; zincir erişimi için exact `@thru/sdk@0.3.4` ve `@thru/programs@0.3.4` paketlerine bağlıdır.
+Thru Port, Thru Betanet üzerinde çalışan browser tabanlı bir wallet ve fungible-token dApp'idir. Uygulama Next.js, React ve TypeScript kullanır; zincir erişimi için exact `@thru/sdk@0.4.1` ve `@thru/programs@0.4.1` paketlerine bağlıdır.
 
-AlphaNet bir test ağıdır ve sıfırlanabilir. Buradaki test birimlerinin parasal değeri yoktur.
+Betanet bir test ağıdır ve sıfırlanabilir. Buradaki test birimlerinin parasal değeri yoktur.
 
 ## Aktif özellikler
 
@@ -14,8 +14,8 @@ AlphaNet bir test ağıdır ve sıfırlanabilir. Buradaki test birimlerinin para
 - IndexedDB üzerinde encrypted wallet persistence
 - Browser vault kayıtlarında AES-256-GCM authenticated encryption
 - Refresh sonrasında tamamlanmamış yeni-wallet backup adımını koruyan `setupPending` akışı
-- AlphaNet account creation ve doğrulanmış account-existence kontrolü
-- Kullanıcı tarafından başlatılan AlphaNet faucet akışı
+- Betanet account creation ve doğrulanmış account-existence kontrolü
+- Kullanıcı tarafından başlatılan Betanet faucet akışı
 - Public address, transaction signature ve Thru Scan bağlantıları
 
 Visible Recovery Phrase importu bulunmaz. Yeni wallet oluşturma akışı gereksiz mnemonic değerini persisted wallet kaydına eklemez; eski mnemonic içeren wallet kayıtları geriye dönük olarak restore edilmeye devam eder.
@@ -50,7 +50,7 @@ Journal yalnız public adresleri, public transaction signature'larını, raw amo
 
 ### Identity
 
-Identity registration AlphaNet üzerinde şu anda kapalıdır. Read-only notice/lookup güvenlik kodu korunur ancak UI `.thru` registration transaction'ı başlatmaz.
+Identity registration Betanet üzerinde şu anda kapalıdır. Read-only notice/lookup güvenlik kodu korunur ancak UI `.thru` registration transaction'ı başlatmaz.
 
 ## Native THRU balance
 
@@ -110,7 +110,7 @@ npm run check
 
 ## Ağ adresleri
 
-- RPC: `https://rpc.alphanet.thru.org`
-- Explorer: `https://scan.thru.org`
+- RPC: `https://rpc.betanet.thru.org`
+- Explorer: `https://scan.thru.org/?network=betanet`
 - Minor documentation update..
 - 

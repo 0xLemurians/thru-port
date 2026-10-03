@@ -1,10 +1,11 @@
-import type { NetworkStatus } from "@/lib/network/alphanet-health";
+import type { NetworkStatus } from "@/lib/network/network-health";
 import { SAFE_TRANSACTION_UNCERTAIN_MESSAGE } from "@/lib/thru/transactions";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 export const SAFE_FAUCET_ERROR_MESSAGE =
-  "The faucet request could not be completed. Try again when AlphaNet is available.";
+  `The faucet request could not be completed. Try again when ${THRU_NETWORK.displayName} is available.`;
 export const SAFE_FAUCET_UNAVAILABLE_MESSAGE =
-  "The AlphaNet faucet is not available on this deployment.";
+  `The ${THRU_NETWORK.displayName} faucet is not available on this deployment.`;
 export const SAFE_FAUCET_UNCERTAIN_MESSAGE =
   SAFE_TRANSACTION_UNCERTAIN_MESSAGE;
 

@@ -9,9 +9,9 @@ import {
 } from "react";
 import { formatRawAmount } from "@thru/programs/token";
 import {
-  fetchTokenPortfolioOnAlphaNet,
-  mintAdditionalSupplyOnAlphaNet,
-  transferTokensOnAlphaNet,
+  fetchTokenPortfolioOnBetanet,
+  mintAdditionalSupplyOnBetanet,
+  transferTokensOnBetanet,
   type CreateTokenResult,
   type TokenPortfolioItem,
 } from "@/lib/token/thru-token";
@@ -31,8 +31,10 @@ import {
 } from "@/lib/token/workflow";
 import {
   explorerAddressUrl,
+  explorerTransactionUrl,
   type ThruAccount,
 } from "@/lib/wallet/thru-wallet";
+import { THRU_NETWORK } from "@/lib/thru/network";
 import ResumeTokenSetup from "./ResumeTokenSetup";
 import CreateDestinationTokenAccount from "./CreateDestinationTokenAccount";
 
@@ -84,7 +86,7 @@ export default function TokenPortfolio({
     setRefreshing(true);
     setPortfolioError(null);
     try {
-      const nextPortfolio = await fetchTokenPortfolioOnAlphaNet(next);
+      const nextPortfolio = await fetchTokenPortfolioOnBetanet(next);
       if (!requestTrackerRef.current.isCurrent(request)) return;
       setPortfolio(nextPortfolio);
     } catch (error) {
@@ -203,7 +205,7 @@ export default function TokenPortfolio({
   async function runMintTo(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await runMutation("mint-to", (controller) =>
-      mintAdditionalSupplyOnAlphaNet(
+      mintAdditionalSupplyOnBetanet(
         account,
         {
           mintAddress: mintToMint,
@@ -221,7 +223,7 @@ export default function TokenPortfolio({
   async function runTransfer(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await runMutation("transfer", (controller) =>
-      transferTokensOnAlphaNet(
+      transferTokensOnBetanet(
         account,
         {
           sourceAddress: transferSource,
@@ -313,7 +315,7 @@ export default function TokenPortfolio({
       <div className="token-section-header">
         <div>
           <p className="eyebrow token-eyebrow">Token Portfolio</p>
-          <h3 id="token-portfolio-title">Known AlphaNet tokens</h3>
+          <h3 id="token-portfolio-title">Known {THRU_NETWORK.displayName} tokens</h3>
         </div>
         <button
           className="btn btn-ghost"
@@ -806,7 +808,7 @@ function TransactionLink({
   return (
     <a
       className="transaction-link"
-      href={`https://scan.thru.org/tx/${signature}`}
+      href={explorerTransactionUrl(signature)}
       target="_blank"
       rel="noreferrer"
       title={signature}

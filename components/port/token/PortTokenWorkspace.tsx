@@ -3,7 +3,7 @@ import type { TokenPortfolioItem } from "@/lib/token/thru-token";
 import type { CreateTokenResult } from "@/lib/token/thru-token";
 import TokenCreateForm from "@/components/token-studio/TokenCreateForm";
 import TokenSendForm from "@/components/token-studio/TokenSendForm";
-import type { AlphaNetHealth } from "@/components/port/useAlphaNetHealth";
+import type { NetworkHealth } from "@/components/port/useNetworkHealth";
 
 interface PortTokenWorkspaceProps {
   activeView: string;
@@ -12,7 +12,7 @@ interface PortTokenWorkspaceProps {
   portfolioHook: ReturnType<typeof import("@/lib/token/portfolio-hook").useTokenPortfolio>;
   onBusyChange: (busy: boolean) => void;
   onTokenCreated?: (result: CreateTokenResult) => void;
-  health?: AlphaNetHealth;
+  health?: NetworkHealth;
 }
 
 export default function PortTokenWorkspace({

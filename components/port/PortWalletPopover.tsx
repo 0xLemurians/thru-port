@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
-import type { AlphaNetHealth } from "./useAlphaNetHealth";
+import type { NetworkHealth } from "./useNetworkHealth";
 import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
 import { formatRawAmount } from "@thru/programs/token";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
@@ -16,12 +16,13 @@ import {
   formatNativeThruAmount,
   NATIVE_THRU_BALANCE_UNIT,
 } from "@/lib/wallet/native-balance";
+import { explorerTransactionUrl } from "@/lib/thru/network";
 
 interface PortWalletPopoverProps {
   id: string;
   account: ThruAccount;
   balance: bigint | null;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   onForgetAccount?: () => void | Promise<void>;
   onBusyChange?: (busy: boolean) => void;
 }
@@ -330,7 +331,7 @@ function PopoverSend({
 }: {
   account: ThruAccount;
   portfolio: TokenPortfolioItem[];
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   busy: boolean;
   progressLabel: string | null;
   error: string | null;
@@ -465,7 +466,7 @@ function PopoverSend({
           {result && (
             <div role="status">
               <p style={{ color: "var(--accent-green)", margin: 0 }}>Transfer successful!</p>
-              <a href={`https://scan.thru.org/tx/${result.signature}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent-amber)" }}>
+              <a href={explorerTransactionUrl(result.signature)} target="_blank" rel="noreferrer" style={{ color: "var(--accent-amber)" }}>
                 View Explorer ↗
               </a>
             </div>

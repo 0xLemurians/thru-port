@@ -1,4 +1,5 @@
 import { Pubkey } from "@thru/sdk";
+import { networkStorageKey } from "@/lib/thru/network";
 import {
   validateTokenDecimals,
   validateTokenName,
@@ -6,6 +7,8 @@ import {
 } from "./validation";
 
 export const TOKEN_PORTFOLIO_STORAGE_KEY =
+  networkStorageKey("thru.tokenStudio.knownTokens", 1);
+export const LEGACY_ALPHANET_TOKEN_PORTFOLIO_STORAGE_KEY =
   "thru.tokenStudio.alphanet.knownTokens.v1";
 
 export const MAX_KNOWN_MINTS = 64;

@@ -26,6 +26,7 @@ import {
   SAFE_FAUCET_UNCERTAIN_MESSAGE,
 } from "../lib/wallet/faucet-safety";
 import { SubmittedTransactionUncertainError } from "../lib/thru/transactions";
+import { THRU_NETWORK } from "../lib/thru/network";
 
 function notFound(): Error & { code: number } {
   const error = new Error("Account not found") as Error & { code: number };
@@ -67,6 +68,7 @@ function faucetDeploymentAccount(address: string): Account | undefined {
       meta: {
         flags: { isDeleted: false, isProgram: false },
         owner: Pubkey.from(FAUCET_PROGRAM_ADDRESS),
+        balance: FAUCET_WITHDRAW_LIMIT,
       },
     } as unknown as Account;
   }
@@ -125,7 +127,7 @@ test("account creation uses the active wallet, official v0.4.1 resources, and on
     createCalls += 1;
     capturedCreate = options;
     return {
-      chainId: 23,
+      chainId: THRU_NETWORK.expectedChainId,
       startSlot: 500n,
       sign: async (privateKey: Uint8Array) => {
         signCalls += 1;
@@ -163,9 +165,9 @@ test("account creation requires post-state account existence after finalized exe
     if (accountReads === 1) throw notFound();
     throw new Error("Post-state read failed");
   });
-  t.mock.method(thru.chain, "getChainId", async () => 24);
+  t.mock.method(thru.chain, "getChainId", async () => THRU_NETWORK.expectedChainId);
   t.mock.method(thru.accounts, "create", async () => ({
-    chainId: 24,
+    chainId: THRU_NETWORK.expectedChainId,
     startSlot: 501n,
     sign: async () => undefined,
     getSignature: () => testSignature(12),
@@ -197,9 +199,9 @@ test("a finalized read-only lookup resolves a stream that ends after execution",
     if (accountReads === 1) throw notFound();
     return foundAccount(activeAccount) as never;
   });
-  t.mock.method(thru.chain, "getChainId", async () => 27);
+  t.mock.method(thru.chain, "getChainId", async () => THRU_NETWORK.expectedChainId);
   t.mock.method(thru.accounts, "create", async () => ({
-    chainId: 27,
+    chainId: THRU_NETWORK.expectedChainId,
     startSlot: 504n,
     sign: async () => undefined,
     getSignature: () => testSignature(15),
@@ -241,9 +243,9 @@ test("exact finalized account post-state resolves unavailable signature lookup",
     if (accountReads === 1) throw notFound();
     return foundAccount(activeAccount) as never;
   });
-  t.mock.method(thru.chain, "getChainId", async () => 28);
+  t.mock.method(thru.chain, "getChainId", async () => THRU_NETWORK.expectedChainId);
   t.mock.method(thru.accounts, "create", async () => ({
-    chainId: 28,
+    chainId: THRU_NETWORK.expectedChainId,
     startSlot: 505n,
     sign: async () => undefined,
     getSignature: () => testSignature(16),
@@ -274,11 +276,11 @@ test("an uncertain submitted account creation cannot be rebroadcast automaticall
   t.mock.method(thru.accounts, "get", async () => {
     throw notFound();
   });
-  t.mock.method(thru.chain, "getChainId", async () => 25);
+  t.mock.method(thru.chain, "getChainId", async () => THRU_NETWORK.expectedChainId);
   t.mock.method(thru.accounts, "create", async () => {
     createCalls += 1;
     return {
-      chainId: 25,
+      chainId: THRU_NETWORK.expectedChainId,
       startSlot: 502n,
       sign: async () => undefined,
       getSignature: () => testSignature(13),
@@ -327,9 +329,9 @@ test("an interrupted account tracker falls back without rebroadcasting", async (
     if (accountReads === 1) throw notFound();
     return foundAccount(activeAccount) as never;
   });
-  t.mock.method(thru.chain, "getChainId", async () => 31);
+  t.mock.method(thru.chain, "getChainId", async () => THRU_NETWORK.expectedChainId);
   t.mock.method(thru.accounts, "create", async () => ({
-    chainId: 31,
+    chainId: THRU_NETWORK.expectedChainId,
     startSlot: 509n,
     sign: async () => undefined,
     getSignature: () => testSignature(19),
@@ -383,7 +385,7 @@ test("concurrent account creation calls cannot submit twice", async (t) => {
     markCreateStarted?.();
     await pendingCreate;
     return {
-      chainId: 26,
+      chainId: THRU_NETWORK.expectedChainId,
       startSlot: 503n,
       sign: async () => undefined,
       getSignature: () => testSignature(14),
@@ -493,11 +495,11 @@ test("faucet funding proceeds only after fallback-verified account creation", as
       meta: { balance: FAUCET_WITHDRAW_LIMIT },
     } as never;
   });
-  t.mock.method(thru.chain, "getChainId", async () => 29);
+  t.mock.method(thru.chain, "getChainId", async () => THRU_NETWORK.expectedChainId);
   t.mock.method(thru.accounts, "create", async () => {
     accountCreateCalls += 1;
     return {
-      chainId: 29,
+      chainId: THRU_NETWORK.expectedChainId,
       startSlot: 506n,
       sign: async () => undefined,
       getSignature: () => testSignature(17),
@@ -507,7 +509,7 @@ test("faucet funding proceeds only after fallback-verified account creation", as
   t.mock.method(thru.transactions, "build", async () => {
     faucetBuildCalls += 1;
     return {
-      chainId: 29,
+      chainId: THRU_NETWORK.expectedChainId,
       startSlot: 507n,
       sign: async () => undefined,
       getSignature: () => ({
@@ -562,7 +564,7 @@ test("faucet funding uses read-only fallback after an early tracker end", async 
   t.mock.method(thru.transactions, "build", async () => {
     faucetBuildCalls += 1;
     return {
-      chainId: 32,
+      chainId: THRU_NETWORK.expectedChainId,
       startSlot: 510n,
       sign: async () => undefined,
       getSignature: () => ({
@@ -610,9 +612,9 @@ test("faucet funding does not start while account creation remains uncertain", a
     if (deployment) return deployment;
     throw notFound();
   });
-  t.mock.method(thru.chain, "getChainId", async () => 30);
+  t.mock.method(thru.chain, "getChainId", async () => THRU_NETWORK.expectedChainId);
   t.mock.method(thru.accounts, "create", async () => ({
-    chainId: 30,
+    chainId: THRU_NETWORK.expectedChainId,
     startSlot: 508n,
     sign: async () => undefined,
     getSignature: () => testSignature(18),
@@ -657,9 +659,9 @@ test("abort after account-create submission reconciles without rebroadcast", asy
     if (accountReads === 1) throw notFound();
     return foundAccount(activeAccount) as never;
   });
-  t.mock.method(thru.chain, "getChainId", async () => 41);
+  t.mock.method(thru.chain, "getChainId", async () => THRU_NETWORK.expectedChainId);
   t.mock.method(thru.accounts, "create", async () => ({
-    chainId: 41,
+    chainId: THRU_NETWORK.expectedChainId,
     startSlot: 900n,
     sign: async () => undefined,
     getSignature: () => testSignature(41),
@@ -707,7 +709,7 @@ test("unrelated balance movement cannot override a finalized faucet failure", as
     } as never;
   });
   t.mock.method(thru.transactions, "build", async () => ({
-    chainId: 42,
+    chainId: THRU_NETWORK.expectedChainId,
     startSlot: 901n,
     sign: async () => undefined,
     getSignature: () => ({ toThruFmt: () => "test-faucet-failed-42" }),

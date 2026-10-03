@@ -11,8 +11,11 @@
  */
 
 import { Pubkey } from "@thru/sdk";
+import { networkStorageKey } from "@/lib/thru/network";
 
 export const PENDING_SETUP_STORAGE_KEY =
+  networkStorageKey("thru.tokenStudio.pendingSetups", 1);
+export const LEGACY_ALPHANET_PENDING_SETUP_STORAGE_KEY =
   "thru.tokenStudio.alphanet.pendingSetups.v1";
 
 const MAX_PENDING_SETUPS = 16;

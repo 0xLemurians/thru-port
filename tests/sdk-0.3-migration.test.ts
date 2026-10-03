@@ -40,6 +40,7 @@ import {
   TOKEN_PROGRAM_ADDRESS,
   TOKEN_TRANSACTION_RESOURCES,
 } from "../lib/token/thru-token";
+import { THRU_NETWORK } from "../lib/thru/network";
 
 interface SigningFixture {
   fixture: string;
@@ -358,7 +359,12 @@ test("fresh transaction context is validated and an abort blocks later signing",
   const validTransaction = new TransactionBuilder().build(
     transactionOptions() as Parameters<TransactionBuilder["build"]>[0],
   );
-  assert.doesNotThrow(() => assertUsableTransactionContext(validTransaction));
+  assert.doesNotThrow(() =>
+    assertUsableTransactionContext({
+      chainId: THRU_NETWORK.expectedChainId,
+      startSlot: 42n,
+    }),
+  );
   assert.throws(
     () =>
       assertUsableTransactionContext({
@@ -370,7 +376,7 @@ test("fresh transaction context is validated and an abort blocks later signing",
   assert.throws(
     () =>
       assertUsableTransactionContext({
-        chainId: 17,
+        chainId: THRU_NETWORK.expectedChainId,
         startSlot: 0n,
       }),
     /finalized slot/,
@@ -410,7 +416,7 @@ test("v0.4.1 canonical program addresses are used by every migrated path", () =>
   );
 });
 
-test("all v0.4.1 write paths use explicit non-zero resource budgets", async () => {
+test("all v0.4.1 write paths use explicit official resource budgets", async () => {
   const budgets = [
     ACCOUNT_CREATION_RESOURCES,
     TOKEN_TRANSACTION_RESOURCES,
@@ -419,12 +425,13 @@ test("all v0.4.1 write paths use explicit non-zero resource budgets", async () =
   ];
   for (const budget of budgets) {
     assert.ok(budget.computeUnits > 0);
-    assert.ok(budget.stateUnits > 0);
+    assert.ok(budget.stateUnits >= 0);
     assert.ok(budget.memoryUnits > 0);
     assert.doesNotThrow(() =>
       assertExplicitTransactionResources({ header: budget }),
     );
   }
+  assert.equal(FAUCET_TRANSACTION_RESOURCES.stateUnits, 0);
 
   let buildCalled = false;
   await assert.rejects(

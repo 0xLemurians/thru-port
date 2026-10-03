@@ -4,14 +4,14 @@ import React, { useState, useEffect, useRef } from "react";
 import type { WorkspaceStage } from "./PortHeader";
 import PortHeader from "./PortHeader";
 import PortBottomNav from "./PortBottomNav";
-import type { AlphaNetHealth } from "./useAlphaNetHealth";
+import type { NetworkHealth } from "./useNetworkHealth";
 
 interface PortShellProps {
   currentStage: WorkspaceStage;
   accountAvailable: boolean;
   publicAddress?: string | null;
   onStageChange: (stage: WorkspaceStage) => void;
-  health: AlphaNetHealth;
+  health: NetworkHealth;
   account?: import("@/lib/wallet/thru-wallet").ThruAccount | null;
   balance?: bigint | null;
   onForgetAccount?: () => void | Promise<void>;

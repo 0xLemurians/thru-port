@@ -6,7 +6,7 @@ const nextConfig = {
     const contentSecurityPolicy = [
       "default-src 'self'",
       "base-uri 'self'",
-      "connect-src 'self' https://rpc.alphanet.thru.org",
+      "connect-src 'self' https://rpc.betanet.thru.org",
       "font-src 'self' data:",
       "form-action 'self'",
       "frame-ancestors 'none'",

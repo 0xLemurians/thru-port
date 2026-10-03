@@ -1,11 +1,12 @@
 "use client";
 
 import {
-  ALPHANET_RPC_DEGRADED_MESSAGE,
-  ALPHANET_RPC_UNAVAILABLE_MESSAGE,
+  NETWORK_RPC_DEGRADED_MESSAGE,
+  NETWORK_RPC_UNAVAILABLE_MESSAGE,
 } from "@/lib/thru/name-service/constants";
 import { utf8ByteLength } from "@/lib/thru/name-service/validation";
-import type { NetworkStatus } from "../port/useAlphaNetHealth";
+import type { NetworkStatus } from "../port/useNetworkHealth";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 interface NameLookupFormProps {
   label: string;
@@ -91,12 +92,12 @@ export default function NameLookupForm({
           className="name-network-message name-network-offline"
           role="status"
         >
-          {ALPHANET_RPC_UNAVAILABLE_MESSAGE}
+          {NETWORK_RPC_UNAVAILABLE_MESSAGE}
         </p>
       )}
       {networkStatus === "Degraded" && (
         <p className="name-network-message" role="status">
-          {ALPHANET_RPC_DEGRADED_MESSAGE}
+          {NETWORK_RPC_DEGRADED_MESSAGE}
         </p>
       )}
 
@@ -106,7 +107,7 @@ export default function NameLookupForm({
           type="submit"
           disabled={actionsDisabled}
         >
-          {busy ? "Reading AlphaNet..." : "Look up name"}
+          {busy ? `Reading ${THRU_NETWORK.displayName}...` : "Look up name"}
         </button>
         <button
           className="btn btn-ghost name-lookup-action"

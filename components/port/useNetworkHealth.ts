@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AlphaNetHealthProbeSequence,
-  probeAlphaNetHealth,
+  NetworkHealthProbeSequence,
+  probeNetworkHealth,
   type NetworkStatus,
-} from "@/lib/network/alphanet-health";
+} from "@/lib/network/network-health";
 import { thru } from "@/lib/wallet/thru-wallet";
 
-export type { NetworkStatus } from "@/lib/network/alphanet-health";
+export type { NetworkStatus } from "@/lib/network/network-health";
 
-export interface AlphaNetHealth {
+export interface NetworkHealth {
   status: NetworkStatus;
   lastChecked: string | null;
   checkNow: () => void;
@@ -23,11 +23,11 @@ function getFormattedTime(): string {
   });
 }
 
-export function useAlphaNetHealth(): AlphaNetHealth {
+export function useNetworkHealth(): NetworkHealth {
   const [status, setStatus] = useState<NetworkStatus>("Checking");
   const [lastChecked, setLastChecked] = useState<string | null>(null);
   const pollingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const probeSequence = useRef(new AlphaNetHealthProbeSequence());
+  const probeSequence = useRef(new NetworkHealthProbeSequence());
 
   const performCheck = useCallback(async () => {
     const token = probeSequence.current.begin();
@@ -44,7 +44,7 @@ export function useAlphaNetHealth(): AlphaNetHealth {
       return;
     }
 
-    const nextStatus = await probeAlphaNetHealth(
+    const nextStatus = await probeNetworkHealth(
       () => thru.blocks.getBlockHeight(),
       { signal: token.signal },
     );
