@@ -75,6 +75,36 @@ test("unary submission occurs once and getStatus is polled to finalized executio
   assert.equal(statusCalls, 2);
 });
 
+test("three transient not_found status reads remain pending until CLUSTER_EXECUTED", async () => {
+  const signature = wireSignature(61);
+  let sends = 0;
+  let polls = 0;
+  let clock = 0;
+  const result = await submitSignedTransactionOnce({
+    rawTransaction: new Uint8Array([61]),
+    expectedSignature: signature,
+    timeoutMs: 9_000,
+    pollIntervalMs: 2_000,
+    now: () => clock,
+    sleep: async (delayMs) => { clock += delayMs; },
+    send: async () => { sends += 1; return signature; },
+    getStatus: async () => {
+      polls += 1;
+      if (polls <= 3) throw new Error("[not_found] transaction not found");
+      return statusSnapshot(61, ConsensusStatus.CLUSTER_EXECUTED);
+    },
+  });
+  assert.equal(sends, 1);
+  assert.equal(polls, 4);
+  assert.equal(clock, 6_000);
+  assert.deepEqual(result, {
+    signature,
+    executionSucceeded: true,
+    finalized: true,
+    statusTimedOut: false,
+  });
+});
+
 test("unary submission signature mismatch fails closed without status polling", async () => {
   const expectedSignature = wireSignature(52);
   let sendCalls = 0;

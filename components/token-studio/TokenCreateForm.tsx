@@ -1,10 +1,11 @@
-import { useMemo, useRef, useState, useEffect } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import { formatRawAmount } from "@thru/programs/token";
 import {
   createTokenOnBetanet,
   type CreateTokenResult,
 } from "@/lib/token/thru-token";
 import {
+  tokenCreationStepState,
   type TokenCreationProgress,
 } from "@/lib/token/workflow";
 import {
@@ -33,6 +34,32 @@ interface TokenCreateFormProps {
   onBusyChange: (busy: boolean) => void;
   onSuccess: (result: CreateTokenResult) => void;
   networkStatus?: NetworkStatus;
+}
+
+const CREATION_STEPS = [
+  { key: "mint", label: "Creating mint", stageIndex: 1 },
+  { key: "tokenAccount", label: "Creating token account", stageIndex: 2 },
+  { key: "initialSupply", label: "Minting initial supply", stageIndex: 3 },
+  { key: "verify", label: "Verifying on-chain state", stageIndex: 4 },
+] as const;
+
+/** The same progress markup is exercised by deterministic UI render tests. */
+export function TokenCreationProgressSteps({ progress }: { progress: TokenCreationProgress }) {
+  return (
+    <ol className="token-progress" aria-label="Token creation progress">
+      {CREATION_STEPS.map((step) => {
+        const state = tokenCreationStepState(progress, step.stageIndex);
+        return (
+          <li key={step.key} className={`token-progress-item token-progress-${state}`}>
+            <span className="token-progress-node" aria-hidden="true">
+              {state === "done" ? "✓" : step.stageIndex}
+            </span>
+            <span>{step.label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 export default function TokenCreateForm({
@@ -193,23 +220,6 @@ export default function TokenCreateForm({
     );
   }
 
-  const creationSteps = [
-    { key: "mint", label: "Creating mint", stageIndex: 1 },
-    { key: "tokenAccount", label: "Creating token account", stageIndex: 2 },
-    { key: "initialSupply", label: "Minting initial supply", stageIndex: 3 },
-    { key: "verify", label: "Verifying on-chain state", stageIndex: 4 },
-  ];
-
-  let currentStep = 0;
-  if (progress) {
-    if (progress.stage === "completed") currentStep = 5;
-    else if (progress.stage === "failed" || progress.stage === "uncertain") currentStep = 5;
-    else if (progress.stage === "creating-mint" || progress.stage === "waiting-mint-finalization") currentStep = 1;
-    else if (progress.stage === "creating-token-account" || progress.stage === "waiting-account-finalization") currentStep = 2;
-    else if (progress.stage === "minting-initial-supply") currentStep = 3;
-    else if (progress.stage === "verifying-on-chain-state") currentStep = 4;
-  }
-
   return (
     <div className="token-section">
       <div className="token-section-header">
@@ -332,25 +342,18 @@ export default function TokenCreateForm({
 
       {progress && (
         <div className="simplified-progress" style={{ marginTop: "2rem" }}>
-          <ol className="token-progress">
-            {creationSteps.map((step) => {
-              const state = currentStep > step.stageIndex ? "done" : currentStep === step.stageIndex ? "active" : "pending";
-              return (
-                <li key={step.key} className={`token-progress-item token-progress-${state}`}>
-                  <span className="token-progress-node">{state === "done" ? "✓" : step.stageIndex}</span>
-                  <span>{step.label}</span>
-                </li>
-              );
-            })}
-          </ol>
+          <TokenCreationProgressSteps progress={progress} />
 
-          {((error && !networkActionsDisabled) || Object.keys(signatures).length > 0) && (
+          {error && (
+            <p className="error token-error" role="alert">
+              {error}
+            </p>
+          )}
+
+          {Object.keys(signatures).length > 0 && (
             <details className="technical-details" style={{ marginTop: "1rem" }}>
               <summary>Technical details</summary>
               <div className="technical-details-content">
-                {error && !networkActionsDisabled && (
-                  <p className="error token-error">{error}</p>
-                )}
                 {Object.entries(signatures).map(([key, sig]) => (
                   <div key={key}>
                     <span>{key}: </span>

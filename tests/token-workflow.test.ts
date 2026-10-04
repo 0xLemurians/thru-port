@@ -1,14 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { TokenCreationProgressSteps } from "../components/token-studio/TokenCreateForm";
 import {
   runTokenCreationWorkflow,
   runTokenMutationWorkflow,
+  tokenCreationStepState,
   TokenCreationWorkflowError,
   TokenMutationWorkflowError,
   type TokenCreationOperations,
   type TokenCreationProgress,
   type TokenMutationProgress,
 } from "../lib/token/workflow";
+
+test("failed token creation does not render unfinished steps as green checks", () => {
+  const progress: TokenCreationProgress = {
+    stage: "failed",
+    failedAt: "creating-token-account",
+    error: "The token account could not be created.",
+  };
+  const html = renderToStaticMarkup(createElement(TokenCreationProgressSteps, { progress }));
+  assert.equal(tokenCreationStepState(progress, 1), "done");
+  assert.equal(tokenCreationStepState(progress, 2), "failed");
+  assert.equal((html.match(/token-progress-done/g) ?? []).length, 1);
+  assert.equal((html.match(/token-progress-failed/g) ?? []).length, 1);
+  assert.equal((html.match(/token-progress-pending/g) ?? []).length, 2);
+});
+
+test("uncertain mint submission leaves all later UI steps pending", () => {
+  const progress: TokenCreationProgress = {
+    stage: "uncertain",
+    uncertainAt: "waiting-mint-finalization",
+    signature: "public-test-signature",
+  };
+  const html = renderToStaticMarkup(createElement(TokenCreationProgressSteps, { progress }));
+  assert.equal((html.match(/token-progress-done/g) ?? []).length, 0);
+  assert.equal((html.match(/token-progress-uncertain/g) ?? []).length, 1);
+  assert.equal((html.match(/token-progress-pending/g) ?? []).length, 3);
+  assert.doesNotMatch(html, /✓/);
+});
 import {
   SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
   TransactionStatusUncertainError,

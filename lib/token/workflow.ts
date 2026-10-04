@@ -50,6 +50,29 @@ export interface TokenCreationProgress {
   expectedStateObserved?: boolean;
 }
 
+/** Keep incomplete steps unconfirmed when a token workflow stops. */
+export function tokenCreationStepState(
+  progress: TokenCreationProgress,
+  stepIndex: number,
+): "done" | "active" | "pending" | "failed" | "uncertain" {
+  const stage = progress.stage === "failed"
+    ? progress.failedAt ?? "validating"
+    : progress.stage === "uncertain"
+      ? progress.uncertainAt ?? "validating"
+      : progress.stage;
+  const currentStep =
+    stage === "completed" ? 5
+      : stage === "creating-mint" || stage === "waiting-mint-finalization" ? 1
+        : stage === "creating-token-account" || stage === "waiting-account-finalization" ? 2
+          : stage === "minting-initial-supply" ? 3
+            : stage === "verifying-on-chain-state" ? 4 : 0;
+  if (stepIndex < currentStep) return "done";
+  if (stepIndex > currentStep) return "pending";
+  if (progress.stage === "failed") return "failed";
+  if (progress.stage === "uncertain") return "uncertain";
+  return "active";
+}
+
 type SubmittedCallback = (signature: string) => void;
 
 export interface TokenCreationOperations {

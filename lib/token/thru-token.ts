@@ -11,7 +11,6 @@ import {
 } from "@thru/sdk";
 import { StateProofType } from "@thru/sdk/proto";
 import { BOOTSTRAP_PROGRAM_ADDRESSES } from "@thru/programs/bootstrap-addresses";
-import { programResources } from "@thru/programs/resources";
 import {
   createInitializeAccountInstruction,
   createInitializeMintInstruction,
@@ -36,6 +35,7 @@ import {
   buildTransactionForSigning,
   signTransactionForSubmission,
   SubmittedTransactionUncertainError,
+  submitSignedTransactionOnce,
   verifySubmittedTransaction,
 } from "@/lib/thru/transactions";
 import { THRU_NETWORK } from "@/lib/thru/network";
@@ -61,11 +61,17 @@ import {
   type TokenResumeProgress,
   type TokenResumeStage,
 } from "./resume";
-import type { PendingTokenSetup } from "./pending-setup";
+import {
+  loadPendingSetups,
+  pendingSetupsForWallet,
+  type PendingTokenSetup,
+} from "./pending-setup";
 import {
   PENDING_TOKEN_OPERATION_SCHEMA_VERSION,
   canonicalTokenOperationKey,
   clearPendingTokenOperation,
+  loadPendingTokenOperations,
+  pendingTokenOperationStorage,
   persistPendingTokenOperation,
   reconcilePendingTokenOperationJournal,
   type PendingTokenExpectedState,
@@ -94,13 +100,31 @@ import {
 } from "./transaction-status";
 
 export const TOKEN_PROGRAM_ADDRESS = BOOTSTRAP_PROGRAM_ADDRESSES.token;
-export const TOKEN_TRANSACTION_RESOURCES = Object.freeze(
-  programResources({ stateUnits: 10_000 }),
-);
+// Token instructions use the Betanet Token Program budget, not the much larger
+// budget intended for deploying a program. Account-creating instructions add
+// one state unit and use the slot of their fresh creation proof.
+export const TOKEN_TRANSACTION_RESOURCES = Object.freeze({
+  fee: 0n,
+  expiryAfter: 100,
+  computeUnits: 300_000,
+  stateUnits: 0,
+  memoryUnits: 10_000,
+});
+
+export function tokenCreationHeader(proofSlot: bigint) {
+  if (typeof proofSlot !== "bigint" || proofSlot <= 0n) {
+    throw new Error("The token creation proof slot is unavailable.");
+  }
+  return {
+    ...TOKEN_TRANSACTION_RESOURCES,
+    startSlot: proofSlot,
+    stateUnits: 1,
+  };
+}
 export const STALE_TOKEN_REFERENCE_MESSAGE =
   "The saved token is unavailable or belongs to another network or program deployment.";
 
-const FINALIZATION_TIMEOUT_MS = 60_000;
+const FINALIZATION_TIMEOUT_MS = 90_000;
 const REFRESH_ATTEMPTS = 7;
 const TOKEN_ACCOUNT_DEFAULT_SEED = new Uint8Array(32);
 const ACTIVE_TOKEN_OPERATIONS = new Set<string>();
@@ -174,7 +198,53 @@ function clearVerifiedPendingOperation(key: string, walletAddress: string): void
   }
 }
 
-async function reconcilePendingOperation<TResult>(input: {
+/** @internal Reconciles public records before allowing another random mint seed. */
+export async function reconcilePreviousTokenCreationBeforeNew(
+  walletAddress: string,
+  timeoutMs: number,
+): Promise<void> {
+  const storage = pendingTokenOperationStorage();
+  const previous = loadPendingTokenOperations(storage).filter(
+    (record) => record.walletAddress === walletAddress && (
+      record.operationType === "create-mint" ||
+      record.operationType === "create-token-account" ||
+      record.operationType === "initial-supply"
+    ),
+  );
+  for (const record of previous) {
+    // This path is read-only. Resume token setup owns any subsequent writes.
+    await reconcilePendingOperation({
+      base: {
+        key: record.key,
+        operationType: record.operationType,
+        walletAddress: record.walletAddress,
+        mintAddress: record.mintAddress,
+        expectedPostState: record.expectedPostState,
+      },
+      timeoutMs,
+      verifyExpectedState: (current) =>
+        matchesPendingTokenRecord(current, "finalized"),
+      buildResult: async () => undefined,
+      retainOnSuccess: true,
+    });
+  }
+  const submittedSetup = pendingSetupsForWallet(
+    loadPendingSetups(storage),
+    walletAddress,
+  ).some((setup) =>
+    setup.mintSignature ||
+    setup.tokenAccountSignature ||
+    setup.initialSupplySignature,
+  );
+  if (previous.length > 0 || submittedSetup) {
+    throw new Error(
+      "A previous token setup has submitted transactions. Resume and verify that setup before creating another token.",
+    );
+  }
+}
+
+/** @internal Exact-signature, read-only journal reconciliation. */
+export async function reconcilePendingOperation<TResult>(input: {
   base: PendingOperationBase;
   verifyExpectedState: (record: PendingTokenOperationRecord) => Promise<boolean>;
   buildResult: (
@@ -182,12 +252,42 @@ async function reconcilePendingOperation<TResult>(input: {
     record: PendingTokenOperationRecord,
   ) => Promise<TResult>;
   timeoutMs: number;
+  retainOnSuccess?: boolean;
 }): Promise<{ outcome: "none" | "failure" } | { outcome: "success"; result: TResult }> {
   const reconciled = await reconcilePendingTokenOperationJournal({
     key: input.base.key,
     walletAddress: input.base.walletAddress,
     retainOnSuccess: true,
     verify: async (record) => {
+      // A previously submitted operation may be CLUSTER_EXECUTED while its
+      // exact point-account reads still say INCLUDED on Betanet. Only the
+      // matching transaction status can authorize that provisional read.
+      try {
+        const status = await thru.transactions.getStatus(record.signature);
+        if (Signature.from(status.signature).toThruFmt() !== record.signature) {
+          return "uncertain";
+        }
+        if (status.executionResult && (
+          status.executionResult.vmError !== 0 ||
+          status.executionResult.userErrorCode !== 0n ||
+          (status.executionResult.executionResult !== undefined &&
+            status.executionResult.executionResult !== 0n)
+        )) {
+          return "failure";
+        }
+        if (
+          status.executionResult &&
+          (status.statusCode === ConsensusStatus.CLUSTER_EXECUTED ||
+            status.statusCode === ConsensusStatus.FINALIZED)
+        ) {
+          return (await matchesPendingTokenRecord(record, "readable"))
+            ? "success"
+            : "uncertain";
+        }
+      } catch {
+        // A missing or temporarily unavailable status is not a failed
+        // transaction. Continue with the stricter finalized-only fallback.
+      }
       try {
         const verification = await verifySubmittedTransaction({
           signature: record.signature,
@@ -217,8 +317,46 @@ async function reconcilePendingOperation<TResult>(input: {
     reconciled.record.signature,
     reconciled.record,
   );
-  clearVerifiedPendingOperation(input.base.key, input.base.walletAddress);
+  if (!input.retainOnSuccess) {
+    clearVerifiedPendingOperation(input.base.key, input.base.walletAddress);
+  }
   return { outcome: "success", result };
+}
+
+async function matchesPendingTokenRecord(
+  record: PendingTokenOperationRecord,
+  policy: "readable" | "finalized",
+): Promise<boolean> {
+  const mintRead = policy === "readable" ? getReadableMint : getVerifiedMint;
+  const accountRead = policy === "readable"
+    ? getReadableTokenAccount
+    : getVerifiedTokenAccount;
+  if (record.operationType === "create-mint") {
+    return matchesPendingMintOnlyState(record, await mintRead(record.mintAddress));
+  }
+  if (record.operationType === "create-token-account" ||
+      record.operationType === "destination-account") {
+    if (!record.destinationTokenAccount) return false;
+    return matchesPendingTokenAccountOnlyState(
+      record,
+      await accountRead(record.destinationTokenAccount),
+    );
+  }
+  if (!record.destinationTokenAccount) return false;
+  if (record.operationType === "transfer") {
+    if (!record.sourceTokenAccount) return false;
+    const [mint, source, destination] = await Promise.all([
+      mintRead(record.mintAddress),
+      accountRead(record.sourceTokenAccount),
+      accountRead(record.destinationTokenAccount),
+    ]);
+    return matchesPendingTransferState(record, mint, source, destination);
+  }
+  const [mint, destination] = await Promise.all([
+    mintRead(record.mintAddress),
+    accountRead(record.destinationTokenAccount),
+  ]);
+  return matchesPendingMintDestinationState(record, mint, destination);
 }
 
 function expectedRaw(value: string | undefined): bigint | null {
@@ -622,6 +760,8 @@ export async function createTokenOnBetanet(
         signal?.throwIfAborted();
         const validated = validateTokenInput(input);
         await assertActiveWalletExists(account.address, signal);
+        await reconcilePreviousTokenCreationBeforeNew(account.address, timeoutMs);
+        signal?.throwIfAborted();
 
         const mintSeedHex = randomSeedHex();
         const mint = deriveMintAddress(
@@ -682,7 +822,9 @@ export async function createTokenOnBetanet(
               matchesPendingMintOnlyState(record, mint),
             ),
           buildResult: async (signature, record) => {
-            current.verifiedMint = await getVerifiedMint(record.mintAddress);
+            // The journal's exact transaction was authoritatively verified;
+            // Betanet may still return INCLUDED for its point-account read.
+            current.verifiedMint = await getReadableMint(record.mintAddress);
             if (!matchesPendingMintOnlyState(record, current.verifiedMint)) {
               throw new TransactionStatusUncertainError(signature, false);
             }
@@ -706,7 +848,7 @@ export async function createTokenOnBetanet(
           accounts: {
             readWrite: [current.mint.address],
           },
-          header: { ...TOKEN_TRANSACTION_RESOURCES },
+          header: tokenCreationHeader(stateProof.slot),
           instructionData: createInitializeMintInstruction({
             mintAccountBytes: current.mint.bytes,
             decimals: current.validated.decimals,
@@ -764,6 +906,7 @@ export async function createTokenOnBetanet(
               !mint.hasFreezeAuthority,
           undefined,
           "The finalized mint state did not match the requested configuration.",
+          signature,
         );
 
         clearVerifiedPendingOperation(operationKey, account.address);
@@ -804,7 +947,7 @@ export async function createTokenOnBetanet(
                 matchesPendingTokenAccountOnlyState(record, tokenAccount),
             ),
           buildResult: async (signature, record) => {
-            current.verifiedTokenAccount = await getVerifiedTokenAccount(
+            current.verifiedTokenAccount = await getReadableTokenAccount(
               record.destinationTokenAccount!,
             );
             if (
@@ -837,7 +980,7 @@ export async function createTokenOnBetanet(
             readWrite: [current.tokenAccount.address],
             readOnly: [current.mint.address],
           },
-          header: { ...TOKEN_TRANSACTION_RESOURCES },
+          header: tokenCreationHeader(stateProof.slot),
           instructionData: createInitializeAccountInstruction({
             tokenAccountBytes: current.tokenAccount.bytes,
             mintAccountBytes: current.mint.bytes,
@@ -887,6 +1030,7 @@ export async function createTokenOnBetanet(
             !tokenAccount.isFrozen,
           undefined,
           "The finalized token account state did not match its mint and owner.",
+          signature,
         );
 
         clearVerifiedPendingOperation(operationKey, account.address);
@@ -938,8 +1082,8 @@ export async function createTokenOnBetanet(
           buildResult: async (signature, record) => {
             [current.verifiedMint, current.verifiedTokenAccount] =
               await Promise.all([
-                getVerifiedMint(record.mintAddress),
-                getVerifiedTokenAccount(record.destinationTokenAccount!),
+                getReadableMint(record.mintAddress),
+                getReadableTokenAccount(record.destinationTokenAccount!),
               ]);
             if (
               !matchesPendingMintDestinationState(
@@ -1016,7 +1160,6 @@ export async function createTokenOnBetanet(
             },
           },
         );
-        clearVerifiedPendingOperation(operationKey, account.address);
         return { signature };
       },
 
@@ -1036,6 +1179,7 @@ export async function createTokenOnBetanet(
               !mint.hasFreezeAuthority,
             submissionOccurred ? undefined : signal,
             "Mint supply or authority did not match after finalization.",
+            pendingSignatures.initialSupplySignature,
           ),
           waitForTokenAccountState(
             current.tokenAccount.address,
@@ -1046,10 +1190,22 @@ export async function createTokenOnBetanet(
               !tokenAccount.isFrozen,
             submissionOccurred ? undefined : signal,
             "Token account balance did not match the initial supply.",
+            pendingSignatures.initialSupplySignature,
           ),
         ]);
         current.verifiedMint = verifiedMint;
         current.verifiedTokenAccount = verifiedTokenAccount;
+        clearVerifiedPendingOperation(
+          canonicalTokenOperationKey({
+            operationType: "initial-supply",
+            walletAddress: account.address,
+            mintAddress: current.mint.address,
+            destinationTokenAccount: current.tokenAccount.address,
+            recipientAddress: account.address,
+            amountRaw: current.validated.initialSupplyRaw,
+          }),
+          account.address,
+        );
       },
     },
     onProgress,
@@ -1388,17 +1544,16 @@ export async function resumeTokenSetupOnBetanet(
           matchesPendingMintOnlyState(record, nextMint),
         ),
       buildResult: async (signature, record) => {
-        const nextMint = await getVerifiedMint(record.mintAddress);
+        const nextMint = await getReadableMint(record.mintAddress);
         if (!matchesPendingMintOnlyState(record, nextMint)) {
           throw new TransactionStatusUncertainError(signature, false);
         }
         return nextMint;
       },
     });
-    if (createMintReconciliation.outcome === "success") {
-      mint = createMintReconciliation.result;
-    }
-    mint = await getVerifiedMint(mintAddress);
+    mint = createMintReconciliation.outcome === "success"
+      ? createMintReconciliation.result
+      : await getVerifiedMint(mintAddress);
     initialSupplyRaw = decimalAmountToRaw(
       input.initialSupply,
       mint.decimals,
@@ -1445,7 +1600,7 @@ export async function resumeTokenSetupOnBetanet(
             matchesPendingTokenAccountOnlyState(record, nextTokenAccount),
         ),
       buildResult: async (signature, record) => {
-        const nextTokenAccount = await getVerifiedTokenAccount(
+        const nextTokenAccount = await getReadableTokenAccount(
           record.destinationTokenAccount!,
         );
         if (!matchesPendingTokenAccountOnlyState(record, nextTokenAccount)) {
@@ -1497,7 +1652,7 @@ export async function resumeTokenSetupOnBetanet(
             readWrite: [tokenAccountAddress],
             readOnly: [mintAddress],
           },
-          header: { ...TOKEN_TRANSACTION_RESOURCES },
+          header: tokenCreationHeader(stateProof.slot),
           instructionData: createInitializeAccountInstruction({
             tokenAccountBytes: derivedTokenAccount.bytes,
             mintAccountBytes: Pubkey.from(mintAddress).toBytes(),
@@ -1545,6 +1700,7 @@ export async function resumeTokenSetupOnBetanet(
             !state.isFrozen,
           signal,
           "The resumed token account did not match its mint and owner.",
+          tokenAccountSignature,
         );
         clearVerifiedPendingOperation(
           tokenAccountOperationKey,
@@ -1554,7 +1710,7 @@ export async function resumeTokenSetupOnBetanet(
       }
     }
 
-    mint = await getVerifiedMint(mintAddress);
+    mint = await getReadableMint(mintAddress);
     tokenAccount =
       tokenAccount ?? (await getVerifiedTokenAccount(tokenAccountAddress));
     const rawInitialSupply = requireValue(initialSupplyRaw, "Initial supply");
@@ -1597,8 +1753,8 @@ export async function resumeTokenSetupOnBetanet(
       },
       buildResult: async (signature, record) => {
         const [nextMint, nextTokenAccount] = await Promise.all([
-          getVerifiedMint(record.mintAddress),
-          getVerifiedTokenAccount(record.destinationTokenAccount!),
+          getReadableMint(record.mintAddress),
+          getReadableTokenAccount(record.destinationTokenAccount!),
         ]);
         if (
           !matchesPendingMintDestinationState(
@@ -1689,8 +1845,8 @@ export async function resumeTokenSetupOnBetanet(
       const verified = await waitForParsedState(
         async () => {
           const [nextMint, nextTokenAccount] = await Promise.all([
-            getVerifiedMint(mintAddress),
-            getVerifiedTokenAccount(tokenAccountAddress),
+            getReadableMint(mintAddress),
+            getReadableTokenAccount(tokenAccountAddress),
           ]);
           return { mint: nextMint, tokenAccount: nextTokenAccount };
         },
@@ -1706,6 +1862,7 @@ export async function resumeTokenSetupOnBetanet(
           ),
         signal,
         "Mint supply or token balance did not reflect the resumed initial supply.",
+        initialSupplySignature,
       );
       verifyMintToDeltas({
         amount: rawAmount,
@@ -1725,8 +1882,10 @@ export async function resumeTokenSetupOnBetanet(
 
     progress("verifying-on-chain-state");
     [mint, tokenAccount] = await Promise.all([
-      getVerifiedMint(mintAddress),
-      getVerifiedTokenAccount(tokenAccountAddress),
+      initialSupplyMinted ? getReadableMint(mintAddress) : getVerifiedMint(mintAddress),
+      initialSupplyMinted
+        ? getReadableTokenAccount(tokenAccountAddress)
+        : getVerifiedTokenAccount(tokenAccountAddress),
     ]);
     planTokenSetupResume({
       mintAddress,
@@ -1839,7 +1998,7 @@ export async function createDestinationTokenAccountOnBetanet(
                 matchesPendingTokenAccountOnlyState(record, tokenAccount),
             ),
           buildResult: async (signature, record) => {
-            const tokenAccount = await getVerifiedTokenAccount(
+            const tokenAccount = await getReadableTokenAccount(
               record.destinationTokenAccount!,
             );
             if (!matchesPendingTokenAccountOnlyState(record, tokenAccount)) {
@@ -1884,7 +2043,7 @@ export async function createDestinationTokenAccountOnBetanet(
                 preview.destinationOwnerAddress,
               ],
             },
-            header: { ...TOKEN_TRANSACTION_RESOURCES },
+            header: tokenCreationHeader(stateProof.slot),
             instructionData: createInitializeAccountInstruction(
               buildDestinationInitializeAccountArgs({
                 preview,
@@ -1909,8 +2068,6 @@ export async function createDestinationTokenAccountOnBetanet(
             timeoutMs,
             signal,
             {
-              isRequiredConsensus: (status) =>
-                status === ConsensusStatus.CLUSTER_EXECUTED,
               onFinalConsensus: () => {
                 progress("verifying-execution", {
                   signature: activeSignature,
@@ -1942,6 +2099,7 @@ export async function createDestinationTokenAccountOnBetanet(
               !tokenAccount.isFrozen,
             activeSignature ? undefined : signal,
             "The created destination token account did not match its mint, owner, zero balance, or frozen state.",
+            activeSignature,
           );
         },
       },
@@ -2061,8 +2219,8 @@ export async function mintAdditionalSupplyOnBetanet(
         },
         buildResult: async (signature, record) => {
           const [mint, destination] = await Promise.all([
-            getVerifiedMint(record.mintAddress),
-            getVerifiedTokenAccount(record.destinationTokenAccount!),
+            getReadableMint(record.mintAddress),
+            getReadableTokenAccount(record.destinationTokenAccount!),
           ]);
           if (!matchesPendingMintDestinationState(record, mint, destination)) {
             throw new TransactionStatusUncertainError(signature, false);
@@ -2162,8 +2320,8 @@ export async function mintAdditionalSupplyOnBetanet(
         const verified = await waitForParsedState(
           async () => {
             const [nextMint, nextDestination] = await Promise.all([
-              getVerifiedMint(mintAddress),
-              getVerifiedTokenAccount(destinationAddress),
+              getReadableMint(mintAddress),
+              getReadableTokenAccount(destinationAddress),
             ]);
             return { mint: nextMint, destination: nextDestination };
           },
@@ -2179,6 +2337,7 @@ export async function mintAdditionalSupplyOnBetanet(
             ),
           activeSignature ? undefined : signal,
           "Mint supply or destination balance did not reflect the additional supply.",
+          activeSignature,
         );
         verifyMintToDeltas({
           amount: rawAmount,
@@ -2307,9 +2466,9 @@ export async function transferTokensOnBetanet(
         },
         buildResult: async (signature, record) => {
           const [mint, source, destination] = await Promise.all([
-            getVerifiedMint(record.mintAddress),
-            getVerifiedTokenAccount(record.sourceTokenAccount!),
-            getVerifiedTokenAccount(record.destinationTokenAccount!),
+            getReadableMint(record.mintAddress),
+            getReadableTokenAccount(record.sourceTokenAccount!),
+            getReadableTokenAccount(record.destinationTokenAccount!),
           ]);
           if (!matchesPendingTransferState(record, mint, source, destination)) {
             throw new TransactionStatusUncertainError(signature, false);
@@ -2419,9 +2578,9 @@ export async function transferTokensOnBetanet(
         const verified = await waitForParsedState(
           async () => {
             const [nextMint, nextSource, nextDestination] = await Promise.all([
-              getVerifiedMint(mintAddress),
-              getVerifiedTokenAccount(sourceAddress),
-              getVerifiedTokenAccount(destinationAddress),
+              getReadableMint(mintAddress),
+              getReadableTokenAccount(sourceAddress),
+              getReadableTokenAccount(destinationAddress),
             ]);
             return {
               mint: nextMint,
@@ -2443,6 +2602,7 @@ export async function transferTokensOnBetanet(
             ),
           activeSignature ? undefined : signal,
           "Transfer balances or mint supply did not match the submitted amount.",
+          activeSignature,
         );
         verifyTransferDeltas({
           amount: rawAmount,
@@ -2497,7 +2657,9 @@ async function assertActiveWalletExists(
   signal?.throwIfAborted();
   try {
     const wallet = await thru.accounts.get(address);
-    assertFinalizedAccount(wallet);
+    // Eligibility read only: INCLUDED is usable, but never proves a submitted
+    // token transaction succeeded.
+    accountReadFinality(wallet);
     if (wallet.meta?.flags.isDeleted) {
       throw new Error(
         `The active wallet account is deleted on ${THRU_NETWORK.displayName}.`,
@@ -2525,115 +2687,56 @@ async function assertAccountDoesNotExist(address: string): Promise<void> {
   );
 }
 
-async function submitAndRequireFinalizedExecution(
+/** @internal Token submission boundary; never retries the signed wire. */
+export async function submitAndRequireFinalizedExecution(
   transaction: Transaction,
   onSubmitted: (signature: string) => void,
   timeoutMs: number,
   signal?: AbortSignal,
   tracking: {
-    isRequiredConsensus?: (status: number) => boolean;
     onFinalConsensus?: () => void;
     verifyExpectedState?: () => Promise<boolean>;
   } = {},
 ): Promise<string> {
-  const {
-    isRequiredConsensus = isFinalConsensus,
-    onFinalConsensus,
-    verifyExpectedState,
-  } = tracking;
-  let signature = transaction.getSignature()?.toThruFmt() ?? "";
-  let submittedNotified = false;
-  let submissionStarted = false;
-  let finalized = false;
-  let executionSucceeded = false;
-  let finalConsensusNotified = false;
-  let definitiveTrackingFailure = false;
-  let latestExecution:
-    | {
-        vmError: number;
-        userErrorCode: bigint;
-        executionResult?: bigint;
-        errorProgramAccIdx?: number;
-      }
-    | undefined;
-
-  const verifyCompletedExecution = (): boolean => {
-    if (!finalized || !latestExecution) return false;
-    if (!finalConsensusNotified) {
-      finalConsensusNotified = true;
-      onFinalConsensus?.();
-    }
-    executionSucceeded = assertExecutionSucceeded(latestExecution);
-    return executionSucceeded;
-  };
-
+  const { onFinalConsensus, verifyExpectedState } = tracking;
   signal?.throwIfAborted();
+  const signature = transaction.getSignature()?.toThruFmt() ?? "";
+  if (!signature) throw new Error("The signed token transaction has no signature.");
   const wire = transaction.toWire();
-  if (signature && !submittedNotified) {
-    // Persist the public pending-operation record before transport begins.
-    // A storage failure therefore fails closed with no network submission.
-    onSubmitted(signature);
-    submittedNotified = true;
-  }
+  // Persist public recovery metadata before transport. A storage failure
+  // fails closed; after this point cancellation cannot prove non-submission.
+  onSubmitted(signature);
+  let statusResult: Awaited<ReturnType<typeof submitSignedTransactionOnce>>;
   try {
-    submissionStarted = true;
-    for await (const update of thru.transactions.sendAndTrack(
-      wire,
-      { timeoutMs, signal },
-    )) {
-      if (update.signature?.value) {
-        const trackedSignature = Signature.from(
-          update.signature.value,
-        ).toThruFmt();
-        if (signature && trackedSignature !== signature) {
-          definitiveTrackingFailure = true;
-          throw new Error(
-            "The tracked token transaction signature does not match.",
-          );
-        }
-        signature = trackedSignature;
-        if (!submittedNotified) {
-          submittedNotified = true;
-          onSubmitted(signature);
-        }
-      }
-
-      if (update.executionResult) {
-        latestExecution = update.executionResult;
-      }
-
-      if (isRequiredConsensus(update.consensusStatus)) {
-        finalized = true;
-      }
-
-      verifyCompletedExecution();
-      if (signature && finalized && executionSucceeded) {
-        if (!submittedNotified) {
-          submittedNotified = true;
-          onSubmitted(signature);
-        }
-        return signature;
-      }
-    }
+    statusResult = await submitSignedTransactionOnce({
+      rawTransaction: wire,
+      expectedSignature: signature,
+      timeoutMs,
+      signal,
+    });
   } catch (error) {
-    if (!submissionStarted || definitiveTrackingFailure || !signature) {
-      throw error;
+    if (error instanceof SubmittedTransactionUncertainError) {
+      throw new TransactionStatusUncertainError(error.signature, false);
     }
+    throw error;
   }
-
-  if (!signature) {
-    throw new Error("The transaction ended without a signature.");
+  if (statusResult.failure) {
+    throw new TokenTransactionExecutionError(
+      statusResult.failure.vmError,
+      statusResult.failure.userErrorCode,
+    );
   }
-
+  if (statusResult.finalized && statusResult.executionSucceeded) {
+    onFinalConsensus?.();
+    return signature;
+  }
+  // The unary status endpoint may lag or omit execution details. Reconcile
+  // read-only by the original signature and exact expected state, never send.
   try {
     const verification = await verifySubmittedTransaction({
       signature,
       verifyExpectedState,
       classifyExpectedStateError: classifyTokenPostStateError,
-      // Once sendAndTrack has started, UI cancellation cannot unsend the
-      // transaction. Finish bounded read-only reconciliation independently
-      // so an unmount cannot turn a submitted operation into a safe retry.
-      signal: submissionStarted ? undefined : signal,
       timeoutMs: Math.min(
         timeoutMs,
         TRANSACTION_VISIBILITY_TIMEOUT_MS,
@@ -2653,15 +2756,18 @@ async function submitAndRequireFinalizedExecution(
     }
     throw error;
   }
-  if (!submittedNotified) {
-    submittedNotified = true;
-    onSubmitted(signature);
-  }
-  if (!finalConsensusNotified) {
-    finalConsensusNotified = true;
-    onFinalConsensus?.();
-  }
+  onFinalConsensus?.();
   return signature;
+}
+
+export class TokenTransactionExecutionError extends Error {
+  constructor(
+    readonly vmError: number,
+    readonly userErrorCode: bigint,
+  ) {
+    super("Token transaction execution failed.");
+    this.name = "TokenTransactionExecutionError";
+  }
 }
 
 function classifyTokenPostStateError(
@@ -2677,34 +2783,6 @@ function classifyTokenPostStateError(
   )
     ? "pending"
     : "failure";
-}
-
-function isFinalConsensus(status: number): boolean {
-  return (
-    status === ConsensusStatus.FINALIZED ||
-    status === ConsensusStatus.CLUSTER_EXECUTED
-  );
-}
-
-function assertExecutionSucceeded(result: {
-  vmError: number;
-  userErrorCode: bigint;
-  executionResult?: bigint;
-  errorProgramAccIdx?: number;
-}): boolean {
-  if (
-    result.vmError !== 0 ||
-    result.userErrorCode !== 0n ||
-    (result.executionResult !== undefined && result.executionResult !== 0n)
-  ) {
-    throw new Error(
-      `Token transaction execution failed (vmError: ${result.vmError}, ` +
-        `userErrorCode: ${result.userErrorCode.toString()}, ` +
-        `executionResult: ${result.executionResult?.toString() ?? "missing"}, ` +
-        `errorProgramAccIdx: ${result.errorProgramAccIdx ?? "unknown"}).`,
-    );
-  }
-  return result.executionResult === 0n;
 }
 
 async function getVerifiedMint(address: string): Promise<MintAccountInfo> {
@@ -2775,6 +2853,9 @@ async function getTokenProgramAccount(
   policy: "readable" | "finalized",
 ): Promise<Account> {
   const account = await thru.accounts.get(address);
+  if (account.address?.toThruFmt() !== address) {
+    throw new Error("The returned token account address did not match the requested address.");
+  }
   if (policy === "finalized") {
     assertFinalizedAccount(account);
   } else {
@@ -2914,12 +2995,15 @@ async function waitForMintState(
   matches: (mint: MintAccountInfo) => boolean,
   signal: AbortSignal | undefined,
   mismatchMessage: string,
+  submittedSignature?: string,
 ): Promise<MintAccountInfo> {
   return waitForParsedState(
-    () => getVerifiedMint(address),
+    // All callers reach this poll only after exact transaction verification.
+    () => getReadableMint(address),
     matches,
     signal,
     mismatchMessage,
+    submittedSignature,
   );
 }
 
@@ -2928,12 +3012,16 @@ async function waitForTokenAccountState(
   matches: (tokenAccount: TokenAccountInfo) => boolean,
   signal: AbortSignal | undefined,
   mismatchMessage: string,
+  submittedSignature?: string,
 ): Promise<TokenAccountInfo> {
   return waitForParsedState(
-    () => getVerifiedTokenAccount(address),
+    // INCLUDED point reads are acceptable after the creating transaction has
+    // been authoritatively verified, but the parsed content must still match.
+    () => getReadableTokenAccount(address),
     matches,
     signal,
     mismatchMessage,
+    submittedSignature,
   );
 }
 
@@ -2942,6 +3030,7 @@ async function waitForParsedState<T>(
   matches: (value: T) => boolean,
   signal: AbortSignal | undefined,
   mismatchMessage: string,
+  submittedSignature?: string,
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < REFRESH_ATTEMPTS; attempt++) {
@@ -2956,6 +3045,9 @@ async function waitForParsedState<T>(
     await abortableDelay(Math.min(500 * 2 ** attempt, 4_000), signal);
   }
 
+  if (submittedSignature) {
+    throw new TransactionStatusUncertainError(submittedSignature, false);
+  }
   throw new Error(
     `${mismatchMessage} ${
       lastError instanceof Error ? lastError.message : String(lastError)
