@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   ConsensusStatus,
   Pubkey,
-  SubmissionStatus,
+  Signature,
   type Account,
 } from "@thru/sdk";
 import { ACCOUNT_CREATION_RESOURCES } from "@thru/programs/resources";
@@ -42,12 +42,15 @@ function account(byte: number): ThruAccount {
   };
 }
 
-function foundAccount(activeAccount: ThruAccount) {
+function foundAccount(
+  activeAccount: ThruAccount,
+  consensusStatus: ConsensusStatus = ConsensusStatus.FINALIZED,
+) {
   return {
     address: {
       toThruFmt: () => activeAccount.address,
     },
-    consensusStatus: ConsensusStatus.FINALIZED,
+    consensusStatus,
   };
 }
 
@@ -77,20 +80,27 @@ function faucetDeploymentAccount(address: string): Account | undefined {
 
 function testSignature(byte: number) {
   return {
-    toThruFmt: () => `test-signature-${byte}`,
+    toThruFmt: () => signatureText(byte),
   };
 }
 
-function successfulUpdate(
+function signatureText(byte: number): string {
+  return Signature.from(new Uint8Array(64).fill(byte)).toThruFmt();
+}
+
+function statusSnapshot(
+  byte: number,
   consensusStatus: ConsensusStatus = ConsensusStatus.FINALIZED,
+  executionResult = {
+    vmError: 0,
+    userErrorCode: 0n,
+    executionResult: 0n,
+  },
 ) {
   return {
-    status: SubmissionStatus.ACCEPTED,
-    consensusStatus,
-    executionResult: {
-      vmError: 0,
-      userErrorCode: 0n,
-    },
+    signature: new Uint8Array(64).fill(byte),
+    statusCode: consensusStatus,
+    executionResult,
   };
 }
 
@@ -139,12 +149,15 @@ test("account creation uses the active wallet, official v0.4.1 resources, and on
   });
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* (wire: Uint8Array) {
+    "send",
+    async (wire: Uint8Array) => {
       sendCalls += 1;
       assert.deepEqual(wire, new Uint8Array([3, 0, 3]));
-      yield successfulUpdate() as never;
+      return signatureText(11);
     },
+  );
+  t.mock.method(thru.transactions, "getStatus", async () =>
+    statusSnapshot(11) as never,
   );
 
   assert.equal(await ensureAccountExists(activeAccount), true);
@@ -175,10 +188,11 @@ test("account creation requires post-state account existence after finalized exe
   }) as never);
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
-      yield successfulUpdate() as never;
-    },
+    "send",
+    async () => signatureText(12),
+  );
+  t.mock.method(thru.transactions, "getStatus", async () =>
+    statusSnapshot(12) as never,
   );
 
   await assert.rejects(
@@ -188,7 +202,40 @@ test("account creation requires post-state account existence after finalized exe
   assert.equal(accountReads, 2);
 });
 
-test("a finalized read-only lookup resolves a stream that ends after execution", async (t) => {
+test("authoritative account-create execution accepts the matching INCLUDED point read", async (t) => {
+  const activeAccount = account(112);
+  let accountReads = 0;
+  let sendCalls = 0;
+
+  t.mock.method(thru.accounts, "get", async () => {
+    accountReads += 1;
+    if (accountReads === 1) throw notFound();
+    return foundAccount(
+      activeAccount,
+      ConsensusStatus.INCLUDED,
+    ) as never;
+  });
+  t.mock.method(thru.accounts, "create", async () => ({
+    chainId: THRU_NETWORK.expectedChainId,
+    startSlot: 511n,
+    sign: async () => undefined,
+    getSignature: () => testSignature(112),
+    toWire: () => new Uint8Array([3, 1, 12]),
+  }) as never);
+  t.mock.method(thru.transactions, "send", async () => {
+    sendCalls += 1;
+    return signatureText(112);
+  });
+  t.mock.method(thru.transactions, "getStatus", async () =>
+    statusSnapshot(112, ConsensusStatus.CLUSTER_EXECUTED) as never,
+  );
+
+  assert.equal(await ensureAccountExists(activeAccount), true);
+  assert.equal(accountReads, 2);
+  assert.equal(sendCalls, 1);
+});
+
+test("a finalized read-only lookup resolves status polling that ends before finality", async (t) => {
   const activeAccount = account(15);
   let accountReads = 0;
   let sendCalls = 0;
@@ -209,15 +256,18 @@ test("a finalized read-only lookup resolves a stream that ends after execution",
   }) as never);
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate(ConsensusStatus.OBSERVED) as never;
+      return signatureText(15);
     },
   );
+  t.mock.method(thru.transactions, "getStatus", async () => {
+    throw new Error("Status not found yet");
+  });
   t.mock.method(thru.transactions, "get", async (signature: string) => {
     finalizedReads += 1;
-    assert.equal(signature, "test-signature-15");
+    assert.equal(signature, signatureText(15));
     return {
       executionResult: {
         vmError: 0,
@@ -227,7 +277,10 @@ test("a finalized read-only lookup resolves a stream that ends after execution",
     } as never;
   });
 
-  assert.equal(await ensureAccountExists(activeAccount), true);
+  assert.equal(
+    await ensureAccountExists(activeAccount, { timeoutMs: 1 }),
+    true,
+  );
   assert.equal(sendCalls, 1);
   assert.equal(finalizedReads, 1);
   assert.equal(accountReads, 2);
@@ -253,17 +306,23 @@ test("exact finalized account post-state resolves unavailable signature lookup",
   }) as never);
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate(ConsensusStatus.OBSERVED) as never;
+      return signatureText(16);
     },
   );
+  t.mock.method(thru.transactions, "getStatus", async () => {
+    throw new Error("Status unavailable");
+  });
   t.mock.method(thru.transactions, "get", async () => {
     throw new Error("Finalized transaction lookup unavailable");
   });
 
-  assert.equal(await ensureAccountExists(activeAccount), true);
+  assert.equal(
+    await ensureAccountExists(activeAccount, { timeoutMs: 1 }),
+    true,
+  );
   assert.equal(sendCalls, 1);
   assert.equal(accountReads, 3);
 });
@@ -289,12 +348,15 @@ test("an uncertain submitted account creation cannot be rebroadcast automaticall
   });
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate(ConsensusStatus.OBSERVED) as never;
+      return signatureText(13);
     },
   );
+  t.mock.method(thru.transactions, "getStatus", async () => {
+    throw notFound();
+  });
   t.mock.method(thru.transactions, "get", async () => {
     throw notFound();
   });
@@ -302,23 +364,24 @@ test("an uncertain submitted account creation cannot be rebroadcast automaticall
   await assert.rejects(
     () =>
       ensureAccountExists(activeAccount, {
+        timeoutMs: 1,
         verificationTimeoutMs: 1,
       }),
     (error) =>
       error instanceof SubmittedTransactionUncertainError &&
-      error.signature === "test-signature-13",
+      error.signature === signatureText(13),
   );
   await assert.rejects(
     () => ensureAccountExists(activeAccount),
     (error) =>
       error instanceof SubmittedTransactionUncertainError &&
-      error.signature === "test-signature-13",
+      error.signature === signatureText(13),
   );
   assert.equal(createCalls, 1);
   assert.equal(sendCalls, 1);
 });
 
-test("an interrupted account tracker falls back without rebroadcasting", async (t) => {
+test("an unavailable account status endpoint falls back without rebroadcasting", async (t) => {
   const activeAccount = account(19);
   let accountReads = 0;
   let sendCalls = 0;
@@ -339,13 +402,15 @@ test("an interrupted account tracker falls back without rebroadcasting", async (
   }) as never);
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate(ConsensusStatus.OBSERVED) as never;
-      throw new Error("upstream tracker reset");
+      return signatureText(19);
     },
   );
+  t.mock.method(thru.transactions, "getStatus", async () => {
+    throw new Error("upstream status temporarily unavailable");
+  });
   t.mock.method(thru.transactions, "get", async () => {
     finalizedReads += 1;
     return {
@@ -357,7 +422,10 @@ test("an interrupted account tracker falls back without rebroadcasting", async (
     } as never;
   });
 
-  assert.equal(await ensureAccountExists(activeAccount), true);
+  assert.equal(
+    await ensureAccountExists(activeAccount, { timeoutMs: 1 }),
+    true,
+  );
   assert.equal(sendCalls, 1);
   assert.equal(finalizedReads, 1);
   assert.equal(accountReads, 2);
@@ -394,11 +462,14 @@ test("concurrent account creation calls cannot submit twice", async (t) => {
   });
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate() as never;
+      return signatureText(14);
     },
+  );
+  t.mock.method(thru.transactions, "getStatus", async () =>
+    statusSnapshot(14) as never,
   );
 
   const first = ensureAccountExists(activeAccount);
@@ -460,9 +531,10 @@ test("an invalid faucet vault owner prevents transaction preparation", async (t)
   });
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
+      return signatureText(46);
     },
   );
 
@@ -489,7 +561,7 @@ test("faucet funding proceeds only after fallback-verified account creation", as
     const deployment = faucetDeploymentAccount(address);
     if (deployment) return deployment;
     accountReads += 1;
-    if (accountReads <= 2) throw notFound();
+    if (accountReads === 1) throw notFound();
     return {
       ...foundAccount(activeAccount),
       meta: { balance: FAUCET_WITHDRAW_LIMIT },
@@ -513,7 +585,7 @@ test("faucet funding proceeds only after fallback-verified account creation", as
       startSlot: 507n,
       sign: async () => undefined,
       getSignature: () => ({
-        toThruFmt: () => "test-faucet-signature-17",
+        toThruFmt: () => signatureText(117),
       }),
       toWire: () => new Uint8Array([3, 0, 10]),
     } as never;
@@ -523,27 +595,31 @@ test("faucet funding proceeds only after fallback-verified account creation", as
   });
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate(
-        sendCalls === 1
-          ? ConsensusStatus.OBSERVED
-          : ConsensusStatus.FINALIZED,
-      ) as never;
+      return sendCalls === 1 ? signatureText(17) : signatureText(117);
     },
   );
+  t.mock.method(thru.transactions, "getStatus", async () => {
+    if (sendCalls === 1) throw new Error("Account status not available yet");
+    return statusSnapshot(117) as never;
+  });
 
-  const result = await withdrawFromFaucet(activeAccount);
+  const result = await withdrawFromFaucet(
+    activeAccount,
+    FAUCET_WITHDRAW_LIMIT,
+    { timeoutMs: 1 },
+  );
   assert.equal(result.failureReason, undefined);
-  assert.equal(result.signature, "test-faucet-signature-17");
+  assert.equal(result.signature, signatureText(117));
   assert.equal(result.attempts, 1);
   assert.equal(accountCreateCalls, 1);
   assert.equal(faucetBuildCalls, 1);
   assert.equal(sendCalls, 2);
 });
 
-test("faucet funding uses read-only fallback after an early tracker end", async (t) => {
+test("faucet funding uses read-only fallback after status polling times out", async (t) => {
   const activeAccount = account(20);
   let accountReads = 0;
   let faucetBuildCalls = 0;
@@ -568,19 +644,22 @@ test("faucet funding uses read-only fallback after an early tracker end", async 
       startSlot: 510n,
       sign: async () => undefined,
       getSignature: () => ({
-        toThruFmt: () => "test-faucet-signature-20",
+        toThruFmt: () => signatureText(120),
       }),
       toWire: () => new Uint8Array([3, 0, 13]),
     } as never;
   });
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate(ConsensusStatus.OBSERVED) as never;
+      return signatureText(120);
     },
   );
+  t.mock.method(thru.transactions, "getStatus", async () => {
+    throw new Error("Status stream replacement still catching up");
+  });
   t.mock.method(thru.transactions, "get", async () => {
     finalizedReads += 1;
     return {
@@ -592,9 +671,13 @@ test("faucet funding uses read-only fallback after an early tracker end", async 
     } as never;
   });
 
-  const result = await withdrawFromFaucet(activeAccount);
+  const result = await withdrawFromFaucet(
+    activeAccount,
+    FAUCET_WITHDRAW_LIMIT,
+    { timeoutMs: 1 },
+  );
   assert.equal(result.failureReason, undefined);
-  assert.equal(result.signature, "test-faucet-signature-20");
+  assert.equal(result.signature, signatureText(120));
   assert.equal(result.finalized, true);
   assert.equal(result.attempts, 1);
   assert.equal(faucetBuildCalls, 1);
@@ -629,12 +712,15 @@ test("faucet funding does not start while account creation remains uncertain", a
   });
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate(ConsensusStatus.OBSERVED) as never;
+      return signatureText(18);
     },
   );
+  t.mock.method(thru.transactions, "getStatus", async () => {
+    throw notFound();
+  });
 
   const result = await withdrawFromFaucet(
     activeAccount,
@@ -642,7 +728,7 @@ test("faucet funding does not start while account creation remains uncertain", a
     { timeoutMs: 1 },
   );
   assert.equal(result.failureReason, SAFE_FAUCET_UNCERTAIN_MESSAGE);
-  assert.equal(result.signature, "test-signature-18");
+  assert.equal(result.signature, signatureText(18));
   assert.equal(result.attempts, 0);
   assert.equal(faucetBuildCalls, 0);
   assert.equal(sendCalls, 1);
@@ -669,12 +755,15 @@ test("abort after account-create submission reconciles without rebroadcast", asy
   }) as never);
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
       controller.abort();
-      throw new DOMException("Aborted", "AbortError");
+      return signatureText(41);
     },
+  );
+  t.mock.method(thru.transactions, "getStatus", async () =>
+    statusSnapshot(41) as never,
   );
   t.mock.method(thru.transactions, "get", async () => ({
     executionResult: {
@@ -712,16 +801,23 @@ test("unrelated balance movement cannot override a finalized faucet failure", as
     chainId: THRU_NETWORK.expectedChainId,
     startSlot: 901n,
     sign: async () => undefined,
-    getSignature: () => ({ toThruFmt: () => "test-faucet-failed-42" }),
+    getSignature: () => testSignature(142),
     toWire: () => new Uint8Array([4, 2]),
   }) as never);
   t.mock.method(
     thru.transactions,
-    "sendAndTrack",
-    async function* () {
+    "send",
+    async () => {
       sendCalls += 1;
-      yield successfulUpdate(ConsensusStatus.OBSERVED) as never;
+      return signatureText(142);
     },
+  );
+  t.mock.method(thru.transactions, "getStatus", async () =>
+    statusSnapshot(142, ConsensusStatus.INCLUDED, {
+      vmError: 1,
+      userErrorCode: 0n,
+      executionResult: 0n,
+    }) as never,
   );
   t.mock.method(thru.transactions, "get", async () => ({
     executionResult: {
@@ -733,6 +829,6 @@ test("unrelated balance movement cannot override a finalized faucet failure", as
 
   const result = await withdrawFromFaucet(activeAccount);
   assert.equal(result.failureReason, SAFE_FAUCET_ERROR_MESSAGE);
-  assert.equal(result.signature, "test-faucet-failed-42");
+  assert.equal(result.signature, signatureText(142));
   assert.equal(sendCalls, 1);
 });

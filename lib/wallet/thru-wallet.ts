@@ -17,8 +17,6 @@
  */
 
 import {
-  ConsensusStatus,
-  Signature,
   type GeneratedKeyPair,
 } from "@thru/sdk";
 import { MnemonicGenerator, ThruHDWallet } from "@thru/sdk/crypto";
@@ -32,10 +30,16 @@ import {
   explorerTransactionUrl,
 } from "../thru/network";
 import {
+  accountReadFinality,
   assertFinalizedAccount,
   assertUsableTransactionContext,
+  AccountConsensusPendingError,
+  reportSafeTransactionDiagnostic,
+  runTransactionDiagnosticStage,
+  type SafeTransactionDiagnostic,
   signTransactionForSubmission,
   SubmittedTransactionUncertainError,
+  submitSignedTransactionOnce,
   verifySubmittedTransaction,
 } from "../thru/transactions";
 
@@ -199,6 +203,7 @@ export interface EnsureAccountOptions {
   timeoutMs?: number;
   verificationTimeoutMs?: number;
   signal?: AbortSignal;
+  onDiagnostic?: (diagnostic: SafeTransactionDiagnostic) => void;
 }
 
 const ACTIVE_ACCOUNT_CREATIONS = new Set<string>();
@@ -213,7 +218,12 @@ async function waitForAccountVisibility(
     signal?.throwIfAborted();
     try {
       const account = await thru.accounts.get(address);
-      assertFinalizedAccount(account);
+      // Betanet point-account queries currently report INCLUDED even after
+      // the exact transaction has reached authoritative execution. This read
+      // is only reached after transaction execution/finality or a finalized
+      // exact post-state proof, so a readable INCLUDED account is sufficient
+      // for the final address-identity check here.
+      accountReadFinality(account);
       if (account.address.toThruFmt() !== address) {
         throw new Error(
           "The finalized account does not match the active wallet.",
@@ -222,7 +232,12 @@ async function waitForAccountVisibility(
       return;
     } catch (err) {
       lastError = err;
-      if (!isAccountNotFoundError(err)) throw err;
+      if (
+        !isAccountNotFoundError(err) &&
+        !(err instanceof AccountConsensusPendingError)
+      ) {
+        throw err;
+      }
     }
 
     await new Promise<void>((resolve, reject) => {
@@ -253,14 +268,38 @@ export async function ensureAccountExists(
     timeoutMs = 30_000,
     verificationTimeoutMs = Math.min(timeoutMs, 45_000),
     signal,
+    onDiagnostic,
   } = options;
   signal?.throwIfAborted();
+  reportSafeTransactionDiagnostic(onDiagnostic, {
+    stage: "account-lookup",
+    state: "started",
+    signature: "",
+  });
   try {
     await thru.accounts.get(account.address);
+    reportSafeTransactionDiagnostic(onDiagnostic, {
+      stage: "account-lookup",
+      state: "succeeded",
+      signature: "",
+    });
     UNCERTAIN_ACCOUNT_CREATIONS.delete(account.address);
     return false; // zaten vardı, oluşturmaya gerek yoktu
   } catch (err) {
-    if (!isAccountNotFoundError(err)) throw err;
+    if (!isAccountNotFoundError(err)) {
+      reportSafeTransactionDiagnostic(onDiagnostic, {
+        stage: "account-lookup",
+        state: "failed",
+        signature: "",
+        error: err,
+      });
+      throw err;
+    }
+    reportSafeTransactionDiagnostic(onDiagnostic, {
+      stage: "account-lookup",
+      state: "succeeded",
+      signature: "",
+    });
   }
 
   const uncertainSignature = UNCERTAIN_ACCOUNT_CREATIONS.get(account.address);
@@ -278,74 +317,55 @@ export async function ensureAccountExists(
   let submittedSignature = "";
   let definitiveExecutionFailure = false;
   try {
-    const createTx = await thru.accounts.create({
-      publicKey: account.publicKey,
-      header: { ...ACCOUNT_CREATION_RESOURCES },
-    });
+    const createTx = await runTransactionDiagnosticStage(
+      "account-create-build",
+      onDiagnostic,
+      () =>
+        thru.accounts.create({
+          publicKey: account.publicKey,
+          header: { ...ACCOUNT_CREATION_RESOURCES },
+        }),
+    );
     signal?.throwIfAborted();
     assertUsableTransactionContext(createTx);
-    await signTransactionForSubmission(
-      createTx,
-      account.privateKey,
-      signal,
+    await runTransactionDiagnosticStage(
+      "account-create-sign",
+      onDiagnostic,
+      () =>
+        signTransactionForSubmission(
+          createTx,
+          account.privateKey,
+          signal,
+        ),
     );
-    let signature = createTx.getSignature()?.toThruFmt() ?? "";
+    const signature = createTx.getSignature()?.toThruFmt() ?? "";
     submittedSignature = signature;
 
-    let executionFailure: string | null = null;
-    let executionSucceeded = false;
-    let finalized = false;
     const signedTransaction = createTx.toWire();
     signal?.throwIfAborted();
     submitted = true;
-    try {
-      for await (const update of thru.transactions.sendAndTrack(
-        signedTransaction,
-        {
-          timeoutMs,
-          signal,
-        },
-      )) {
-        if (update.executionResult) {
-          const { vmError, userErrorCode } = update.executionResult;
-          if (vmError !== 0 || userErrorCode !== 0n) {
-            executionFailure =
-              `Account creation failed (vmError: ${vmError}, ` +
-              `userErrorCode: ${userErrorCode}).`;
-            definitiveExecutionFailure = true;
-          } else {
-            executionSucceeded = true;
-          }
-        }
-        if (update.signature?.value) {
-          const trackedSignature = Signature.from(
-            update.signature.value,
-          ).toThruFmt();
-          if (signature && trackedSignature !== signature) {
-            definitiveExecutionFailure = true;
-            throw new Error(
-              "The tracked account-creation signature does not match.",
-            );
-          }
-          signature = trackedSignature;
-          submittedSignature = trackedSignature;
-        }
-        if (update.consensusStatus === ConsensusStatus.FINALIZED) {
-          finalized = true;
-        }
-        if (executionFailure || (executionSucceeded && finalized)) break;
-      }
-    } catch (error) {
-      if (!submitted || definitiveExecutionFailure || !signature) {
-        throw error;
-      }
-      // The original signed transaction is already submitted. Continue with
-      // bounded read-only verification; never rebuild, sign, or send again.
+    const statusResult = await submitSignedTransactionOnce({
+      rawTransaction: signedTransaction,
+      expectedSignature: signature,
+      timeoutMs,
+      signal,
+      onDiagnostic: (diagnostic) =>
+        reportSafeTransactionDiagnostic(onDiagnostic, {
+          ...diagnostic,
+          stage:
+            diagnostic.stage === "submit"
+              ? "account-create-submit"
+              : "account-create-status",
+        }),
+    });
+    if (statusResult.failure) {
+      definitiveExecutionFailure = true;
+      throw new Error(
+        `Account creation failed (vmError: ${statusResult.failure.vmError}, ` +
+          `userErrorCode: ${statusResult.failure.userErrorCode}).`,
+      );
     }
-    if (executionFailure) {
-      throw new Error(executionFailure);
-    }
-    if (!executionSucceeded || !finalized) {
+    if (!statusResult.executionSucceeded || !statusResult.finalized) {
       const verification = await verifySubmittedTransaction({
         signature,
         verifyExpectedState: async () => {
@@ -381,9 +401,15 @@ export async function ensureAccountExists(
       }
     }
 
-    await waitForAccountVisibility(
-      account.address,
-      submitted ? undefined : signal,
+    await runTransactionDiagnosticStage(
+      "account-create-post-state",
+      onDiagnostic,
+      () =>
+        waitForAccountVisibility(
+          account.address,
+          submitted ? undefined : signal,
+        ),
+      signature,
     );
     UNCERTAIN_ACCOUNT_CREATIONS.delete(account.address);
     return true; // yeni oluşturuldu

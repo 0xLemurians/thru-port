@@ -1,5 +1,6 @@
 import {
   ConsensusStatus,
+  Signature,
   type Account,
   type BuildTransactionOptions,
   type Transaction,
@@ -19,6 +20,62 @@ const READABLE_ACCOUNT_CONSENSUS = new Set<ConsensusStatus>([
 export const TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS = 45_000;
 export const SAFE_TRANSACTION_UNCERTAIN_MESSAGE =
   "The transaction was submitted, but final confirmation is still unavailable. Check the Explorer before trying again.";
+export const TRANSACTION_STATUS_POLL_INTERVAL_MS = 2_000;
+
+export type TransactionSubmissionStage =
+  | "faucet-preflight"
+  | "account-lookup"
+  | "account-create-build"
+  | "account-create-sign"
+  | "account-create-submit"
+  | "account-create-status"
+  | "account-create-post-state"
+  | "faucet-build"
+  | "faucet-sign"
+  | "faucet-submit"
+  | "faucet-status"
+  | "submit"
+  | "status";
+
+export interface SafeTransactionDiagnostic {
+  stage: TransactionSubmissionStage;
+  state: "started" | "succeeded" | "failed" | "uncertain";
+  signature: string;
+  consensusStatus?: ConsensusStatus;
+  vmError?: number;
+  userErrorCode?: bigint;
+  error?: unknown;
+}
+
+export interface TransactionStatusLike {
+  signature: Uint8Array;
+  statusCode?: ConsensusStatus;
+  executionResult?: TransactionExecutionResultLike;
+}
+
+export interface SubmitSignedTransactionOnceOptions {
+  rawTransaction: Uint8Array;
+  expectedSignature: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  pollIntervalMs?: number;
+  send?: (rawTransaction: Uint8Array) => Promise<string>;
+  getStatus?: (signature: string) => Promise<TransactionStatusLike>;
+  now?: () => number;
+  sleep?: (delayMs: number) => Promise<void>;
+  onDiagnostic?: (diagnostic: SafeTransactionDiagnostic) => void;
+}
+
+export interface SubmittedTransactionStatusResult {
+  signature: string;
+  executionSucceeded: boolean;
+  finalized: boolean;
+  statusTimedOut: boolean;
+  failure?: {
+    vmError: number;
+    userErrorCode: bigint;
+  };
+}
 
 export interface TransactionExecutionResultLike {
   vmError: number;
@@ -197,6 +254,242 @@ function executionFailed(result: TransactionExecutionResultLike): boolean {
     result.userErrorCode !== 0n ||
     (result.executionResult !== undefined && result.executionResult !== 0n)
   );
+}
+
+export function reportSafeTransactionDiagnostic(
+  callback: SubmitSignedTransactionOnceOptions["onDiagnostic"],
+  diagnostic: SafeTransactionDiagnostic,
+): void {
+  try {
+    callback?.(diagnostic);
+  } catch {
+    // Optional diagnostics must never change transaction behavior.
+  }
+}
+
+export async function runTransactionDiagnosticStage<T>(
+  stage: TransactionSubmissionStage,
+  callback: SubmitSignedTransactionOnceOptions["onDiagnostic"],
+  work: () => Promise<T>,
+  signature = "",
+): Promise<T> {
+  reportSafeTransactionDiagnostic(callback, {
+    stage,
+    state: "started",
+    signature,
+  });
+  try {
+    const result = await work();
+    reportSafeTransactionDiagnostic(callback, {
+      stage,
+      state: "succeeded",
+      signature,
+    });
+    return result;
+  } catch (error) {
+    reportSafeTransactionDiagnostic(callback, {
+      stage,
+      state: "failed",
+      signature,
+      error,
+    });
+    throw error;
+  }
+}
+
+/**
+ * Submits an already signed transaction exactly once through the unary SDK
+ * endpoint, then observes it through read-only status polling. This mirrors
+ * the browser-safe Betanet reference flow and deliberately never rebuilds,
+ * re-signs, retries, or rebroadcasts after submission starts.
+ */
+export async function submitSignedTransactionOnce(
+  options: SubmitSignedTransactionOnceOptions,
+): Promise<SubmittedTransactionStatusResult> {
+  const {
+    rawTransaction,
+    expectedSignature,
+    signal,
+    timeoutMs = 30_000,
+    pollIntervalMs = TRANSACTION_STATUS_POLL_INTERVAL_MS,
+    send = (raw) => thru.transactions.send(raw),
+    getStatus = (signature) => thru.transactions.getStatus(signature),
+    now = Date.now,
+    sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+    onDiagnostic,
+  } = options;
+
+  if (!expectedSignature) {
+    throw new Error("A signed transaction signature is required before submission.");
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Transaction status timeout must be greater than zero.");
+  }
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+    throw new Error("Transaction status poll interval must be greater than zero.");
+  }
+
+  throwIfAborted(signal);
+  reportSafeTransactionDiagnostic(onDiagnostic, {
+    stage: "submit",
+    state: "started",
+    signature: expectedSignature,
+  });
+
+  let returnedSignature: string;
+  try {
+    // No AbortSignal is attached once this unary RPC starts: cancellation
+    // cannot safely imply that the signed transaction was not accepted.
+    returnedSignature = await send(rawTransaction);
+  } catch (error) {
+    reportSafeTransactionDiagnostic(onDiagnostic, {
+      stage: "submit",
+      state: "uncertain",
+      signature: expectedSignature,
+      error,
+    });
+    throw new SubmittedTransactionUncertainError(expectedSignature);
+  }
+
+  if (returnedSignature !== expectedSignature) {
+    const error = new Error(
+      "The submitted transaction signature does not match the signed transaction.",
+    );
+    reportSafeTransactionDiagnostic(onDiagnostic, {
+      stage: "submit",
+      state: "failed",
+      signature: expectedSignature,
+      error,
+    });
+    // Submission has already happened; fail closed without allowing a retry.
+    throw new SubmittedTransactionUncertainError(expectedSignature);
+  }
+  reportSafeTransactionDiagnostic(onDiagnostic, {
+    stage: "submit",
+    state: "succeeded",
+    signature: expectedSignature,
+  });
+
+  const startedAt = now();
+  let executionSucceeded = false;
+  while (now() - startedAt < timeoutMs) {
+    reportSafeTransactionDiagnostic(onDiagnostic, {
+      stage: "status",
+      state: "started",
+      signature: expectedSignature,
+    });
+    let status: TransactionStatusLike;
+    try {
+      status = await getStatus(expectedSignature);
+    } catch (error) {
+      reportSafeTransactionDiagnostic(onDiagnostic, {
+        stage: "status",
+        state: "uncertain",
+        signature: expectedSignature,
+        error,
+      });
+      const remainingMs = timeoutMs - (now() - startedAt);
+      if (remainingMs <= 0) break;
+      await sleep(Math.min(pollIntervalMs, remainingMs));
+      continue;
+    }
+
+    let statusSignature: string;
+    try {
+      statusSignature = Signature.from(status.signature).toThruFmt();
+    } catch (error) {
+      reportSafeTransactionDiagnostic(onDiagnostic, {
+        stage: "status",
+        state: "failed",
+        signature: expectedSignature,
+        error,
+      });
+      throw new SubmittedTransactionUncertainError(expectedSignature);
+    }
+    if (statusSignature !== expectedSignature) {
+      const error = new Error(
+        "The transaction status signature does not match the submitted transaction.",
+      );
+      reportSafeTransactionDiagnostic(onDiagnostic, {
+        stage: "status",
+        state: "failed",
+        signature: expectedSignature,
+        error,
+      });
+      throw new SubmittedTransactionUncertainError(expectedSignature);
+    }
+
+    if (status.executionResult) {
+      const { vmError, userErrorCode } = status.executionResult;
+      if (executionFailed(status.executionResult)) {
+        reportSafeTransactionDiagnostic(onDiagnostic, {
+          stage: "status",
+          state: "failed",
+          signature: expectedSignature,
+          consensusStatus: status.statusCode,
+          vmError,
+          userErrorCode,
+        });
+        return {
+          signature: expectedSignature,
+          executionSucceeded: false,
+          finalized: false,
+          statusTimedOut: false,
+          failure: { vmError, userErrorCode },
+        };
+      }
+      executionSucceeded = true;
+    }
+
+    const finalized =
+      status.statusCode === ConsensusStatus.FINALIZED ||
+      status.statusCode === ConsensusStatus.CLUSTER_EXECUTED;
+    reportSafeTransactionDiagnostic(onDiagnostic, {
+      stage: "status",
+      state: finalized && executionSucceeded ? "succeeded" : "uncertain",
+      signature: expectedSignature,
+      consensusStatus: status.statusCode,
+      vmError: status.executionResult?.vmError,
+      userErrorCode: status.executionResult?.userErrorCode,
+    });
+    if (finalized && executionSucceeded) {
+      return {
+        signature: expectedSignature,
+        executionSucceeded: true,
+        finalized: true,
+        statusTimedOut: false,
+      };
+    }
+    if (finalized) {
+      // The status endpoint may omit execution details. Hand off immediately
+      // to the existing finalized transaction/post-state verifier instead of
+      // waiting out the polling deadline.
+      return {
+        signature: expectedSignature,
+        executionSucceeded: false,
+        finalized: false,
+        statusTimedOut: false,
+      };
+    }
+
+    const remainingMs = timeoutMs - (now() - startedAt);
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(pollIntervalMs, remainingMs));
+  }
+
+  reportSafeTransactionDiagnostic(onDiagnostic, {
+    stage: "status",
+    state: "uncertain",
+    signature: expectedSignature,
+    error: new Error("Transaction status polling timed out."),
+  });
+
+  return {
+    signature: expectedSignature,
+    executionSucceeded,
+    finalized: false,
+    statusTimedOut: true,
+  };
 }
 
 function abortableDelay(

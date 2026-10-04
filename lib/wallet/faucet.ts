@@ -20,7 +20,7 @@
  *    yalnızca faucet hazine hesabı rw olarak eklenir → idx 2, recipient idx 0.
  */
 
-import { ConsensusStatus, Signature, type Account } from "@thru/sdk";
+import { type Account } from "@thru/sdk";
 import {
   BOOTSTRAP_FAUCET_VAULT_ADDRESS,
   BOOTSTRAP_PROGRAM_ADDRESSES,
@@ -29,8 +29,12 @@ import { programResources } from "@thru/programs/resources";
 import {
   accountReadFinality,
   buildTransactionForSigning,
+  reportSafeTransactionDiagnostic,
+  runTransactionDiagnosticStage,
+  type SafeTransactionDiagnostic,
   signTransactionForSubmission,
   SubmittedTransactionUncertainError,
+  submitSignedTransactionOnce,
   TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS,
   verifySubmittedTransaction,
 } from "../thru/transactions";
@@ -127,9 +131,10 @@ export async function withdrawFromFaucet(
   options: {
     timeoutMs?: number;
     signal?: AbortSignal;
+    onDiagnostic?: (diagnostic: SafeTransactionDiagnostic) => void;
   } = {},
 ): Promise<FaucetWithdrawResult> {
-  const { timeoutMs = 30_000, signal } = options;
+  const { timeoutMs = 30_000, signal, onDiagnostic } = options;
   signal?.throwIfAborted();
 
   if (amount <= 0n) {
@@ -142,7 +147,11 @@ export async function withdrawFromFaucet(
   }
 
   try {
-    await assertFaucetDeploymentAvailable(undefined, signal);
+    await runTransactionDiagnosticStage(
+      "faucet-preflight",
+      onDiagnostic,
+      () => assertFaucetDeploymentAvailable(undefined, signal),
+    );
   } catch (error) {
     if (signal?.aborted) throw error;
     return {
@@ -156,7 +165,7 @@ export async function withdrawFromFaucet(
   // Yeni bir keypair henüz zincirde "hesap" olarak var olmayabilir —
   // faucet withdraw denemeden önce bunu garantiye alıyoruz.
   try {
-    await ensureAccountExists(account, { timeoutMs, signal });
+    await ensureAccountExists(account, { timeoutMs, signal, onDiagnostic });
   } catch (error) {
     if (signal?.aborted) throw error;
     if (error instanceof SubmittedTransactionUncertainError) {
@@ -178,6 +187,7 @@ export async function withdrawFromFaucet(
       amount,
       timeoutMs,
       signal,
+      onDiagnostic,
     );
     if (result.failureReason) {
       return {
@@ -265,6 +275,14 @@ export async function withdrawFromFaucet(
       };
     }
   } catch (error) {
+    if (error instanceof SubmittedTransactionUncertainError) {
+      return {
+        signature: error.signature,
+        finalized: false,
+        failureReason: SAFE_FAUCET_UNCERTAIN_MESSAGE,
+        attempts: 1,
+      };
+    }
     if (signal?.aborted && !(error instanceof SubmittedTransactionUncertainError)) {
       throw error;
     }
@@ -283,89 +301,69 @@ async function attemptFaucetWithdraw(
   amount: bigint,
   timeoutMs: number,
   signal?: AbortSignal,
+  onDiagnostic?: (diagnostic: SafeTransactionDiagnostic) => void,
 ): Promise<Omit<FaucetWithdrawResult, "attempts">> {
   signal?.throwIfAborted();
-  const transaction = await buildTransactionForSigning({
-    feePayer: {
-      publicKey: account.publicKey,
-    },
-    program: FAUCET_PROGRAM_ADDRESS,
-    accounts: {
-      readWrite: [FAUCET_ACCOUNT_ADDRESS],
-    },
-    header: {
-      fee: 0n,
-      ...FAUCET_TRANSACTION_RESOURCES,
-      expiryAfter: 100,
-    },
-    instructionData: async ({ getAccountIndex }) =>
-      buildFaucetWithdrawInstruction(
-        getAccountIndex(FAUCET_ACCOUNT_ADDRESS),
-        getAccountIndex(account.publicKey),
-        amount,
-      ),
-  }, signal);
-  await signTransactionForSubmission(
-    transaction,
-    account.privateKey,
-    signal,
+  const transaction = await runTransactionDiagnosticStage(
+    "faucet-build",
+    onDiagnostic,
+    () =>
+      buildTransactionForSigning({
+        feePayer: {
+          publicKey: account.publicKey,
+        },
+        program: FAUCET_PROGRAM_ADDRESS,
+        accounts: {
+          readWrite: [FAUCET_ACCOUNT_ADDRESS],
+        },
+        header: {
+          fee: 0n,
+          ...FAUCET_TRANSACTION_RESOURCES,
+          expiryAfter: 100,
+        },
+        instructionData: async ({ getAccountIndex }) =>
+          buildFaucetWithdrawInstruction(
+            getAccountIndex(FAUCET_ACCOUNT_ADDRESS),
+            getAccountIndex(account.publicKey),
+            amount,
+          ),
+      }, signal),
   );
+  await runTransactionDiagnosticStage(
+    "faucet-sign",
+    onDiagnostic,
+    () =>
+      signTransactionForSubmission(
+        transaction,
+        account.privateKey,
+        signal,
+      ),
+  );
+  const signature = transaction.getSignature()?.toThruFmt() ?? "";
   const rawTransaction = transaction.toWire();
   signal?.throwIfAborted();
+  const statusResult = await submitSignedTransactionOnce({
+    rawTransaction,
+    expectedSignature: signature,
+    timeoutMs,
+    signal,
+    onDiagnostic: (diagnostic) =>
+      reportSafeTransactionDiagnostic(onDiagnostic, {
+        ...diagnostic,
+        stage:
+          diagnostic.stage === "submit"
+            ? "faucet-submit"
+            : "faucet-status",
+      }),
+  });
 
-  let signature = "";
-  let finalConsensus = false;
-  let executionSucceeded = false;
-  let finalized = false;
-  let failureReason: string | undefined;
-  let definitiveTrackingFailure = false;
-  let submissionStarted = false;
-
-  signature = transaction.getSignature()?.toThruFmt() ?? "";
-  try {
-    submissionStarted = true;
-    for await (const update of thru.transactions.sendAndTrack(rawTransaction, {
-      timeoutMs,
-      signal,
-    })) {
-      if (update.signature?.value) {
-        const trackedSignature = Signature.from(
-          update.signature.value,
-        ).toThruFmt();
-        if (signature && trackedSignature !== signature) {
-          definitiveTrackingFailure = true;
-          throw new Error(
-            "The tracked faucet transaction signature does not match.",
-          );
-        }
-        signature = trackedSignature;
-      }
-
-      if (update.executionResult) {
-        const { vmError, userErrorCode } = update.executionResult;
-        if (vmError !== 0 || userErrorCode !== 0n) {
-          failureReason =
-            "The faucet transaction was rejected during execution.";
-        } else {
-          executionSucceeded = true;
-        }
-      }
-
-      if (update.consensusStatus === ConsensusStatus.FINALIZED) {
-        finalConsensus = true;
-      }
-      finalized = executionSucceeded && finalConsensus;
-      if (failureReason || finalized) break;
-    }
-  } catch (error) {
-    if (!submissionStarted || definitiveTrackingFailure || !signature) {
-      throw error;
-    }
-    // The signed request has already been submitted. The caller performs
-    // read-only finalization and exact balance verification without retrying.
-  }
-
-  return { signature, finalized, failureReason };
+  return {
+    signature: statusResult.signature,
+    finalized: statusResult.finalized,
+    failureReason: statusResult.failure
+      ? "The faucet transaction was rejected during execution."
+      : undefined,
+  };
 }
 
 async function waitForBalanceIncrease(
