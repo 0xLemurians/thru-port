@@ -131,7 +131,7 @@ export default function TokenSendForm({
               {displayLabels.secondary}
             </p>
           )}
-          <p style={{ marginTop: 4, color: "var(--text-dim)" }}>
+          <p style={{ marginTop: 4, color: "var(--text-muted)" }}>
             Available balance: {formattedBal} {displayTicker}
           </p>
         </div>
@@ -166,7 +166,7 @@ export default function TokenSendForm({
               autoComplete="off"
             />
             {validationError && (
-              <span className="field-error" style={{ color: "var(--accent-red)", fontSize: "0.85rem", marginTop: "4px" }}>
+              <span className="field-error" style={{ color: "var(--danger)", fontSize: "0.85rem", marginTop: "4px" }}>
                 {validationError}
               </span>
             )}
