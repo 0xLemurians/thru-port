@@ -14,6 +14,7 @@ import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { decimalAmountToRaw } from "@/lib/token/validation";
 import { safeTokenActionError } from "@/lib/token/network-state";
 import { THRU_NETWORK } from "@/lib/thru/network";
+import CommandActivity from "./CommandActivity";
 
 type WalletImportMode = "hidden" | "hex" | "backup";
 
@@ -333,12 +334,7 @@ export default function CommandDashboard({
               )}
             </div>
 
-            <div className={styles.gridBlockActivity}>
-              <h4 className={styles.blockTitle}>Recent Activity</h4>
-              <div style={{ color: "var(--text-muted)", fontSize: "0.875rem", display: "flex", alignItems: "center", justifyContent: "center", height: "60%" }}>
-                No recent local activity yet.
-              </div>
-            </div>
+            <CommandActivity key={account.address} walletAddress={account.address} networkStatus={health.status} />
 
             <div className={styles.gridBlockActions}>
               <h4 className={styles.blockTitle}>Quick Actions</h4>
