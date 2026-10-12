@@ -15,6 +15,11 @@ import { decimalAmountToRaw } from "@/lib/token/validation";
 import { safeTokenActionError } from "@/lib/token/network-state";
 import { THRU_NETWORK } from "@/lib/thru/network";
 import CommandActivity from "./CommandActivity";
+import NativeSendForm, { NativeTransferStatus } from "./NativeSendForm";
+import { useNativeTransfer } from "./NativeTransferProvider";
+import { NATIVE_ASSET_VALUE, nativeSendBusy } from "@/lib/wallet/native-transfer-controller";
+import PortWalletPopover from "../port/PortWalletPopover";
+import SendAssetPicker from "./SendAssetPicker";
 
 type WalletImportMode = "hidden" | "hex" | "backup";
 
@@ -69,6 +74,36 @@ export default function CommandDashboard({
   const [copied, setCopied] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [backupAck, setBackupAck] = useState(false);
+  const [walletActionsOpen, setWalletActionsOpen] = useState(false);
+  const walletActionsRef = React.useRef<HTMLDivElement>(null);
+  const walletTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const [popoverBusy, setPopoverBusy] = useState(false);
+  const { state: nativeState, controller: nativeController } = useNativeTransfer();
+  const nativeBusy = nativeState ? nativeSendBusy(nativeState) : false;
+
+  useEffect(() => {
+    setWalletActionsOpen(false);
+  }, [account?.address]);
+  useEffect(() => {
+    if (!walletActionsOpen) return;
+    const close = () => {
+      if (popoverBusy) return;
+      setWalletActionsOpen(false);
+      walletTriggerRef.current?.focus();
+    };
+    const key = (event: KeyboardEvent) => {
+      if (document.querySelector("dialog[open]")) return;
+      if (event.key === "Escape") close();
+    };
+    const outside = (event: MouseEvent) => {
+      if (document.querySelector("dialog[open]")) return;
+      if (event.target instanceof Node && !walletActionsRef.current?.contains(event.target)) close();
+    };
+    document.getElementById("command-wallet-actions")?.focus();
+    window.addEventListener("keydown", key);
+    window.addEventListener("mousedown", outside);
+    return () => { window.removeEventListener("keydown", key); window.removeEventListener("mousedown", outside); };
+  }, [walletActionsOpen, popoverBusy]);
 
   // Quick Send State
   const [selectedAssetMint, setSelectedAssetMint] = useState("");
@@ -121,7 +156,7 @@ export default function CommandDashboard({
   const isHealthOffline = health?.status === "Offline";
   const transferAllowed = Boolean(
     account && selectedAssetMint && transferSource && transferDestination && transferAmount.trim() &&
-    !validationError && !isHealthOffline
+    !validationError && !isHealthOffline && !nativeBusy
   );
 
   async function handleQuickSend(e: React.FormEvent) {
@@ -334,31 +369,16 @@ export default function CommandDashboard({
               )}
             </div>
 
-            <CommandActivity key={account.address} walletAddress={account.address} networkStatus={health.status} />
+            <CommandActivity key={account.address} walletAddress={account.address} networkStatus={health.status} refreshRevision={nativeState?.revision ?? 0} />
 
             <div className={styles.gridBlockActions}>
               <h4 className={styles.blockTitle}>Quick Actions</h4>
-              <form className={styles.quickSend} onSubmit={handleQuickSend}>
-                <div className={styles.inputGroup}>
-                  <label className={styles.inputLabel}>Asset</label>
-                  <select 
-                    className={styles.inputSelect} 
-                    value={selectedAssetMint} 
-                    onChange={e => setSelectedAssetMint(e.target.value)}
-                    disabled={sendBusy}
-                  >
-                    {portfolio.map(item => {
-                       const balanceRaw = item.tokenAccounts.find(a => a.state?.owner === account.address)?.state?.amount ?? 0n;
-                       const balanceFmt = item.mint ? formatRawAmount(balanceRaw, item.mint.decimals) : "0";
-                       return (
-                         <option key={item.mintAddress} value={item.mintAddress}>
-                           {item.mint?.ticker ?? "TOKEN"} - {balanceFmt}
-                         </option>
-                       );
-                    })}
-                    {portfolio.length === 0 && <option value="">No assets</option>}
-                  </select>
-                </div>
+              <SendAssetPicker value={selectedAssetMint} disabled={sendBusy || nativeBusy} onChange={setSelectedAssetMint}
+                options={portfolio.map((item) => {
+                  const raw = item.tokenAccounts.find((entry) => entry.state?.owner === account.address)?.state?.amount ?? 0n;
+                  return { value: item.mintAddress, label: `${item.mint?.ticker ?? "TOKEN"} — ${item.mint ? formatRawAmount(raw, item.mint.decimals) : "Unavailable"}` };
+                })} />
+              {selectedAssetMint === NATIVE_ASSET_VALUE ? <NativeSendForm /> : <form className={styles.quickSend} onSubmit={handleQuickSend}>
                 <div className={styles.inputGroup}>
                   <label className={styles.inputLabel}>Recipient</label>
                   <input 
@@ -397,7 +417,9 @@ export default function CommandDashboard({
                 <button type="submit" className={styles.btnPrimaryFull} disabled={sendBusy || !transferAllowed}>
                   {sendBusy ? (progressLabel || "Sending...") : "Review Send"}
                 </button>
-              </form>
+              </form>}
+              {selectedAssetMint !== NATIVE_ASSET_VALUE && nativeState && nativeController && nativeState.phase !== "idle" &&
+                <NativeTransferStatus state={nativeState} onReconcile={() => void nativeController.reconcile()} />}
             </div>
           </div>
         )}
@@ -419,10 +441,17 @@ export default function CommandDashboard({
               </span>
             </div>
             <div className={styles.panelActionsInline}>
+               <div ref={walletActionsRef} className={styles.nativeWalletAnchor}>
+                 <button type="button" ref={walletTriggerRef} className={styles.btnOutlineSmall} disabled={!account}
+                   aria-haspopup="dialog" aria-expanded={walletActionsOpen} aria-controls="command-wallet-actions"
+                   onClick={() => { if (!popoverBusy) setWalletActionsOpen(!walletActionsOpen); }}>Wallet actions</button>
+                 {walletActionsOpen && account && <PortWalletPopover id="command-wallet-actions" align="left" account={account} balance={balance}
+                   health={health} onForgetAccount={onForgetAccount} onBusyChange={setPopoverBusy} />}
+               </div>
                <button type="button" className={styles.btnOutlineSmall} onClick={copyAddress} disabled={!account}>
                  {copied ? "Copied" : "Copy Address"}
                </button>
-               <button type="button" className={styles.btnDangerGhostInline} onClick={onForgetAccount} disabled={!account}>
+               <button type="button" className={styles.btnDangerGhostInline} onClick={onForgetAccount} disabled={!account || nativeBusy || sendBusy}>
                  Remove
                </button>
             </div>

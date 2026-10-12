@@ -1,5 +1,23 @@
 /* CSS Module for Design Preview - Global Theme Support */
 
+.nativeHint { color: var(--text-muted); font-size: 0.8rem; line-height: 1.5; margin: 0.4rem 0; }
+.nativeStatus { color: var(--text-main); font-size: 0.8rem; overflow-wrap: anywhere; }
+.nativeStatus [role="alert"] { color: var(--danger); }
+.nativeValidation { color: var(--danger); font-size: 0.8rem; }
+.nativeStatus a { color: var(--accent); }
+.nativeAddress { font-family: monospace; overflow-wrap: anywhere; }
+.nativeWalletAnchor { position: relative; }
+.nativeDialog { width: min(520px, calc(100vw - 32px)); box-sizing: border-box; max-height: 85vh; overflow: auto;
+  padding: 24px; background: linear-gradient(var(--surface), var(--surface)), var(--bg); color: var(--text-main); border: 1px solid var(--border-light); border-radius: var(--radius); }
+.nativeDialog::backdrop { background: rgb(0 0 0 / 60%); }
+.nativeReview { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; font-size: 0.85rem; }
+.nativeReview dt { color: var(--text-muted); }
+.nativeReview dd { margin: 0; overflow-wrap: anywhere; font-family: monospace; }
+.nativeDialogActions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.nativeDialog button:focus-visible, .quickSend :is(input, button, select):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.quickSend button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+@media (max-width: 480px) { .nativeReview { grid-template-columns: 1fr; gap: 6px; } .nativeReview dd { margin-bottom: 8px; } }
+
 .container {
   display: flex;
   min-height: 100vh;
@@ -561,6 +579,7 @@
 }
 
 .panelActionsInline {
+  flex-wrap: wrap;
   margin-top: 1.25rem;
   display: flex;
   gap: 0.5rem;

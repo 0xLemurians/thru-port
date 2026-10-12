@@ -17,6 +17,10 @@ import {
   NATIVE_THRU_BALANCE_UNIT,
 } from "@/lib/wallet/native-balance";
 import { explorerTransactionUrl } from "@/lib/thru/network";
+import NativeSendForm, { NativeTransferStatus } from "../command/NativeSendForm";
+import { useNativeTransfer } from "../command/NativeTransferProvider";
+import { NATIVE_ASSET_VALUE, nativeSendBusy } from "@/lib/wallet/native-transfer-controller";
+import SendAssetPicker from "../command/SendAssetPicker";
 
 interface PortWalletPopoverProps {
   id: string;
@@ -25,6 +29,7 @@ interface PortWalletPopoverProps {
   health: NetworkHealth;
   onForgetAccount?: () => void | Promise<void>;
   onBusyChange?: (busy: boolean) => void;
+  align?: "left" | "right";
 }
 
 export default function PortWalletPopover({
@@ -34,12 +39,15 @@ export default function PortWalletPopover({
   health,
   onForgetAccount,
   onBusyChange,
+  align = "right",
 }: PortWalletPopoverProps) {
   const [activeTab, setActiveTab] = useState<"none" | "send" | "receive">("none");
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [backupOpen, setBackupOpen] = useState(false);
+  const { state: nativeState, controller: nativeController } = useNativeTransfer();
+  const nativeBusy = nativeState ? nativeSendBusy(nativeState) : false;
 
   useEffect(() => {
     setDisconnectConfirm(false);
@@ -49,7 +57,7 @@ export default function PortWalletPopover({
   }, [account?.address]);
 
   const handleConfirmRemoval = async () => {
-    if (removing || !onForgetAccount) return;
+    if (removing || nativeBusy || !onForgetAccount) return;
     setRemoving(true);
     setRemoveError(null);
     try {
@@ -95,9 +103,9 @@ export default function PortWalletPopover({
   });
 
   useEffect(() => {
-    onBusyChange?.(busy || removing);
+    onBusyChange?.(busy || nativeBusy || removing);
     return () => onBusyChange?.(false);
-  }, [busy, onBusyChange, removing]);
+  }, [busy, nativeBusy, onBusyChange, removing]);
 
 
   const nativeBalStr =
@@ -110,14 +118,18 @@ export default function PortWalletPopover({
       className="pc-wallet-popover"
       role="dialog"
       aria-label="Wallet actions"
-      aria-busy={busy}
+      aria-busy={busy || nativeBusy}
       tabIndex={-1}
       style={{
         position: "absolute",
         top: "40px",
-        right: 0,
+        ...(align === "left" ? { left: 0 } : { right: 0 }),
         width: "320px",
-        backgroundColor: "rgba(25, 12, 16, 0.97)",
+        maxWidth: "calc(100vw - 32px)",
+        maxHeight: "80vh",
+        backgroundColor: "var(--bg)",
+        backgroundImage: "linear-gradient(var(--surface), var(--surface))",
+        color: "var(--text-main)",
         backdropFilter: "blur(14px)",
         WebkitBackdropFilter: "blur(14px)",
         border: "1px solid var(--border)",
@@ -126,7 +138,7 @@ export default function PortWalletPopover({
         zIndex: 100,
         display: "flex",
         flexDirection: "column",
-        overflow: "hidden",
+        overflow: "auto",
       }}
     >
       <div style={{ padding: "16px", borderBottom: "1px solid var(--border)" }}>
@@ -165,11 +177,16 @@ export default function PortWalletPopover({
 
       {activeTab === "send" && (
         <div style={{ flex: "none" }}>
+          <div style={{ padding: "12px 16px" }}>
+            <SendAssetPicker value={selectedMint} disabled={busy || nativeBusy} onChange={setSelectedMint}
+              options={ownedPortfolio.map((item) => ({ value: item.mintAddress, label: tokenDisplayLabels(item.label, item.mint?.ticker).primary }))} />
+          </div>
+          {selectedMint === NATIVE_ASSET_VALUE ? <div style={{ padding: "0 16px 16px" }}><NativeSendForm /></div> :
           <PopoverSend
             account={account}
             portfolio={ownedPortfolio}
             health={health}
-            busy={busy}
+            busy={busy || nativeBusy}
             progressLabel={progressLabel}
             error={error}
             result={result}
@@ -177,7 +194,9 @@ export default function PortWalletPopover({
             resetState={resetState}
             selectedMint={selectedMint}
             setSelectedMint={setSelectedMint}
-          />
+          />}
+          {selectedMint !== NATIVE_ASSET_VALUE && nativeState && nativeController && nativeState.phase !== "idle" &&
+            <NativeTransferStatus state={nativeState} onReconcile={() => void nativeController.reconcile()} />}
         </div>
       )}
 
@@ -254,7 +273,7 @@ export default function PortWalletPopover({
             className="pc-btn-secondary"
             style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
             onClick={() => setBackupOpen(true)}
-            disabled={busy}
+            disabled={busy || nativeBusy}
           >
             Download Backup
           </button>
@@ -264,7 +283,7 @@ export default function PortWalletPopover({
               className="pc-btn-secondary"
               style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
               onClick={() => {
-                if (busy) return;
+                if (busy || nativeBusy) return;
                 setDisconnectConfirm(true);
                 setRemoveError(null);
               }}
@@ -277,7 +296,7 @@ export default function PortWalletPopover({
                 type="button"
                 className="pc-btn-secondary"
                 style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center", color: "#ff8d8d", borderColor: "rgba(255,141,141,0.2)" }}
-                disabled={removing || busy}
+                disabled={removing || busy || nativeBusy}
                 onClick={handleConfirmRemoval}
               >
                 {removing ? "Removing..." : "Confirm removal"}

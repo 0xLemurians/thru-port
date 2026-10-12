@@ -157,7 +157,11 @@ test("Popover uses high-opacity background style", async () => {
     path.join(process.cwd(), "components/port/PortWalletPopover.tsx"),
     "utf-8"
   );
-  assert.ok(file.includes("rgba(25, 12, 16, 0.97)"), "Popover has opaque background");
+  assert.ok(file.includes('backgroundColor: "var(--bg)"'), "Popover has a theme-aware opaque base");
+  assert.ok(file.includes('backgroundImage: "linear-gradient(var(--surface), var(--surface))"'), "Popover surface follows Command Center theme");
+  const theme = await fs.readFile(path.join(process.cwd(), "app/globals.css"), "utf-8");
+  assert.match(theme, /--bg: #030303;/, "Dark base is opaque");
+  assert.match(theme, /--bg: #f4efe9;/, "Light base is opaque");
   assert.ok(file.includes('backdropFilter: "blur(14px)"'), "Popover has backdropFilter blur");
 });
 

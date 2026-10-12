@@ -39,6 +39,7 @@ import {
   verifySubmittedTransaction,
 } from "@/lib/thru/transactions";
 import { THRU_NETWORK } from "@/lib/thru/network";
+import { withWalletWriteGuard, resolveGuardedWrite } from "@/lib/thru/write-operation-guard";
 import {
   runTokenCreationWorkflow,
   runTokenMutationWorkflow,
@@ -715,6 +716,14 @@ export async function createTokenOnBetanet(
   input: CreateTokenInput,
   options: CreateTokenOptions,
 ): Promise<CreateTokenResult> {
+  return withWalletWriteGuard(account.address, async () => {
+    const result = await createTokenLocked(account, input, options);
+    resolveGuardedWrite(account.address);
+    return result;
+  });
+}
+
+async function createTokenLocked(account: ThruAccount, input: CreateTokenInput, options: CreateTokenOptions): Promise<CreateTokenResult> {
   const {
     signal,
     timeoutMs = FINALIZATION_TIMEOUT_MS,
@@ -1499,6 +1508,14 @@ export async function resumeTokenSetupOnBetanet(
   input: ResumeTokenSetupInput,
   options: ResumeTokenSetupOptions,
 ): Promise<ResumeTokenSetupResult> {
+  return withWalletWriteGuard(account.address, async () => {
+    const result = await resumeTokenSetupLocked(account, input, options);
+    resolveGuardedWrite(account.address);
+    return result;
+  });
+}
+
+async function resumeTokenSetupLocked(account: ThruAccount, input: ResumeTokenSetupInput, options: ResumeTokenSetupOptions): Promise<ResumeTokenSetupResult> {
   const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
   let currentStage: Exclude<TokenResumeStage, "failed" | "uncertain"> =
     "validating";
@@ -1941,6 +1958,14 @@ export async function createDestinationTokenAccountOnBetanet(
   input: CreateDestinationTokenAccountInput,
   options: TokenMutationOptions,
 ): Promise<CreateDestinationTokenAccountResult> {
+  return withWalletWriteGuard(account.address, async () => {
+    const result = await createDestinationTokenAccountLocked(account, input, options);
+    resolveGuardedWrite(account.address);
+    return result;
+  });
+}
+
+async function createDestinationTokenAccountLocked(account: ThruAccount, input: CreateDestinationTokenAccountInput, options: TokenMutationOptions): Promise<CreateDestinationTokenAccountResult> {
   const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
   let currentStage: Exclude<TokenMutationStage, "failed" | "uncertain"> =
     "validating";
@@ -2147,6 +2172,14 @@ export async function mintAdditionalSupplyOnBetanet(
   input: MintAdditionalSupplyInput,
   options: TokenMutationOptions,
 ): Promise<MintAdditionalSupplyResult> {
+  return withWalletWriteGuard(account.address, async () => {
+    const result = await mintAdditionalSupplyLocked(account, input, options);
+    resolveGuardedWrite(account.address);
+    return result;
+  });
+}
+
+async function mintAdditionalSupplyLocked(account: ThruAccount, input: MintAdditionalSupplyInput, options: TokenMutationOptions): Promise<MintAdditionalSupplyResult> {
   const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
   const mintAddress = canonicalAddress(input.mintAddress, "Mint address");
   const destinationAddress = canonicalAddress(
@@ -2382,6 +2415,14 @@ export async function transferTokensOnBetanet(
   input: TransferTokenInput,
   options: TokenMutationOptions,
 ): Promise<TransferTokenResult> {
+  return withWalletWriteGuard(account.address, async () => {
+    const result = await transferTokensLocked(account, input, options);
+    resolveGuardedWrite(account.address);
+    return result;
+  });
+}
+
+async function transferTokensLocked(account: ThruAccount, input: TransferTokenInput, options: TokenMutationOptions): Promise<TransferTokenResult> {
   const { signal, timeoutMs = FINALIZATION_TIMEOUT_MS, onProgress } = options;
   const sourceAddress = canonicalAddress(
     input.sourceAddress,
@@ -2757,6 +2798,7 @@ export async function submitAndRequireFinalizedExecution(
     throw error;
   }
   onFinalConsensus?.();
+  if (transaction.feePayer) resolveGuardedWrite(transaction.feePayer.toThruFmt());
   return signature;
 }
 

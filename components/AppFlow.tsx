@@ -43,6 +43,7 @@ import { shouldShowOneTimePrivateKeyBackup } from "@/lib/wallet/one-time-private
 import CommandShell from "./command/CommandShell";
 import CommandDashboard from "./command/CommandDashboard";
 import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
+import NativeTransferProvider from "./command/NativeTransferProvider";
 
 export default function AppFlow() {
   const [stage, setStage] = useState<WorkspaceStage>("account");
@@ -421,6 +422,8 @@ export default function AppFlow() {
   }
 
   return (
+    <NativeTransferProvider account={account} balance={balance} networkStatus={health.status}
+      onSuccess={(wallet) => { void refreshBalance(wallet); }}>
     <CommandShell
       currentStage={stage}
       accountAvailable={Boolean(account)}
@@ -465,6 +468,7 @@ export default function AppFlow() {
         </div>
       )}
     </CommandShell>
+    </NativeTransferProvider>
   );
 }
 

@@ -26,6 +26,7 @@ import {
   BOOTSTRAP_PROGRAM_ADDRESSES,
 } from "@thru/programs/bootstrap-addresses";
 import { programResources } from "@thru/programs/resources";
+import { withWalletWriteGuard, resolveGuardedWrite, type WriteLease } from "../thru/write-operation-guard";
 import {
   accountReadFinality,
   buildTransactionForSigning,
@@ -134,6 +135,19 @@ export async function withdrawFromFaucet(
     onDiagnostic?: (diagnostic: SafeTransactionDiagnostic) => void;
   } = {},
 ): Promise<FaucetWithdrawResult> {
+  return withWalletWriteGuard(account.address, async (lease) => {
+    const result = await withdrawFromFaucetLocked(account, amount, options, lease);
+    if (result.finalized) resolveGuardedWrite(account.address);
+    return result;
+  });
+}
+
+async function withdrawFromFaucetLocked(
+  account: ThruAccount,
+  amount: bigint,
+  options: { timeoutMs?: number; signal?: AbortSignal; onDiagnostic?: (diagnostic: SafeTransactionDiagnostic) => void },
+  writeLease?: WriteLease,
+): Promise<FaucetWithdrawResult> {
   const { timeoutMs = 30_000, signal, onDiagnostic } = options;
   signal?.throwIfAborted();
 
@@ -165,7 +179,7 @@ export async function withdrawFromFaucet(
   // Yeni bir keypair henüz zincirde "hesap" olarak var olmayabilir —
   // faucet withdraw denemeden önce bunu garantiye alıyoruz.
   try {
-    await ensureAccountExists(account, { timeoutMs, signal, onDiagnostic });
+    await ensureAccountExists(account, { timeoutMs, signal, onDiagnostic, writeLease });
   } catch (error) {
     if (signal?.aborted) throw error;
     if (error instanceof SubmittedTransactionUncertainError) {

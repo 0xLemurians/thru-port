@@ -20,6 +20,7 @@ import {
   type GeneratedKeyPair,
 } from "@thru/sdk";
 import { MnemonicGenerator, ThruHDWallet } from "@thru/sdk/crypto";
+import { withWalletWriteGuard, resolveGuardedWrite, type WriteLease } from "../thru/write-operation-guard";
 import { ACCOUNT_CREATION_RESOURCES } from "@thru/programs/resources";
 import {
   THRU_RPC_URL,
@@ -200,6 +201,8 @@ async function addressFromPublicKey(publicKey: Uint8Array): Promise<string> {
  * birebir aldık.
  */
 export interface EnsureAccountOptions {
+  /** Internal nested coordination, never a signing authority. */
+  writeLease?: WriteLease;
   timeoutMs?: number;
   verificationTimeoutMs?: number;
   signal?: AbortSignal;
@@ -263,6 +266,17 @@ async function waitForAccountVisibility(
 export async function ensureAccountExists(
   account: ThruAccount,
   options: EnsureAccountOptions = {},
+): Promise<boolean> {
+  return withWalletWriteGuard(account.address, async () => {
+    const result = await ensureAccountExistsLocked(account, options);
+    resolveGuardedWrite(account.address);
+    return result;
+  }, {}, options.writeLease);
+}
+
+async function ensureAccountExistsLocked(
+  account: ThruAccount,
+  options: EnsureAccountOptions,
 ): Promise<boolean> {
   const {
     timeoutMs = 30_000,

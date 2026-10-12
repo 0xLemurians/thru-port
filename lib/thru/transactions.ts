@@ -7,6 +7,7 @@ import {
 } from "@thru/sdk";
 import { thru } from "./client";
 import { THRU_NETWORK } from "./network";
+import { reserveGuardedSubmission } from "./write-operation-guard";
 
 const MAX_CHAIN_ID = 0xffff;
 const FINAL_ACCOUNT_CONSENSUS = new Set<ConsensusStatus>([
@@ -58,6 +59,8 @@ export interface SubmitSignedTransactionOnceOptions {
   expectedSignature: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Cancels read-only observation only; submission is never cancelled or repeated. */
+  pollingSignal?: AbortSignal;
   pollIntervalMs?: number;
   send?: (rawTransaction: Uint8Array) => Promise<string>;
   getStatus?: (signature: string) => Promise<TransactionStatusLike>;
@@ -310,6 +313,7 @@ export async function submitSignedTransactionOnce(
     rawTransaction,
     expectedSignature,
     signal,
+    pollingSignal,
     timeoutMs = 30_000,
     pollIntervalMs = TRANSACTION_STATUS_POLL_INTERVAL_MS,
     send = (raw) => thru.transactions.send(raw),
@@ -330,6 +334,7 @@ export async function submitSignedTransactionOnce(
   }
 
   throwIfAborted(signal);
+  const releaseFence = reserveGuardedSubmission(rawTransaction, expectedSignature);
   reportSafeTransactionDiagnostic(onDiagnostic, {
     stage: "submit",
     state: "started",
@@ -373,6 +378,7 @@ export async function submitSignedTransactionOnce(
   const startedAt = now();
   let executionSucceeded = false;
   while (now() - startedAt < timeoutMs) {
+    if (pollingSignal?.aborted) break;
     reportSafeTransactionDiagnostic(onDiagnostic, {
       stage: "status",
       state: "started",
@@ -422,6 +428,7 @@ export async function submitSignedTransactionOnce(
     if (status.executionResult) {
       const { vmError, userErrorCode } = status.executionResult;
       if (executionFailed(status.executionResult)) {
+        if (status.statusCode === ConsensusStatus.FINALIZED || status.statusCode === ConsensusStatus.CLUSTER_EXECUTED) releaseFence?.();
         reportSafeTransactionDiagnostic(onDiagnostic, {
           stage: "status",
           state: "failed",
@@ -453,6 +460,7 @@ export async function submitSignedTransactionOnce(
       userErrorCode: status.executionResult?.userErrorCode,
     });
     if (finalized && executionSucceeded) {
+      releaseFence?.();
       return {
         signature: expectedSignature,
         executionSucceeded: true,

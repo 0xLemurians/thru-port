@@ -14,6 +14,7 @@ import styles from "./command.module.css";
 interface CommandActivityProps {
   walletAddress: string;
   networkStatus: NetworkStatus;
+  refreshRevision?: number;
 }
 
 const HISTORY_ERROR = "Betanet transaction history is temporarily unavailable. Try again later.";
@@ -23,7 +24,7 @@ function shortSignature(signature: string): string {
   return signature.length > 22 ? `${signature.slice(0, 12)}…${signature.slice(-8)}` : signature;
 }
 
-export default function CommandActivity({ walletAddress, networkStatus }: CommandActivityProps) {
+export default function CommandActivity({ walletAddress, networkStatus, refreshRevision = 0 }: CommandActivityProps) {
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -78,7 +79,7 @@ export default function CommandActivity({ walletAddress, networkStatus }: Comman
       currentSequence.invalidate();
       busy.current = false;
     };
-  }, [networkStatus, load]);
+  }, [networkStatus, load, refreshRevision]);
 
   const unavailable = networkStatus === "Offline" || networkStatus === "Checking";
   const message = networkStatus === "Offline"
