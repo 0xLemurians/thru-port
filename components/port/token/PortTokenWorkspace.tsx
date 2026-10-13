@@ -9,7 +9,7 @@ interface PortTokenWorkspaceProps {
   activeView: string;
   selectedToken: TokenPortfolioItem | null;
   account: ThruAccount | null;
-  portfolioHook: ReturnType<typeof import("@/lib/token/portfolio-hook").useTokenPortfolio>;
+  portfolioHook: import("@/lib/token/portfolio-hook").TokenPortfolioHook;
   onBusyChange: (busy: boolean) => void;
   onTokenCreated?: (result: CreateTokenResult) => void;
   health?: NetworkHealth;

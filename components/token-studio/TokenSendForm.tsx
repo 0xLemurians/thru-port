@@ -6,7 +6,9 @@ import { decimalAmountToRaw } from "@/lib/token/validation";
 import type { NetworkHealth } from "@/components/port/useNetworkHealth";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { safeTokenActionError } from "@/lib/token/network-state";
-import { tokenDisplayLabels } from "@/lib/token/portfolio";
+import { tokenDisplayLabels, tokenSendSourceAllowed, tokenSourceRestriction } from "@/lib/token/portfolio";
+import { useTokenSendSources } from "@/lib/token/portfolio-hook";
+import TokenSourcePicker from "./TokenSourcePicker";
 import { explorerTransactionUrl } from "@/lib/thru/network";
 
 export default function TokenSendForm({
@@ -26,6 +28,7 @@ export default function TokenSendForm({
 }) {
   const [transferDestination, setTransferDestination] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
+  const [sourceChoice, setSourceChoice] = useState("");
   const { busy, progressLabel, error, result, transfer, resetState } = useTokenTransfer({
     account,
     onSuccess,
@@ -39,6 +42,7 @@ export default function TokenSendForm({
   useEffect(() => {
     setTransferDestination("");
     setTransferAmount("");
+    setSourceChoice("");
     resetState();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTokenMint]);
@@ -47,12 +51,9 @@ export default function TokenSendForm({
     return portfolio.find((p) => p.mintAddress === selectedTokenMint);
   }, [portfolio, selectedTokenMint]);
 
-  const activeWalletAccounts = useMemo(() => {
-    if (!account || !selectedItem) return [];
-    return selectedItem.tokenAccounts.filter((acc) => acc.state?.owner === account.address);
-  }, [account, selectedItem]);
+  const activeWalletAccounts = useTokenSendSources(selectedItem, account?.address ?? "");
 
-  const selectedSourceAccount = activeWalletAccounts[0];
+  const selectedSourceAccount = activeWalletAccounts.find((source) => source.address === sourceChoice) ?? activeWalletAccounts[0];
   const transferSource = selectedSourceAccount?.address || "";
 
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -83,7 +84,7 @@ export default function TokenSendForm({
 
   async function handleTransfer(e: React.FormEvent) {
     e.preventDefault();
-    if (!account || !selectedTokenMint || !transferAllowed) return;
+    if (!account || !selectedTokenMint || !transferAllowed || !tokenSendSourceAllowed(selectedItem, account.address, transferSource)) return;
 
     await transfer({
       selectedTokenMint,
@@ -112,7 +113,7 @@ export default function TokenSendForm({
 
   const formattedBal = selectedSourceAccount?.state && selectedItem.mint
     ? formatRawAmount(selectedSourceAccount.state.amount, selectedItem.mint.decimals)
-    : "0";
+    : "Unavailable";
   const displayTicker = selectedItem.mint?.ticker ?? "TOKEN";
   const displayLabels = tokenDisplayLabels(
     selectedItem.label,
@@ -138,6 +139,9 @@ export default function TokenSendForm({
       </div>
 
       <form className="token-form" onSubmit={handleTransfer}>
+        <TokenSourcePicker item={selectedItem} wallet={account.address} value={sourceChoice} disabled={busy}
+          onChange={(address) => { setSourceChoice(address); setTransferAmount(""); resetState(); }} />
+        {tokenSourceRestriction(selectedItem, account.address) && <p role="status">{tokenSourceRestriction(selectedItem, account.address)}</p>}
         <div className="token-form-grid" style={{ marginTop: "1rem" }}>
           <label className="form-field">
             <span className="field-label">Recipient THRU address</span>

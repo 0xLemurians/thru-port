@@ -20,6 +20,10 @@ import { useNativeTransfer } from "./NativeTransferProvider";
 import { NATIVE_ASSET_VALUE, nativeSendBusy } from "@/lib/wallet/native-transfer-controller";
 import PortWalletPopover from "../port/PortWalletPopover";
 import SendAssetPicker from "./SendAssetPicker";
+import TokenDiscoveryStatus from "../token-studio/TokenDiscoveryStatus";
+import TokenSourcePicker from "../token-studio/TokenSourcePicker";
+import { tokenReadBalance, tokenSendSourceAllowed, tokenSourceRestriction } from "@/lib/token/portfolio";
+import { useTokenSendSources } from "@/lib/token/portfolio-hook";
 
 type WalletImportMode = "hidden" | "hex" | "backup";
 
@@ -109,6 +113,7 @@ export default function CommandDashboard({
   const [selectedAssetMint, setSelectedAssetMint] = useState("");
   const [transferDestination, setTransferDestination] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
+  const [sourceChoice, setSourceChoice] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const { portfolio } = portfolioHook;
@@ -132,12 +137,9 @@ export default function CommandDashboard({
     return portfolio.find((p) => p.mintAddress === selectedAssetMint);
   }, [portfolio, selectedAssetMint]);
 
-  const activeWalletAccounts = useMemo(() => {
-    if (!account || !selectedItem) return [];
-    return selectedItem.tokenAccounts.filter((acc) => acc.state?.owner === account.address);
-  }, [account, selectedItem]);
+  const activeWalletAccounts = useTokenSendSources(selectedItem, account?.address ?? "");
 
-  const selectedSourceAccount = activeWalletAccounts[0];
+  const selectedSourceAccount = activeWalletAccounts.find((source) => source.address === sourceChoice) ?? activeWalletAccounts[0];
   const transferSource = selectedSourceAccount?.address || "";
 
   useEffect(() => {
@@ -156,12 +158,12 @@ export default function CommandDashboard({
   const isHealthOffline = health?.status === "Offline";
   const transferAllowed = Boolean(
     account && selectedAssetMint && transferSource && transferDestination && transferAmount.trim() &&
-    !validationError && !isHealthOffline && !nativeBusy
+    !validationError && !isHealthOffline && health?.status !== "Checking" && !nativeBusy
   );
 
   async function handleQuickSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!account || !selectedAssetMint || !transferAllowed) return;
+    if (!account || !selectedAssetMint || !transferAllowed || !tokenSendSourceAllowed(selectedItem, account.address, transferSource)) return;
     await transfer({
       selectedTokenMint: selectedAssetMint,
       transferSource,
@@ -343,21 +345,24 @@ export default function CommandDashboard({
         {account && (
           <div className={styles.bottomGrid} style={{ marginTop: "2rem" }}>
             <div className={styles.gridBlockTokens}>
-              <h4 className={styles.blockTitle}>Your Tokens</h4>
+              <h4 className={styles.blockTitle}>My Holdings / Created Tokens</h4>
+              <TokenDiscoveryStatus portfolio={portfolioHook} status={health.status} />
               {portfolioHook.refreshing && portfolio.length === 0 ? (
                 <div style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>Loading tokens...</div>
               ) : portfolio.length === 0 ? (
-                <div style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No tokens found in portfolio.</div>
+                <div style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No verified holdings or saved created tokens in this view. Discovery may be partial.</div>
               ) : (
                 <div className={styles.tokenList}>
                   {portfolio.map((item) => {
-                    const balanceRaw = item.tokenAccounts.find(a => a.state?.owner === account.address)?.state?.amount ?? 0n;
-                    const balanceFmt = item.mint ? formatRawAmount(balanceRaw, item.mint.decimals) : "0";
+                    const balanceFmt = tokenReadBalance(item, account.address);
                     return (
                       <div key={item.mintAddress} className={styles.tokenItem}>
                         <div className={styles.tokenLeft}>
                           <div className={styles.tokenSymbol}>{item.mint?.ticker ?? "TOKEN"}</div>
                           <div className={styles.tokenName}>{item.label || item.mintAddress.slice(0, 8) + "..."}</div>
+                          <div className={styles.tokenName}>{item.mint?.creator === account.address || item.mint?.mintAuthority === account.address ? "Created / controlled" : "Holding"}
+                            {item.discoveryRead === "cached" ? " · cached / stale" : ""}
+                            {item.tokenAccounts.length > 1 ? " · multiple accounts; balance shown for one account" : ""}</div>
                         </div>
                         <div className={styles.tokenRight}>
                           <div className={styles.tokenBalance}>{balanceFmt}</div>
@@ -373,12 +378,15 @@ export default function CommandDashboard({
 
             <div className={styles.gridBlockActions}>
               <h4 className={styles.blockTitle}>Quick Actions</h4>
-              <SendAssetPicker value={selectedAssetMint} disabled={sendBusy || nativeBusy} onChange={setSelectedAssetMint}
+              <SendAssetPicker value={selectedAssetMint} disabled={sendBusy || nativeBusy} onChange={(mint) => { setSelectedAssetMint(mint); setSourceChoice(""); setTransferAmount(""); }}
                 options={portfolio.map((item) => {
-                  const raw = item.tokenAccounts.find((entry) => entry.state?.owner === account.address)?.state?.amount ?? 0n;
-                  return { value: item.mintAddress, label: `${item.mint?.ticker ?? "TOKEN"} — ${item.mint ? formatRawAmount(raw, item.mint.decimals) : "Unavailable"}` };
+                  return { value: item.mintAddress, label: `${item.mint?.ticker ?? "TOKEN"} — ${tokenReadBalance(item, account.address)}` };
                 })} />
               {selectedAssetMint === NATIVE_ASSET_VALUE ? <NativeSendForm /> : <form className={styles.quickSend} onSubmit={handleQuickSend}>
+                <TokenSourcePicker item={selectedItem} wallet={account.address} value={sourceChoice} disabled={sendBusy}
+                  onChange={(address) => { setSourceChoice(address); setTransferAmount(""); }} />
+                {tokenSourceRestriction(selectedItem, account.address) && <p role="status" className={styles.nativeHint}>{tokenSourceRestriction(selectedItem, account.address)}</p>}
+                {selectedSourceAccount?.state && selectedItem?.mint && <p className={styles.nativeHint}>Selected source balance: {formatRawAmount(selectedSourceAccount.state.amount, selectedItem.mint.decimals)} {selectedItem.mint.ticker}</p>}
                 <div className={styles.inputGroup}>
                   <label className={styles.inputLabel}>Recipient</label>
                   <input 

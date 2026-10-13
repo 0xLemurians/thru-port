@@ -13,6 +13,7 @@ import {
 import PortTokenLayout from "./port/token/PortTokenLayout";
 import PortTokenSidebar from "./port/token/PortTokenSidebar";
 import PortTokenWorkspace from "./port/token/PortTokenWorkspace";
+import TokenDiscoveryStatus from "./token-studio/TokenDiscoveryStatus";
 
 type StudioTab = "create" | "send";
 
@@ -105,6 +106,7 @@ export default function TokenStudio({
           {portfolioHook.persistenceWarning}
         </p>
       )}
+      <TokenDiscoveryStatus portfolio={portfolioHook} status={health?.status} />
       <PortTokenLayout
         sidebar={
           <PortTokenSidebar
@@ -122,6 +124,7 @@ export default function TokenStudio({
             networkStatus={health?.status}
             loading={portfolioHook.refreshing}
             error={safeTokenReadError(portfolioHook.portfolioError)}
+            walletAddress={account?.address}
           />
         }
         workspace={

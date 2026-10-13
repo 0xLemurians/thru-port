@@ -14,3 +14,13 @@ export const thru = createThruClient({
   baseUrl: THRU_RPC_URL,
   transactionSigningScheme: TransactionSigningScheme.Rfc8032,
 });
+
+/** Request-scoped read transport: cancellation never touches the write client. */
+export function createThruAccountReader(signal: AbortSignal, timeoutMs: number) {
+  const reader = createThruClient({
+    baseUrl: THRU_RPC_URL,
+    transactionSigningScheme: TransactionSigningScheme.Rfc8032,
+    callOptions: { signal, timeoutMs },
+  });
+  return { list: reader.accounts.list, get: reader.accounts.get };
+}

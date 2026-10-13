@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import type { NetworkHealth } from "./useNetworkHealth";
-import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
+import { useTokenPortfolio, useTokenSendSources } from "@/lib/token/portfolio-hook";
 import { formatRawAmount } from "@thru/programs/token";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { decimalAmountToRaw } from "@/lib/token/validation";
 import {
-  isCreatedTokenControlledByWallet,
   type TokenPortfolioItem,
   type TransferTokenResult,
 } from "@/lib/token/thru-token";
-import { tokenDisplayLabels } from "@/lib/token/portfolio";
+import { tokenDisplayLabels, isWalletAsset, tokenReadBalance, tokenSendSourceAllowed, tokenSourceRestriction } from "@/lib/token/portfolio";
+import TokenDiscoveryStatus from "../token-studio/TokenDiscoveryStatus";
+import TokenSourcePicker from "../token-studio/TokenSourcePicker";
 import WalletBackupDialog from "./WalletBackupDialog";
 import {
   formatNativeThruAmount,
@@ -21,6 +22,7 @@ import NativeSendForm, { NativeTransferStatus } from "../command/NativeSendForm"
 import { useNativeTransfer } from "../command/NativeTransferProvider";
 import { NATIVE_ASSET_VALUE, nativeSendBusy } from "@/lib/wallet/native-transfer-controller";
 import SendAssetPicker from "../command/SendAssetPicker";
+import commandStyles from "../command/command.module.css";
 
 interface PortWalletPopoverProps {
   id: string;
@@ -76,10 +78,10 @@ export default function PortWalletPopover({
   });
   const isLoading = !portfolioHook.storageReady || portfolioHook.refreshing;
 
-  // Only tokens created by or currently controlled by this wallet.
+  // Wallet holdings and created/controlled records are both visible, separately labeled.
   const ownedPortfolio = useMemo(() => {
     return portfolioHook.portfolio.filter((item) =>
-      isCreatedTokenControlledByWallet(item, account.address),
+      isWalletAsset(item, account.address),
     );
   }, [portfolioHook.portfolio, account.address]);
 
@@ -125,7 +127,9 @@ export default function PortWalletPopover({
         top: "40px",
         ...(align === "left" ? { left: 0 } : { right: 0 }),
         width: "320px",
-        maxWidth: "calc(100vw - 32px)",
+        // Left-aligned Dashboard anchors sit inside workspace + panel padding.
+        // Keep a narrow-screen gutter instead of clipping the right-hand controls.
+        maxWidth: align === "left" ? "calc(100vw - 80px)" : "calc(100vw - 32px)",
         maxHeight: "80vh",
         backgroundColor: "var(--bg)",
         backgroundImage: "linear-gradient(var(--surface), var(--surface))",
@@ -224,8 +228,7 @@ export default function PortWalletPopover({
         )}
 
         {ownedPortfolio.map((item) => {
-          const acc = item.tokenAccounts.find(a => a.state?.owner === account.address);
-          const bal = acc?.state ? formatRawAmount(acc.state.amount, item.mint?.decimals ?? 0) : "0";
+          const bal = tokenReadBalance(item, account.address);
           const ticker = item.mint?.ticker ?? "TOKEN";
           const labels = tokenDisplayLabels(item.label, item.mint?.ticker);
 
@@ -261,12 +264,18 @@ export default function PortWalletPopover({
                     {labels.secondary}
                   </span>
                 )}
+                <span style={{ display: "block", fontSize: "11px", color: "var(--text-muted)" }}>
+                  {item.mint?.creator === account.address || item.mint?.mintAuthority === account.address ? "Created / controlled" : "My Holdings"}
+                  {item.discoveryRead === "cached" ? " · cached / stale" : ""}
+                  {item.tokenAccounts.length > 1 ? " · balance shown for one account" : ""}
+                </span>
               </span>
               <span style={{ fontSize: "14px" }} className="mono">{bal} {ticker}</span>
             </button>
           );
         })}
 
+        <TokenDiscoveryStatus portfolio={portfolioHook} status={health.status} />
         <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid var(--border)", display: "flex", gap: "8px" }}>
           <button
             type="button"
@@ -367,17 +376,20 @@ function PopoverSend({
 }) {
   const [dest, setDest] = useState("");
   const [amt, setAmt] = useState("");
+  const [sourceChoice, setSourceChoice] = useState("");
   const [valError, setValError] = useState<string | null>(null);
 
   // When selected token changes via props, reset inputs
   useEffect(() => {
     setDest("");
     setAmt("");
+    setSourceChoice("");
     resetState();
   }, [selectedMint, resetState]);
 
   const selectedItem = portfolio.find(p => p.mintAddress === selectedMint);
-  const activeAcc = selectedItem?.tokenAccounts.find(a => a.state?.owner === account.address);
+  const sources = useTokenSendSources(selectedItem, account.address);
+  const activeAcc = sources.find((source) => source.address === sourceChoice) ?? sources[0];
 
   useEffect(() => {
     setValError(null);
@@ -393,11 +405,11 @@ function PopoverSend({
   }, [amt, activeAcc, selectedItem]);
 
   const healthDisabled = health.status === "Offline" || health.status === "Checking";
-  const canSend = Boolean(selectedMint && dest && amt.trim() && !valError && !healthDisabled);
+  const canSend = Boolean(selectedMint && dest && amt.trim() && activeAcc && !busy && !valError && !healthDisabled);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSend || !activeAcc) return;
+    if (!canSend || !activeAcc || !tokenSendSourceAllowed(selectedItem, account.address, activeAcc.address)) return;
     await transfer({
       selectedTokenMint: selectedMint,
       transferSource: activeAcc.address,
@@ -410,11 +422,15 @@ function PopoverSend({
   return (
     <div style={{ padding: "16px", borderBottom: "1px solid var(--border)", backgroundColor: "var(--bg-card-alt)" }}>
       <form onSubmit={handleSend} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+        <TokenSourcePicker item={selectedItem} wallet={account.address} value={sourceChoice} disabled={busy}
+          onChange={(address) => { setSourceChoice(address); setAmt(""); resetState(); }} />
+        {tokenSourceRestriction(selectedItem, account.address) && <p role="status">{tokenSourceRestriction(selectedItem, account.address)}</p>}
+        {activeAcc?.state && selectedItem?.mint && <p>Selected source balance: {formatRawAmount(activeAcc.state.amount, selectedItem.mint.decimals)} {selectedItem.mint.ticker}</p>}
 
         <label className="form-field">
-          <span className="field-label">Token</span>
+          <span className={commandStyles.inputLabel}>Token</span>
           <select
-            className="input"
+            className={commandStyles.inputSelect}
             value={selectedMint}
             onChange={e => {
               setSelectedMint(e.target.value);
@@ -427,8 +443,7 @@ function PopoverSend({
             {portfolio.map(p => {
               const ticker = p.mint?.ticker ?? "TOKEN";
               const labels = tokenDisplayLabels(p.label, p.mint?.ticker);
-              const acc = p.tokenAccounts.find(a => a.state?.owner === account.address);
-              const bal = acc?.state ? formatRawAmount(acc.state.amount, p.mint?.decimals ?? 0) : "0";
+              const bal = tokenReadBalance(p, account.address);
               return (
                 <option key={p.mintAddress} value={p.mintAddress}>
                   {labels.primary}{labels.secondary ? ` (${labels.secondary})` : ""} — {bal} {ticker}
@@ -439,9 +454,9 @@ function PopoverSend({
         </label>
 
         <label className="form-field">
-          <span className="field-label">Recipient THRU address</span>
+          <span className={commandStyles.inputLabel}>Recipient THRU address</span>
           <input
-            className="input mono"
+            className={`${commandStyles.inputText} mono`}
             value={dest}
             onChange={e => setDest(e.target.value)}
             disabled={busy}
@@ -453,9 +468,9 @@ function PopoverSend({
         </label>
 
         <label className="form-field">
-          <span className="field-label">Amount</span>
+          <span className={commandStyles.inputLabel}>Amount</span>
           <input
-            className="input mono"
+            className={`${commandStyles.inputText} mono`}
             type="text"
             inputMode="decimal"
             value={amt}
@@ -561,7 +576,7 @@ function PopoverReceive({
               const labels = tokenDisplayLabels(p.label, p.mint?.ticker);
               const acc = p.tokenAccounts.find(a => a.state?.owner === account.address);
               if (!acc) return null;
-              const bal = acc.state ? formatRawAmount(acc.state.amount, p.mint?.decimals ?? 0) : "0";
+              const bal = acc.state && p.mint ? (acc.discoveryRead === "cached" ? "Cached: " : "") + formatRawAmount(acc.state.amount, p.mint.decimals) : "Unavailable";
 
               return (
                 <div key={p.mintAddress} style={{ backgroundColor: "var(--bg)", padding: "8px", borderRadius: "4px" }}>

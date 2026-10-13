@@ -1,4 +1,7 @@
 import { Pubkey } from "@thru/sdk";
+import { formatRawAmount } from "@thru/programs/token";
+import type { TokenPortfolioItem } from "./thru-token";
+import type { VerifiedHolding } from "./discovery";
 import { networkStorageKey } from "@/lib/thru/network";
 import {
   validateTokenDecimals,
@@ -429,4 +432,67 @@ export function classifyPortfolio(
   }
 
   return { activeAssets, externalAssets };
+}
+
+/** Catalog ownership and token-account ownership are distinct, never inferred from a name. */
+export function isWalletAsset(item: TokenPortfolioItem, wallet: string): boolean {
+  return item.walletAddress === wallet && (Boolean(item.mint &&
+    (item.mint.creator === wallet || item.mint.mintAuthority === wallet)) ||
+    item.tokenAccounts.some((account) => account.state?.owner === wallet && account.state.mint === item.mintAddress) ||
+    Boolean(item.error));
+}
+export function tokenSendSources(item: TokenPortfolioItem | undefined, wallet: string, now = Date.now()) {
+  if (!item?.mint || item.error || !Number.isInteger(item.mint.decimals) || item.mint.decimals < 0 || item.mint.decimals > 18) return [];
+  return item.tokenAccounts.filter((account) => account.state?.owner === wallet && account.state.mint === item.mintAddress &&
+    !account.state.isFrozen && !account.error && account.discoveryRead !== "cached" &&
+    (account.discoveryRead === undefined || (account.discoveryAuthoritative === true &&
+      item.discoveryAuthoritative === true && account.verifiedAt !== undefined && now >= account.verifiedAt && now - account.verifiedAt <= 60_000)));
+}
+/** Display eligibility must expire even when the portfolio object is unchanged. */
+export function observeTokenSourceExpiry(item: TokenPortfolioItem | undefined, wallet: string, onExpire: () => void) {
+  const now = Date.now();
+  const deadlines = tokenSendSources(item, wallet, now).flatMap((source) =>
+    source.discoveryRead === "live" && source.verifiedAt !== undefined ? [source.verifiedAt + 60_001 - now] : []);
+  if (!deadlines.length) return () => {};
+  const timer = setTimeout(onExpire, Math.max(1, Math.min(...deadlines)));
+  return () => clearTimeout(timer);
+}
+export function tokenSendSourceAllowed(item: TokenPortfolioItem | undefined, wallet: string, address: string) {
+  return tokenSendSources(item, wallet).some((source) => source.address === address);
+}
+export function tokenReadBalance(item: TokenPortfolioItem, wallet: string): string {
+  const owned = item.tokenAccounts.filter((candidate) => candidate.state?.owner === wallet && candidate.state.mint === item.mintAddress);
+  const account = owned.find((candidate) => candidate.discoveryRead !== "cached") ?? owned[0];
+  if (!account?.state || !item.mint || !Number.isInteger(item.mint.decimals)) return "Unavailable";
+  return (account.discoveryRead === "cached" ? "Cached: " : "") + formatRawAmount(account.state.amount, item.mint.decimals);
+}
+export function tokenSourceRestriction(item: TokenPortfolioItem | undefined, wallet: string): string | null {
+  if (!item) return null;
+  if (tokenSendSources(item, wallet).length) return null;
+  if (!item.mint) return "Mint decimals and token state must be verified before sending.";
+  if (item.mint.decimals > 18) return "This token's decimals are not supported by the existing send engine.";
+  return "No verified sendable source account is available. Cached or provisional holdings require authoritative reads before sending.";
+}
+export function mergeWalletPortfolio(created: TokenPortfolioItem[], snapshots: VerifiedHolding[], live: VerifiedHolding[], wallet: string): TokenPortfolioItem[] {
+  const result = new Map(created.map((item) => [item.mintAddress, item]));
+  const liveGroups = new Map(live.map((group) => [group.mintAddress, group]));
+  for (const group of snapshots) {
+    const prior = result.get(group.mintAddress), current = liveGroups.get(group.mintAddress);
+    const freshMint = current?.mintSlot === group.mintSlot && current?.mintSeq === group.mintSeq;
+    const currentAccounts = new Map(current?.accounts.map((account) => [account.address, account]) ?? []);
+    const accounts = new Map(prior?.tokenAccounts.map((account) => [account.address, account]) ?? []);
+    for (const account of group.accounts) {
+      if (accounts.get(account.address)?.state && !accounts.get(account.address)?.error) continue; // Existing freshly-read created sources retain their policy.
+      const observed = currentAccounts.get(account.address);
+      const fresh = !!observed && observed.slot === account.slot && observed.seq === account.seq && freshMint;
+      accounts.set(account.address, { address: account.address, state: account.state,
+        discoveryRead: fresh ? "live" : "cached", discoveryAuthoritative: fresh && account.finality === "authoritative",
+        verifiedAt: account.verifiedAt });
+    }
+    result.set(group.mintAddress, { ...prior, mintAddress: group.mintAddress, walletAddress: wallet,
+      mint: prior?.mint ?? group.mint, tokenAccounts: [...accounts.values()],
+      discoveryAuthoritative: freshMint && group.mintFinality === "authoritative",
+      ...(prior?.mint && !prior.error ? {} : { error: undefined, discoveryRead: freshMint ? "live" : "cached" }) });
+  }
+  return [...result.values()].filter((item) => isWalletAsset(item, wallet));
 }

@@ -492,6 +492,9 @@ export interface TokenPortfolioAccount {
   address: string;
   state?: TokenAccountInfo;
   error?: string;
+  discoveryRead?: "live" | "cached";
+  discoveryAuthoritative?: boolean;
+  verifiedAt?: number;
 }
 
 export interface TokenPortfolioItem {
@@ -501,6 +504,8 @@ export interface TokenPortfolioItem {
   mint?: MintAccountInfo;
   error?: string;
   tokenAccounts: TokenPortfolioAccount[];
+  discoveryRead?: "live" | "cached";
+  discoveryAuthoritative?: boolean;
 }
 
 export interface ResumeTokenSetupInput {
@@ -1246,21 +1251,38 @@ async function createTokenLocked(account: ThruAccount, input: CreateTokenInput, 
 
 export async function fetchTokenPortfolioOnBetanet(
   records: KnownTokenRecord[],
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; readAccount?: (address: string) => Promise<Account> } = {},
 ): Promise<TokenPortfolioItem[]> {
   const { signal } = options;
+  let active = 0;
+  const queue: (() => void)[] = [];
+  const read = async <T,>(work: () => Promise<T>): Promise<T> => {
+    if (active >= 4) await new Promise<void>((resolve) => queue.push(resolve));
+    else active++;
+    try { signal?.throwIfAborted(); return await work(); }
+    finally { const next = queue.shift(); if (next) next(); else active--; }
+  };
+  const readAccount = options.readAccount;
+  const get = async (address: string) => {
+    if (!readAccount) throw new Error("A read transport is required.");
+    const account = await readAccount(address);
+    if (account.address?.toThruFmt() !== address) throw new Error("Token account identity mismatch.");
+    accountReadFinality(account);
+    assertOfficialTokenProgramOwnership(account.meta?.owner?.toThruFmt(), TOKEN_PROGRAM_ADDRESS, address);
+    return account;
+  };
   return Promise.all(
     records.map(async (record): Promise<TokenPortfolioItem> => {
       signal?.throwIfAborted();
       const mintResult = await settleTokenRead(() =>
-        getReadableMint(record.mintAddress),
+        read(async () => options.readAccount ? parseMintAccountData(await get(record.mintAddress)) : getReadableMint(record.mintAddress)),
       );
       const tokenAccounts = await Promise.all(
         record.tokenAccountAddresses.map(
           async (address): Promise<TokenPortfolioAccount> => {
             signal?.throwIfAborted();
             const result = await settleTokenRead(() =>
-              getReadableTokenAccount(address),
+              read(async () => options.readAccount ? parseTokenAccountData(await get(address)) : getReadableTokenAccount(address)),
             );
             signal?.throwIfAborted();
             if (!result.value) {
