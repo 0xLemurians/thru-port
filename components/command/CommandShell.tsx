@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useId, useRef } from "react";
 import type { WorkspaceStage } from "../port/PortHeader";
 import type { NetworkHealth } from "../port/useNetworkHealth";
 import styles from "./command.module.css";
@@ -28,6 +28,9 @@ export default function CommandShell({
   const [mounted, setMounted] = useState(false);
   const [colorMode, setColorMode] = useState<"dark" | "light">("dark");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const navigationId = useId();
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const navigationRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     try {
@@ -43,6 +46,21 @@ export default function CommandShell({
     }
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const trigger = menuButtonRef.current;
+      const activeElement = document.activeElement;
+      const restoreFocus = activeElement === trigger || navigationRef.current?.contains(activeElement);
+      setIsMobileMenuOpen(false);
+      // Do not steal focus from an unrelated field or a hidden desktop trigger.
+      if (restoreFocus && trigger && trigger.getClientRects().length > 0) trigger.focus();
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [isMobileMenuOpen]);
 
   const toggleColorMode = () => {
     const newMode = colorMode === "dark" ? "light" : "dark";
@@ -65,13 +83,17 @@ export default function CommandShell({
            <div className={styles.logoIcon}>T</div>
            <span className={styles.logoText}>Port</span>
         </div>
-        <button type="button" className={styles.hamburgerBtn} onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}>
-          ☰
+        <button type="button" ref={menuButtonRef} className={styles.hamburgerBtn}
+          aria-label={isMobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+          aria-expanded={isMobileMenuOpen} aria-controls={navigationId}
+          onClick={() => setIsMobileMenuOpen((open) => !open)}>
+          <span aria-hidden="true">☰</span>
         </button>
       </div>
 
       {/* Left Navigation Rail */}
-      <nav className={`${styles.navRail} ${isMobileMenuOpen ? styles.navRailOpen : ''}`}>
+      <nav id={navigationId} ref={navigationRef} aria-label="Main navigation"
+        className={`${styles.navRail} ${isMobileMenuOpen ? styles.navRailOpen : ''}`}>
         <div className={styles.navTop}>
           <div className={styles.logoGroup}>
             <div className={styles.logoIcon}>T</div>

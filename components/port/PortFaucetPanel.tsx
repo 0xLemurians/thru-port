@@ -1,3 +1,4 @@
+import React, { useId } from "react";
 import type { NetworkHealth } from "./useNetworkHealth";
 import { FAUCET_WITHDRAW_LIMIT } from "@/lib/wallet/faucet";
 import {
@@ -11,6 +12,7 @@ import {
 } from "@/lib/thru/network";
 
 interface PortFaucetPanelProps {
+  accountAvailable: boolean;
   faucetState: "idle" | "requesting" | "confirming" | "success" | "error";
   faucetError: string | null;
   retryInfo: string | null;
@@ -21,6 +23,7 @@ interface PortFaucetPanelProps {
 }
 
 export default function PortFaucetPanel({
+  accountAvailable,
   faucetState,
   faucetError,
   retryInfo,
@@ -29,17 +32,36 @@ export default function PortFaucetPanel({
   onRequest,
   onCancel,
 }: PortFaucetPanelProps) {
+  const walletNoticeId = useId();
   const isRpcOffline = health.status === "Offline";
   const isRpcChecking = health.status === "Checking";
   const requiresManualVerification =
     faucetFailureRequiresManualCheck(faucetError);
   const isRequestDisabled =
+    !accountAvailable ||
     requiresManualVerification ||
     isFaucetActionDisabled(health.status, faucetState);
+  const requestFaucet = () => {
+    if (!isRequestDisabled) onRequest();
+  };
+  const disabledStyle: React.CSSProperties | undefined = isRequestDisabled ? {
+    background: "var(--surface)",
+    color: "var(--text-muted)",
+    opacity: 1,
+    cursor: "not-allowed",
+    boxShadow: "none",
+    transform: "none",
+    border: "1px solid var(--border-light)",
+  } : undefined;
 
   return (
     <div className="panel" style={{ marginTop: 24 }}>
       <h2 className="panel-title">{THRU_NETWORK.displayName.toUpperCase()} FAUCET</h2>
+      {!accountAvailable && (
+        <p id={walletNoticeId} className="hint" role="status" style={{ color: "var(--text-muted)" }}>
+          Connect or create a wallet to request test units.
+        </p>
+      )}
       
       {isRpcChecking && (
         <p className="hint">Checking {THRU_NETWORK.displayName} RPC…</p>
@@ -78,16 +100,10 @@ export default function PortFaucetPanel({
           <button
             className="btn btn-primary"
             type="button"
-            onClick={onRequest}
+            onClick={requestFaucet}
             disabled={isRequestDisabled}
-            style={isRequestDisabled ? {
-              background: "rgba(0, 0, 0, 0.2)",
-              color: "rgba(255, 255, 255, 0.5)",
-              cursor: "not-allowed",
-              boxShadow: "none",
-              transform: "none",
-              border: "1px solid rgba(255, 255, 255, 0.05)"
-            } : undefined}
+            aria-describedby={!accountAvailable ? walletNoticeId : undefined}
+            style={disabledStyle}
           >
             {faucetState === "requesting"
               ? "Requesting tokens…"
@@ -123,9 +139,11 @@ export default function PortFaucetPanel({
             <button
               className="btn btn-ghost"
               type="button"
-              onClick={onRequest}
+              onClick={requestFaucet}
               disabled={isRequestDisabled}
               aria-disabled={isRequestDisabled}
+              aria-describedby={!accountAvailable ? walletNoticeId : undefined}
+              style={disabledStyle}
             >
               Retry
             </button>

@@ -498,6 +498,7 @@ export default function CommandDashboard({
                  It's already functional. */}
             <div style={{ marginLeft: "-8px", marginRight: "-8px" }}>
                <PortFaucetPanel
+                 accountAvailable={Boolean(account)}
                  faucetState={faucetState}
                  faucetError={faucetError}
                  retryInfo={retryInfo}

@@ -344,6 +344,7 @@ export default function PortDashboard({
                   </div>
 
                   <PortFaucetPanel
+                    accountAvailable={Boolean(account)}
                     faucetState={faucetState}
                     faucetError={faucetError}
                     retryInfo={retryInfo}

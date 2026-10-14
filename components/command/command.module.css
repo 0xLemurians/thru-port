@@ -1072,10 +1072,12 @@
   .navRail {
     position: fixed;
     transform: translateX(-100%);
+    visibility: hidden;
     width: 16rem;
   }
   .navRailOpen {
     transform: translateX(0);
+    visibility: visible;
   }
   .mobileTopBar {
     display: flex;
