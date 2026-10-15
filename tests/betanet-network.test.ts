@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import type { BuildTransactionOptions, Transaction } from "@thru/sdk";
+import { Pubkey, type BuildTransactionOptions, type Transaction } from "@thru/sdk";
+import { visibleNativeObservation } from "../lib/portfolio/native-observation";
+import { unknownObservation, type NativeObservation } from "../lib/portfolio/asset-model";
 import {
   BOOTSTRAP_FAUCET_VAULT_ADDRESS,
   BOOTSTRAP_PROGRAM_ADDRESSES,
@@ -187,9 +189,17 @@ test("offline network changes clear stale wallet and portfolio read state", () =
     appFlow,
     /health\.status === "Online" \|\| health\.status === "Degraded"/,
   );
-  assert.match(appFlow, /setBalance\(null\)/);
-  assert.match(appFlow, /requestId !== balanceRequestRef\.current/);
-  assert.match(appFlow, /balanceRequestRef\.current \+= 1/);
+  assert.match(appFlow, /setNativeObservation\(null\)/);
+  assert.match(appFlow, /balanceScopeRef\.current !== balanceScopeKey/);
+  assert.match(appFlow, /balanceReaderRef\.current\?\.cancel\(\)/);
+  assert.match(appFlow, /visibleNativeObservation\(balanceScope, nativeObservation, health.status\)/);
+  const scope = { networkId: THRU_NETWORK.id, chainId: THRU_NETWORK.expectedChainId,
+    walletAddress: Pubkey.from(new Uint8Array(32).fill(70)).toThruFmt() };
+  const observation: NativeObservation = { scope, availability: "available", rawBalance: 0n, observation: unknownObservation() };
+  assert.equal(visibleNativeObservation(scope, observation, "Online")?.rawBalance, 0n);
+  assert.equal(visibleNativeObservation(scope, observation, "Offline"), null);
+  assert.equal(visibleNativeObservation(scope, observation, "Checking"), null);
+  assert.equal(visibleNativeObservation({ ...scope, networkId: "alphanet", chainId: 1 }, observation, "Online"), null);
   assert.match(portfolioHook, /requestAbortRef\.current\?\.abort\(\)/);
   assert.match(portfolioHook, /requestTrackerRef\.current\.invalidate\(\)/);
   assert.match(portfolioHook, /setPortfolio\(\[\]\)/);

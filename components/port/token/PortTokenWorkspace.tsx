@@ -4,6 +4,8 @@ import type { CreateTokenResult } from "@/lib/token/thru-token";
 import TokenCreateForm from "@/components/token-studio/TokenCreateForm";
 import TokenSendForm from "@/components/token-studio/TokenSendForm";
 import type { NetworkHealth } from "@/components/port/useNetworkHealth";
+import type { TokenAsset } from "@/lib/portfolio/asset-model";
+import { TokenAccountDetails, TokenAssetSummary } from "@/components/command/PortfolioAssets";
 
 interface PortTokenWorkspaceProps {
   activeView: string;
@@ -13,6 +15,8 @@ interface PortTokenWorkspaceProps {
   onBusyChange: (busy: boolean) => void;
   onTokenCreated?: (result: CreateTokenResult) => void;
   health?: NetworkHealth;
+  selectedAsset?: TokenAsset;
+  portfolioItems?: TokenPortfolioItem[];
 }
 
 export default function PortTokenWorkspace({
@@ -23,6 +27,8 @@ export default function PortTokenWorkspace({
   onBusyChange,
   onTokenCreated = () => {},
   health,
+  selectedAsset,
+  portfolioItems,
 }: PortTokenWorkspaceProps) {
   return (
     <div className="pc-token-workspace-inner">
@@ -36,14 +42,20 @@ export default function PortTokenWorkspace({
       )}
 
       {activeView === "send" && (
+        <>
+        {selectedAsset && <section aria-label="Selected token details" className="pc-token-section">
+          <TokenAssetSummary asset={selectedAsset} />
+          <TokenAccountDetails asset={selectedAsset} />
+        </section>}
         <TokenSendForm
           account={account}
-          portfolio={portfolioHook.portfolio}
+          portfolio={portfolioItems ?? portfolioHook.portfolio}
           onBusyChange={onBusyChange}
           selectedTokenMint={selectedToken?.mintAddress}
           health={health}
           onSuccess={() => portfolioHook.refreshRecords(portfolioHook.records)}
         />
+        </>
       )}
     </div>
   );

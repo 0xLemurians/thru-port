@@ -17,7 +17,8 @@ import {
   tokenSendSources,
   observeTokenSourceExpiry,
 } from "./portfolio";
-import { DiscoveryRequestGuard, discoveryContinuationForRequest, discoverWalletHoldingsOnce, type DiscoveryContinuation, type DiscoveryResult, type VerifiedHolding } from "./discovery";
+import { DISCOVERY_PROGRAM, DiscoveryRequestGuard, discoveryContinuationForRequest, discoverWalletHoldingsOnce, type DiscoveryContinuation, type DiscoveryResult, type VerifiedHolding } from "./discovery";
+import type { TokenPortfolioSnapshot } from "../portfolio/asset-model";
 import { loadDiscoveryCache, mergeDiscoveryHoldings, publicDiscoveryStorage, saveDiscoveryCache } from "./discovery-cache";
 import { THRU_NETWORK } from "../thru/network";
 import { createThruAccountReader } from "../thru/client";
@@ -31,6 +32,10 @@ import {
 interface UseTokenPortfolioOptions {
   networkStatus?: NetworkStatus;
 }
+
+// Catalog/cache namespaces are initialized for this build's fixed network.
+// Never reinterpret those records after an unexpected runtime identity change.
+const portfolioNetworkIdentity = `${THRU_NETWORK.id}:${THRU_NETWORK.expectedChainId}:${THRU_NETWORK.storageScope}`;
 
 /** A UI-only expiry timer: no RPC, signing or transaction work. */
 export function useTokenSendSources(item: TokenPortfolioItem | undefined, wallet: string) {
@@ -74,7 +79,7 @@ export function useTokenPortfolio(
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [discoveryWarning, setDiscoveryWarning] = useState<string | null>(null);
   const discoveryRef = useRef<DiscoveryResult | null>(null);
-  const snapshotsRef = useRef<{ wallet: string; all: VerifiedHolding[]; live: VerifiedHolding[] }>({ wallet: "", all: [], live: [] });
+  const snapshotsRef = useRef<{ wallet: string; network: string; all: VerifiedHolding[]; live: VerifiedHolding[] }>({ wallet: "", network: THRU_NETWORK.storageScope, all: [], live: [] });
   const guardRef = useRef(new DiscoveryRequestGuard());
   const activeScope = (account?.address ?? "") + ":" + THRU_NETWORK.storageScope + ":" + String(options.networkStatus);
   const scopeRef = useRef(activeScope);
@@ -82,9 +87,12 @@ export function useTokenPortfolio(
 
   const requestTrackerRef = useRef(new LatestRequestTracker());
   const requestAbortRef = useRef<AbortController | null>(null);
-  const networkReadAllowed = tokenNetworkReadAllowed(options.networkStatus) && options.networkStatus !== "Checking";
+  const networkMatches = portfolioNetworkIdentity === `${THRU_NETWORK.id}:${THRU_NETWORK.expectedChainId}:${THRU_NETWORK.storageScope}`;
+  const networkReadAllowed = networkMatches && tokenNetworkReadAllowed(options.networkStatus) && options.networkStatus !== "Checking";
 
   const refreshRecords = useCallback(async (next: KnownTokenRecord[], continueScan = false, resume?: DiscoveryContinuation | null) => {
+    // A completed Send from an unmounted/previous wallet must not cancel the new owner's read.
+    if (scopeRef.current !== activeScope) return;
     const walletAddress = account?.address;
     requestAbortRef.current?.abort();
     requestAbortRef.current = null;
@@ -113,7 +121,7 @@ export function useTokenPortfolio(
       const cached = loadDiscoveryCache(storage, walletAddress);
       const before = snapshotsRef.current.wallet === walletAddress ? snapshotsRef.current.all : [];
       const all = mergeDiscoveryHoldings(cached.value?.holdings ?? [], before);
-      snapshotsRef.current = { wallet: walletAddress, all,
+      snapshotsRef.current = { wallet: walletAddress, network: THRU_NETWORK.storageScope, all,
         live: continueScan && snapshotsRef.current.wallet === walletAddress ? snapshotsRef.current.live : [] };
       if (cached.status === "corrupt" || cached.status === "unavailable") {
         setDiscoveryWarning("Public holdings cache is unavailable. Existing created-token records are preserved.");
@@ -128,7 +136,7 @@ export function useTokenPortfolio(
       if (!current()) return;
       const combined = mergeDiscoveryHoldings(all, result.holdings);
       const live = continueScan ? mergeDiscoveryHoldings(snapshotsRef.current.live, result.holdings) : result.holdings;
-      snapshotsRef.current = { wallet: walletAddress, all: combined, live };
+      snapshotsRef.current = { wallet: walletAddress, network: THRU_NETWORK.storageScope, all: combined, live };
       setDiscovery(result);
       discoveryRef.current = result;
       const cachedCreated = createdTokensForWallet(next, walletAddress).map((record): TokenPortfolioItem => ({
@@ -245,14 +253,15 @@ export function useTokenPortfolio(
   );
 
   useEffect(() => {
+    scopeRef.current = activeScope;
     const storage = publicDiscoveryStorage();
-    const loaded = storage ? loadKnownTokens(storage) : [];
+    const loaded = storage && networkMatches ? loadKnownTokens(storage) : [];
     setRecords(loaded);
     setStorageReady(true);
     const wallet = account?.address;
     const requestGuard = guardRef.current, requestTracker = requestTrackerRef.current;
-    const cached = wallet ? loadDiscoveryCache(storage, wallet) : null;
-    const sameWallet = snapshotsRef.current.wallet === wallet;
+    const cached = wallet && networkMatches ? loadDiscoveryCache(storage, wallet) : null;
+    const sameWallet = snapshotsRef.current.wallet === wallet && snapshotsRef.current.network === THRU_NETWORK.storageScope;
     const inMemory = sameWallet ? snapshotsRef.current.all : [];
     const checkpoint = sameWallet && discoveryRef.current?.walletAddress === wallet
       ? discoveryRef.current.continuation : cached?.value?.continuation;
@@ -261,7 +270,7 @@ export function useTokenPortfolio(
     setPersistenceWarning(null);
     // A storage failure must not discard the session's verified public snapshot
     // when health turns offline. It is retained as stale, never as Send authority.
-    snapshotsRef.current = { wallet: wallet ?? "", all: mergeDiscoveryHoldings(cached?.value?.holdings ?? [], inMemory), live: [] };
+    snapshotsRef.current = { wallet: wallet ?? "", network: THRU_NETWORK.storageScope, all: mergeDiscoveryHoldings(cached?.value?.holdings ?? [], inMemory), live: [] };
     const restoredDiscovery: DiscoveryResult | null = wallet && checkpoint ? {
       walletAddress: wallet, network: THRU_NETWORK.storageScope, holdings: [], state: "partial", continuation: checkpoint,
       pagesInspected: 0, accountsInspected: 0, candidateReadFailures: checkpoint.pendingAddresses.length,
@@ -282,8 +291,11 @@ export function useTokenPortfolio(
       setRefreshing(false);
       setPortfolioError(null);
     }
-    return () => { requestAbortRef.current?.abort(); requestGuard.cancel(); requestTracker.invalidate(); };
-  }, [account?.address, networkReadAllowed, activeScope, refreshRecords]);
+    return () => {
+      if (scopeRef.current === activeScope) scopeRef.current = "";
+      requestAbortRef.current?.abort(); requestGuard.cancel(); requestTracker.invalidate();
+    };
+  }, [account?.address, networkReadAllowed, networkMatches, activeScope, refreshRecords]);
 
   useEffect(() => {
     const tracker = requestTrackerRef.current;
@@ -338,9 +350,22 @@ export function useTokenPortfolio(
     persistAndRefresh(next);
   }, [portfolio, records, persistAndRefresh]);
 
+  // Additive public input for Phase 4C. No extra discovery, reads or persistence.
+  const scopeMatches = networkMatches && snapshotsRef.current.network === THRU_NETWORK.storageScope;
+  const modelSnapshot: TokenPortfolioSnapshot | null = account && scopeMatches ? {
+    scope: { networkId: THRU_NETWORK.id, chainId: THRU_NETWORK.expectedChainId, walletAddress: account.address },
+    programAddress: DISCOVERY_PROGRAM,
+    items: portfolio.filter((item) => item.walletAddress === account.address),
+    records: records.filter((record) => record.walletAddress === account.address),
+    discovery: discovery?.walletAddress === account.address ? discovery : null,
+    holdings: snapshotsRef.current.wallet === account.address ? snapshotsRef.current.all : [],
+    liveHoldings: snapshotsRef.current.wallet === account.address ? snapshotsRef.current.live : [],
+  } : null;
+
   return {
+    modelSnapshot,
     records,
-    portfolio: portfolio.filter((item) => item.walletAddress === account?.address),
+    portfolio: scopeMatches ? portfolio.filter((item) => item.walletAddress === account?.address) : [],
     storageReady,
     refreshing,
     portfolioError,
@@ -357,5 +382,5 @@ export function useTokenPortfolio(
 }
 
 type FullPortfolioHook = ReturnType<typeof useTokenPortfolio>;
-export type TokenPortfolioHook = Omit<FullPortfolioHook, "discovery" | "discoveryWarning" | "continueDiscovery"> &
-  Partial<Pick<FullPortfolioHook, "discovery" | "discoveryWarning" | "continueDiscovery">>;
+export type TokenPortfolioHook = Omit<FullPortfolioHook, "discovery" | "discoveryWarning" | "continueDiscovery" | "modelSnapshot"> &
+  Partial<Pick<FullPortfolioHook, "discovery" | "discoveryWarning" | "continueDiscovery" | "modelSnapshot">>;

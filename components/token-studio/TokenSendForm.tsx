@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { type TokenPortfolioItem } from "@/lib/token/thru-token";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import { formatRawAmount } from "@thru/programs/token";
@@ -53,8 +53,14 @@ export default function TokenSendForm({
 
   const activeWalletAccounts = useTokenSendSources(selectedItem, account?.address ?? "");
 
-  const selectedSourceAccount = activeWalletAccounts.find((source) => source.address === sourceChoice) ?? activeWalletAccounts[0];
+  const selectedSourceAccount = sourceChoice ? activeWalletAccounts.find((source) => source.address === sourceChoice) : activeWalletAccounts[0];
   const transferSource = selectedSourceAccount?.address || "";
+  const previousSource = useRef(transferSource);
+  useEffect(() => {
+    if (previousSource.current !== transferSource) setTransferAmount("");
+    if (sourceChoice && !transferSource) { setSourceChoice(""); setTransferAmount(""); }
+    previousSource.current = transferSource;
+  }, [transferSource, sourceChoice]);
 
   const [validationError, setValidationError] = useState<string | null>(null);
 
@@ -78,6 +84,7 @@ export default function TokenSendForm({
 
   const transferAllowed = Boolean(
     account && selectedTokenMint && transferSource && transferDestination && transferAmount.trim() &&
+    previousSource.current === transferSource &&
     !validationError &&
     !healthDisabled
   );

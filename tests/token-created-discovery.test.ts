@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { before } from "node:test";
 import { ConsensusStatus, Pubkey, type Account } from "@thru/sdk";
 import {
   TokenAccount,
   TokenMintAccount,
   deriveTokenAccountAddress,
 } from "@thru/programs/token";
-import { buildTokenSidebarEntries } from "../components/port/token/PortTokenSidebar";
+import "./helpers/css-modules";
 import {
   createdTokensForWallet,
   loadKnownTokens,
@@ -26,6 +26,8 @@ import {
   type CreatedTokenDiscoveryDependencies,
 } from "../lib/token/thru-token";
 import { thru } from "../lib/wallet/thru-wallet";
+let buildTokenSidebarEntries: typeof import("../components/port/token/PortTokenSidebar").buildTokenSidebarEntries;
+before(async () => { ({ buildTokenSidebarEntries } = await import("../components/port/token/PortTokenSidebar")); });
 
 function publicAddress(seed: number): string {
   return Pubkey.from(new Uint8Array(32).fill(seed)).toThruFmt();

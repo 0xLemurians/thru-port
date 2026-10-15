@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
-import { buildTokenSidebarEntries } from "../components/port/token/PortTokenSidebar";
+import test, { before } from "node:test";
+import "./helpers/css-modules";
+let buildTokenSidebarEntries: typeof import("../components/port/token/PortTokenSidebar").buildTokenSidebarEntries;
+before(async () => { ({ buildTokenSidebarEntries } = await import("../components/port/token/PortTokenSidebar")); });
 import {
   NETWORK_RPC_DEGRADED_MESSAGE,
   NETWORK_RPC_UNAVAILABLE_MESSAGE,

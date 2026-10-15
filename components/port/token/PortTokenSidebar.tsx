@@ -9,6 +9,9 @@ import {
   invokeTokenNetworkAction,
   tokenNetworkActionsDisabled,
 } from "@/lib/token/network-state";
+import type { WalletPortfolio } from "@/lib/portfolio/asset-model";
+import { assetLabel, portfolioGroups } from "@/lib/portfolio/presentation";
+import { TokenAssetSummary } from "@/components/command/PortfolioAssets";
 
 export interface TokenSidebarEntry {
   mintAddress: string;
@@ -68,6 +71,7 @@ interface PortTokenSidebarProps {
   loading: boolean;
   error: string | null;
   walletAddress?: string;
+  portfolioModel?: WalletPortfolio | null;
 }
 
 export default function PortTokenSidebar({
@@ -80,15 +84,21 @@ export default function PortTokenSidebar({
   loading,
   error,
   walletAddress,
+  portfolioModel,
 }: PortTokenSidebarProps) {
   const [search, setSearch] = useState("");
-  const entries = buildTokenSidebarEntries(
+  const entries = portfolioModel ? portfolioModel.tokens.map((asset) => ({
+    mintAddress: asset.mintAddress, label: assetLabel(asset), secondaryLabel: asset.metadata.ticker?.value,
+    tokenAccountAddresses: asset.sources.map((source) => source.address), liveValidated: asset.observation.source === "rpc",
+  })) : buildTokenSidebarEntries(
     portfolio,
     savedRecords,
   );
   const createDisabled = tokenNetworkActionsDisabled(networkStatus);
   const holds = (mint: string) => Boolean(walletAddress) && portfolio.some((item) => item.mintAddress === mint &&
     item.tokenAccounts.some((account) => account.state?.owner === walletAddress && account.state?.mint === mint));
+  const controls = (mint: string) => Boolean(walletAddress) && portfolio.some((item) => item.mintAddress === mint &&
+    (item.mint?.creator === walletAddress || item.mint?.mintAuthority === walletAddress));
 
   const filteredEntries = entries.filter((item) => {
     if (!search) return true;
@@ -103,6 +113,12 @@ export default function PortTokenSidebar({
     );
   });
 
+  const groups = portfolioModel ? portfolioGroups(portfolioModel.tokens).map((group) => ({ title: group.title,
+    entries: filteredEntries.filter((entry) => group.assets.some((asset) => asset.mintAddress === entry.mintAddress)) })) :
+    [{ title: "My Holdings", entries: filteredEntries.filter((item) => holds(item.mintAddress)) },
+      { title: "Created / Controlled Tokens", entries: filteredEntries.filter((item) => !holds(item.mintAddress) && controls(item.mintAddress)) },
+      { title: "Saved References", entries: filteredEntries.filter((item) => !holds(item.mintAddress) && !controls(item.mintAddress)) }];
+
   return (
     <div className="pc-token-sidebar-inner">
       <div className="pc-token-sidebar-top">
@@ -115,6 +131,7 @@ export default function PortTokenSidebar({
             type="text"
             className="pc-input"
             placeholder="Search tokens..."
+            aria-label="Search tokens by label, mint or account"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -132,7 +149,7 @@ export default function PortTokenSidebar({
             <div className="pc-token-list-msg empty-state">
               {networkStatus === "Offline"
                 ? "Live token state is unavailable. No locally saved token references are available."
-                : "No saved tokens yet."}
+                : "No holdings or saved references in this snapshot. Discovery may be incomplete."}
             </div>
           )}
 
@@ -142,17 +159,20 @@ export default function PortTokenSidebar({
             </div>
           )}
 
-          {[{ title: "My Holdings", entries: filteredEntries.filter((item) => holds(item.mintAddress)) },
-            { title: "Created / Controlled Tokens", entries: filteredEntries.filter((item) => !holds(item.mintAddress)) }].map((group) => <section key={group.title} aria-label={group.title}>
+          {groups.map((group) => <section key={group.title} aria-label={group.title}>
             <h3 style={{ fontSize: "0.75rem", color: "var(--text-muted)", margin: "12px 0 6px" }}>{group.title}</h3>
           {group.entries.map((item) => {
             const isSelected = selectedToken === item.mintAddress;
+            const asset = portfolioModel?.tokens.find((asset) => asset.mintAddress === item.mintAddress);
             return (
               <button
+                type="button"
                 key={item.mintAddress}
+                aria-pressed={isSelected}
                 className={`pc-token-list-item ${isSelected ? "active" : ""}`}
                 onClick={() => onSelectToken(item.mintAddress)}
               >
+                {asset ? <TokenAssetSummary asset={asset} /> : <>
                 <div className="pc-token-list-item-label" style={{ fontWeight: 600 }}>
                   {item.label}
                 </div>
@@ -171,6 +191,7 @@ export default function PortTokenSidebar({
                 {portfolio.some((live) => live.mintAddress === item.mintAddress &&
                   (live.mint?.creator === walletAddress || live.mint?.mintAuthority === walletAddress)) &&
                   <div className="pc-token-list-item-address">Created / controlled by this wallet{item.liveValidated ? "" : " · cached"}</div>}
+                </>}
               </button>
             );
           })}

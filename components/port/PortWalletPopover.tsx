@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import type { NetworkHealth } from "./useNetworkHealth";
-import { useTokenPortfolio, useTokenSendSources } from "@/lib/token/portfolio-hook";
+import { useTokenPortfolio, useTokenSendSources, type TokenPortfolioHook } from "@/lib/token/portfolio-hook";
 import { formatRawAmount } from "@thru/programs/token";
 import { useTokenTransfer } from "@/lib/token/useTokenTransfer";
 import { decimalAmountToRaw } from "@/lib/token/validation";
@@ -9,14 +9,13 @@ import {
   type TokenPortfolioItem,
   type TransferTokenResult,
 } from "@/lib/token/thru-token";
-import { tokenDisplayLabels, isWalletAsset, tokenReadBalance, tokenSendSourceAllowed, tokenSourceRestriction } from "@/lib/token/portfolio";
+import { tokenDisplayLabels, tokenReadBalance, tokenSendSourceAllowed, tokenSourceRestriction } from "@/lib/token/portfolio";
 import TokenDiscoveryStatus from "../token-studio/TokenDiscoveryStatus";
 import TokenSourcePicker from "../token-studio/TokenSourcePicker";
 import WalletBackupDialog from "./WalletBackupDialog";
-import {
-  formatNativeThruAmount,
-  NATIVE_THRU_BALANCE_UNIT,
-} from "@/lib/wallet/native-balance";
+import type { WalletPortfolio } from "@/lib/portfolio/asset-model";
+import { portfolioForView, portfolioItemsForView, portfolioViewKey } from "@/lib/portfolio/presentation";
+import { NativeAssetSummary, PortfolioAssetList } from "../command/PortfolioAssets";
 import { explorerTransactionUrl } from "@/lib/thru/network";
 import NativeSendForm, { NativeTransferStatus } from "../command/NativeSendForm";
 import { useNativeTransfer } from "../command/NativeTransferProvider";
@@ -32,9 +31,25 @@ interface PortWalletPopoverProps {
   onForgetAccount?: () => void | Promise<void>;
   onBusyChange?: (busy: boolean) => void;
   align?: "left" | "right";
+  portfolioHook?: TokenPortfolioHook;
+  portfolioModel?: WalletPortfolio | null;
 }
 
-export default function PortWalletPopover({
+export default function PortWalletPopover(props: PortWalletPopoverProps) {
+  const key = portfolioViewKey(props.account.address);
+  return props.portfolioHook
+    ? <SharedWalletPopover key={key} {...props} portfolioHook={props.portfolioHook} />
+    : <StandaloneWalletPopover key={key} {...props} />;
+}
+
+// Legacy PortHeader only. This boundary mounts on demand; the active Dashboard
+// supplies AppFlow's hook and never mounts another discovery lifecycle.
+function StandaloneWalletPopover(props: PortWalletPopoverProps) {
+  const portfolioHook = useTokenPortfolio(props.account, { networkStatus: props.health.status });
+  return <SharedWalletPopover {...props} portfolioHook={portfolioHook} />;
+}
+
+function SharedWalletPopover({
   id,
   account,
   balance,
@@ -42,7 +57,9 @@ export default function PortWalletPopover({
   onForgetAccount,
   onBusyChange,
   align = "right",
-}: PortWalletPopoverProps) {
+  portfolioHook,
+  portfolioModel,
+}: PortWalletPopoverProps & { portfolioHook: TokenPortfolioHook }) {
   const [activeTab, setActiveTab] = useState<"none" | "send" | "receive">("none");
   const [disconnectConfirm, setDisconnectConfirm] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -73,17 +90,11 @@ export default function PortWalletPopover({
     }
   };
 
-  const portfolioHook = useTokenPortfolio(account, {
-    networkStatus: health.status,
-  });
+  const model = portfolioForView(account.address, portfolioHook, health.status, balance, portfolioModel);
   const isLoading = !portfolioHook.storageReady || portfolioHook.refreshing;
 
   // Wallet holdings and created/controlled records are both visible, separately labeled.
-  const ownedPortfolio = useMemo(() => {
-    return portfolioHook.portfolio.filter((item) =>
-      isWalletAsset(item, account.address),
-    );
-  }, [portfolioHook.portfolio, account.address]);
+  const ownedPortfolio = portfolioItemsForView(portfolioHook, model);
 
   // Lifted state
   const [selectedMint, setSelectedMint] = useState<string>("");
@@ -94,6 +105,9 @@ export default function PortWalletPopover({
       setSelectedMint(ownedPortfolio[0].mintAddress);
     }
   }, [selectedMint, ownedPortfolio]);
+  useEffect(() => {
+    if (selectedMint && selectedMint !== NATIVE_ASSET_VALUE && !model.tokens.some((item) => item.mintAddress === selectedMint)) setSelectedMint("");
+  }, [model.tokens, selectedMint]);
 
   // Click outside and escape handling
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -109,9 +123,6 @@ export default function PortWalletPopover({
     return () => onBusyChange?.(false);
   }, [busy, nativeBusy, onBusyChange, removing]);
 
-
-  const nativeBalStr =
-    balance !== null ? formatNativeThruAmount(balance) : "...";
 
   return (
     <div
@@ -150,12 +161,7 @@ export default function PortWalletPopover({
           <span>Main wallet</span>
           <span style={{ color: "#3DDC97", fontSize: "10px", fontWeight: 500, textTransform: "none" }}>Saved on this device</span>
         </div>
-        <div style={{ marginTop: "4px" }}>
-          <div style={{ fontSize: "12px", color: "var(--text-dim)" }}>Native balance</div>
-          <div style={{ fontSize: "20px", fontWeight: "600", color: "var(--text)" }}>
-            {nativeBalStr} {balance !== null ? NATIVE_THRU_BALANCE_UNIT : ""}
-          </div>
-        </div>
+        <NativeAssetSummary asset={model.native} />
 
         <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
           <button
@@ -219,63 +225,16 @@ export default function PortWalletPopover({
           <div style={{ fontSize: "13px", color: "var(--text-dim)" }}>Loading tokens...</div>
         )}
 
-        {!isLoading && ownedPortfolio.length === 0 && (
-          <div style={{ fontSize: "13px", color: "var(--text-dim)" }}>No created tokens.</div>
-        )}
-
         {isLoading && ownedPortfolio.length > 0 && (
           <div style={{ fontSize: "11px", color: "var(--text-dim)", marginBottom: "4px", opacity: 0.7 }}>Refreshing...</div>
         )}
 
-        {ownedPortfolio.map((item) => {
-          const bal = tokenReadBalance(item, account.address);
-          const ticker = item.mint?.ticker ?? "TOKEN";
-          const labels = tokenDisplayLabels(item.label, item.mint?.ticker);
+        <PortfolioAssetList model={model} disabled={busy || nativeBusy} onSelect={(mint) => {
+          if (busy || nativeBusy) return;
+          setActiveTab("send"); resetState(); setSelectedMint(mint);
+        }} />
 
-          return (
-            <button
-              key={item.mintAddress}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                width: "100%",
-                background: "none",
-                border: "none",
-                padding: "8px 0",
-                cursor: busy ? "not-allowed" : "pointer",
-                textAlign: "left",
-                color: "var(--text)",
-                borderBottom: "1px solid var(--border-light)"
-              }}
-              onClick={() => {
-                if (busy) return;
-                setActiveTab("send");
-                resetState();
-                setSelectedMint(item.mintAddress);
-              }}
-              disabled={busy}
-            >
-              <span>
-                <span style={{ display: "block", fontWeight: 500, fontSize: "14px" }}>
-                  {labels.primary}
-                </span>
-                {labels.secondary && (
-                  <span className="mono" style={{ display: "block", fontSize: "11px", color: "var(--text-dim)" }}>
-                    {labels.secondary}
-                  </span>
-                )}
-                <span style={{ display: "block", fontSize: "11px", color: "var(--text-muted)" }}>
-                  {item.mint?.creator === account.address || item.mint?.mintAuthority === account.address ? "Created / controlled" : "My Holdings"}
-                  {item.discoveryRead === "cached" ? " · cached / stale" : ""}
-                  {item.tokenAccounts.length > 1 ? " · balance shown for one account" : ""}
-                </span>
-              </span>
-              <span style={{ fontSize: "14px" }} className="mono">{bal} {ticker}</span>
-            </button>
-          );
-        })}
-
-        <TokenDiscoveryStatus portfolio={portfolioHook} status={health.status} />
+        <TokenDiscoveryStatus portfolio={portfolioHook} status={health.status} model={model} />
         <div style={{ marginTop: "16px", paddingTop: "12px", borderTop: "1px solid var(--border)", display: "flex", gap: "8px" }}>
           <button
             type="button"
@@ -291,6 +250,7 @@ export default function PortWalletPopover({
               type="button"
               className="pc-btn-secondary"
               style={{ flex: 1, padding: "6px", fontSize: "11px", justifyContent: "center" }}
+              disabled={busy || nativeBusy || removing}
               onClick={() => {
                 if (busy || nativeBusy) return;
                 setDisconnectConfirm(true);
@@ -389,7 +349,13 @@ function PopoverSend({
 
   const selectedItem = portfolio.find(p => p.mintAddress === selectedMint);
   const sources = useTokenSendSources(selectedItem, account.address);
-  const activeAcc = sources.find((source) => source.address === sourceChoice) ?? sources[0];
+  const activeAcc = sourceChoice ? sources.find((source) => source.address === sourceChoice) : sources[0];
+  const previousSource = useRef(activeAcc?.address);
+  useEffect(() => {
+    if (previousSource.current !== activeAcc?.address) setAmt("");
+    if (sourceChoice && !activeAcc) { setSourceChoice(""); setAmt(""); }
+    previousSource.current = activeAcc?.address;
+  }, [activeAcc, sourceChoice]);
 
   useEffect(() => {
     setValError(null);
@@ -405,7 +371,7 @@ function PopoverSend({
   }, [amt, activeAcc, selectedItem]);
 
   const healthDisabled = health.status === "Offline" || health.status === "Checking";
-  const canSend = Boolean(selectedMint && dest && amt.trim() && activeAcc && !busy && !valError && !healthDisabled);
+  const canSend = Boolean(selectedMint && dest && amt.trim() && activeAcc && previousSource.current === activeAcc.address && !busy && !valError && !healthDisabled);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();

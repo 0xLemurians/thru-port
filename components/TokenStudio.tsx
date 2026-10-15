@@ -5,7 +5,6 @@ import type { ThruAccount } from "@/lib/wallet/thru-wallet";
 import type { TokenPortfolioHook } from "@/lib/token/portfolio-hook";
 import type { CreateTokenResult } from "@/lib/token/thru-token";
 import {
-  safeTokenReadError,
   tokenNetworkActionsDisabled,
   tokenNetworkWarning,
 } from "@/lib/token/network-state";
@@ -14,6 +13,8 @@ import PortTokenLayout from "./port/token/PortTokenLayout";
 import PortTokenSidebar from "./port/token/PortTokenSidebar";
 import PortTokenWorkspace from "./port/token/PortTokenWorkspace";
 import TokenDiscoveryStatus from "./token-studio/TokenDiscoveryStatus";
+import type { WalletPortfolio } from "@/lib/portfolio/asset-model";
+import { portfolioForView, portfolioItemsForView, portfolioViewKey } from "@/lib/portfolio/presentation";
 
 type StudioTab = "create" | "send";
 
@@ -24,13 +25,19 @@ interface TokenStudioProps {
   onBusyChange?: (busy: boolean) => void;
   health?: NetworkHealth;
   portfolioHook: TokenPortfolioHook;
+  portfolioModel?: WalletPortfolio | null;
 }
 
-export default function TokenStudio({
+export default function TokenStudio(props: TokenStudioProps) {
+  return <ScopedTokenStudio key={portfolioViewKey(props.account?.address)} {...props} />;
+}
+
+function ScopedTokenStudio({
   account,
   onBusyChange = () => {},
   health,
   portfolioHook,
+  portfolioModel,
 }: TokenStudioProps) {
   const [activeTab, setActiveTab] = useState<StudioTab>("send");
   const [selectedTokenMint, setSelectedTokenMint] = useState<string | null>(null);
@@ -39,7 +46,8 @@ export default function TokenStudio({
   const networkActionsDisabled = tokenNetworkActionsDisabled(health?.status);
   const networkWarning = tokenNetworkWarning(health?.status);
 
-  const ownedPortfolio = portfolioHook.portfolio;
+  const model = account ? portfolioForView(account.address, portfolioHook, health?.status ?? "Checking", null, portfolioModel) : null;
+  const ownedPortfolio = portfolioItemsForView(portfolioHook, model);
   const savedRecords = portfolioHook.records.filter(
     (record) => record.walletAddress === account?.address,
   );
@@ -55,7 +63,7 @@ export default function TokenStudio({
   // Ensure selection is valid
   useEffect(() => {
     if (selectedTokenMint && !portfolioHook.refreshing) {
-      const exists = ownedPortfolio.some(p => p.mintAddress === selectedTokenMint);
+      const exists = model?.tokens.some(p => p.mintAddress === selectedTokenMint);
       if (!exists) {
         if (ownedPortfolio.length > 0) {
           setSelectedTokenMint(ownedPortfolio[0].mintAddress);
@@ -66,7 +74,7 @@ export default function TokenStudio({
         }
       }
     }
-  }, [ownedPortfolio, selectedTokenMint, portfolioHook.refreshing]);
+  }, [ownedPortfolio, model, selectedTokenMint, portfolioHook.refreshing]);
 
 
   function handleTokenCreated(result: CreateTokenResult) {
@@ -101,16 +109,12 @@ export default function TokenStudio({
           {networkWarning}
         </p>
       )}
-      {portfolioHook.persistenceWarning && (
-        <p className="name-network-message" role="status">
-          {portfolioHook.persistenceWarning}
-        </p>
-      )}
-      <TokenDiscoveryStatus portfolio={portfolioHook} status={health?.status} />
+      <TokenDiscoveryStatus portfolio={portfolioHook} status={health?.status} model={model} />
       <PortTokenLayout
         sidebar={
           <PortTokenSidebar
             portfolio={ownedPortfolio}
+            portfolioModel={model}
             savedRecords={savedRecords}
             selectedToken={selectedTokenMint}
             onSelectToken={(mint) => {
@@ -123,7 +127,7 @@ export default function TokenStudio({
             }}
             networkStatus={health?.status}
             loading={portfolioHook.refreshing}
-            error={safeTokenReadError(portfolioHook.portfolioError)}
+            error={null}
             walletAddress={account?.address}
           />
         }
@@ -131,6 +135,8 @@ export default function TokenStudio({
           <PortTokenWorkspace
             activeView={activeTab}
             selectedToken={selectedToken}
+            selectedAsset={model?.tokens.find((asset) => asset.mintAddress === selectedTokenMint)}
+            portfolioItems={ownedPortfolio}
             account={account}
             portfolioHook={portfolioHook}
             onBusyChange={onBusyChange}

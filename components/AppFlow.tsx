@@ -5,9 +5,7 @@ import {
   type ThruAccount,
   createNewAccount,
   accountFromPrivateKey,
-  getBalance,
   hexToBytes,
-  isAccountNotFoundError,
 } from "@/lib/wallet/thru-wallet";
 import {
   restorePersistedWallet,
@@ -44,6 +42,9 @@ import CommandShell from "./command/CommandShell";
 import CommandDashboard from "./command/CommandDashboard";
 import { useTokenPortfolio } from "@/lib/token/portfolio-hook";
 import NativeTransferProvider from "./command/NativeTransferProvider";
+import { NativeBalanceReader, visibleNativeObservation } from "@/lib/portfolio/native-observation";
+import { buildWalletPortfolio, type NativeObservation, type PortfolioScope } from "@/lib/portfolio/asset-model";
+import { THRU_NETWORK } from "@/lib/thru/network";
 
 export default function AppFlow() {
   const [stage, setStage] = useState<WorkspaceStage>("account");
@@ -54,8 +55,7 @@ export default function AppFlow() {
   ] = useState(false);
 
   // Wallet logic moved up
-  const [balance, setBalance] = useState<bigint | null>(null);
-  const [balanceError, setBalanceError] = useState<string | null>(null);
+  const [nativeObservation, setNativeObservation] = useState<NativeObservation | null>(null);
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
 
@@ -69,50 +69,63 @@ export default function AppFlow() {
   const [retryInfo, setRetryInfo] = useState<string | null>(null);
   const [lastSignature, setLastSignature] = useState<string | null>(null);
   const faucetControllerRef = useRef<AbortController | null>(null);
-  const balanceRequestRef = useRef(0);
+  const balanceReaderRef = useRef<NativeBalanceReader | null>(null);
+  if (!balanceReaderRef.current) balanceReaderRef.current = new NativeBalanceReader();
+  const balanceMountedRef = useRef(false);
   const walletOperationRef = useRef(false);
   const removalPromiseRef = useRef<Promise<void> | null>(null);
 
   const health = useNetworkHealth();
+  const balanceScope: PortfolioScope | null = account ? { networkId: THRU_NETWORK.id,
+    chainId: THRU_NETWORK.expectedChainId, walletAddress: account.address } : null;
+  const balanceScopeKey = `${THRU_NETWORK.storageScope}:${account?.address ?? ""}:${health.status}`;
+  const balanceScopeRef = useRef(balanceScopeKey);
+  balanceScopeRef.current = balanceScopeKey;
+  const visibleBalance = visibleNativeObservation(balanceScope, nativeObservation, health.status);
+  const balance = visibleBalance?.rawBalance ?? null;
+  const balanceError = !account || balance !== null ? null : health.status === "Offline"
+    ? "Balance unavailable while RPC is offline." : health.status === "Checking"
+      ? "Balance check is pending RPC availability." : visibleBalance?.availability === "unavailable"
+        ? health.status === "Degraded" ? "Balance temporarily unavailable while RPC is unstable."
+          : "Balance temporarily unavailable." : null;
 
   // Lifted portfolio hook
   const portfolioHook = useTokenPortfolio(account, {
     networkStatus: health?.status,
   });
+  const [, expireObservation] = useState(0);
+  const portfolioModel = balanceScope ? buildWalletPortfolio({ scope: balanceScope,
+    native: nativeObservation, tokens: portfolioHook.modelSnapshot ?? null,
+    networkStatus: health.status, now: Date.now() }) : null;
+  // Display expiry only: no discovery, RPC read, or timestamp refresh.
+  useEffect(() => {
+    if (!portfolioModel) return;
+    const now = Date.now();
+    const expiries = [portfolioModel.native.observation, ...portfolioModel.tokens.flatMap((asset) =>
+      [asset.observation, ...asset.sources.map((source) => source.observation)])]
+      .flatMap((observation) => observation.source === "rpc" && observation.observedAt !== null && observation.observedAt <= now
+        ? [observation.observedAt + 60_001] : []).filter((expiry) => expiry > now);
+    if (!expiries.length) return;
+    const timer = setTimeout(() => expireObservation((revision) => revision + 1), Math.min(...expiries) - now);
+    return () => clearTimeout(timer);
+  }, [portfolioModel]);
 
   const refreshBalance = useCallback(async (address: string) => {
-    const requestId = ++balanceRequestRef.current;
-    setBalanceError(null);
-    try {
-      const bal = await getBalance(address);
-      if (requestId !== balanceRequestRef.current) return;
-      setBalance(bal);
-    } catch (err) {
-      if (requestId !== balanceRequestRef.current) return;
-      if (isAccountNotFoundError(err)) {
-        setBalance(0n);
-        return;
-      }
-      setBalance(null);
-      if (health.status === "Offline") {
-        setBalanceError("Balance unavailable while RPC is offline.");
-      } else if (health.status === "Degraded") {
-        setBalanceError("Balance temporarily unavailable while RPC is unstable.");
-      } else if (health.status === "Checking") {
-        setBalanceError("Balance check is pending RPC availability.");
-      } else {
-        setBalanceError("Balance temporarily unavailable.");
-      }
-    }
-  }, [health.status]);
+    if (!balanceMountedRef.current || address !== account?.address || balanceScopeRef.current !== balanceScopeKey) return;
+    const observation = await balanceReaderRef.current?.read({ networkId: THRU_NETWORK.id,
+      chainId: THRU_NETWORK.expectedChainId, walletAddress: address }, health.status,
+      () => balanceMountedRef.current && balanceScopeRef.current === balanceScopeKey);
+    if (observation && balanceMountedRef.current && balanceScopeRef.current === balanceScopeKey) setNativeObservation(observation);
+  }, [account?.address, balanceScopeKey, health.status]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    balanceMountedRef.current = true;
+    return () => {
+      balanceMountedRef.current = false;
       faucetControllerRef.current?.abort();
-      balanceRequestRef.current += 1;
-    },
-    [],
-  );
+      balanceReaderRef.current?.cancel();
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -157,19 +170,14 @@ export default function AppFlow() {
       if (health.status === "Online" || health.status === "Degraded") {
         void refreshBalance(account.address);
       } else {
-        balanceRequestRef.current += 1;
-        setBalance(null);
-        setBalanceError(
-          health.status === "Offline"
-            ? "Balance unavailable while RPC is offline."
-            : "Balance check is pending RPC availability.",
-        );
+        balanceReaderRef.current?.cancel();
+        setNativeObservation(null);
       }
     } else {
-      balanceRequestRef.current += 1;
-      setBalance(null);
-      setBalanceError(null);
+      balanceReaderRef.current?.cancel();
+      setNativeObservation(null);
     }
+    return () => balanceReaderRef.current?.cancel();
   }, [account, refreshBalance, health.status]);
 
   async function handleCreateWallet(): Promise<boolean> {
@@ -455,11 +463,12 @@ export default function AppFlow() {
           restoreStatus={restoreStatus}
           persistenceWarning={persistenceWarning}
           portfolioHook={portfolioHook}
+          portfolioModel={portfolioModel}
         />
       )}
       {stage === "token" && account && (
         <div style={{ marginTop: 24, flex: 1, overflow: "auto" }}>
-          <TokenStudio account={account} health={health} portfolioHook={portfolioHook} />
+          <TokenStudio account={account} health={health} portfolioHook={portfolioHook} portfolioModel={portfolioModel} />
         </div>
       )}
       {stage === "name" && account && (

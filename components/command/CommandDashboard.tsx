@@ -24,6 +24,9 @@ import TokenDiscoveryStatus from "../token-studio/TokenDiscoveryStatus";
 import TokenSourcePicker from "../token-studio/TokenSourcePicker";
 import { tokenReadBalance, tokenSendSourceAllowed, tokenSourceRestriction } from "@/lib/token/portfolio";
 import { useTokenSendSources } from "@/lib/token/portfolio-hook";
+import type { WalletPortfolio } from "@/lib/portfolio/asset-model";
+import { portfolioForView, portfolioItemsForView, portfolioViewKey } from "@/lib/portfolio/presentation";
+import { NativeAssetSummary, PortfolioAssetList } from "./PortfolioAssets";
 
 type WalletImportMode = "hidden" | "hex" | "backup";
 
@@ -47,9 +50,14 @@ interface CommandDashboardProps {
   restoreStatus?: "RESTORING" | "WALLET_READY" | "NO_SAVED_WALLET" | "VAULT_ERROR";
   persistenceWarning?: string | null;
   portfolioHook: TokenPortfolioHook;
+  portfolioModel?: WalletPortfolio | null;
 }
 
-export default function CommandDashboard({
+export default function CommandDashboard(props: CommandDashboardProps) {
+  return <ScopedCommandDashboard key={portfolioViewKey(props.account?.address)} {...props} />;
+}
+
+function ScopedCommandDashboard({
   account,
   balance,
   balanceError,
@@ -68,6 +76,7 @@ export default function CommandDashboard({
   onForgetAccount = () => {},
   restoreStatus = "NO_SAVED_WALLET",
   portfolioHook,
+  portfolioModel,
 }: CommandDashboardProps) {
   const [importMode, setImportMode] = useState<WalletImportMode>("hidden");
   const [importReady, setImportReady] = useState(false);
@@ -116,7 +125,8 @@ export default function CommandDashboard({
   const [sourceChoice, setSourceChoice] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  const { portfolio } = portfolioHook;
+  const model = account ? portfolioForView(account.address, portfolioHook, health.status, balance, portfolioModel) : null;
+  const portfolio = portfolioItemsForView(portfolioHook, model);
   
   // Set default asset if none selected and portfolio has items
   useEffect(() => {
@@ -139,8 +149,19 @@ export default function CommandDashboard({
 
   const activeWalletAccounts = useTokenSendSources(selectedItem, account?.address ?? "");
 
-  const selectedSourceAccount = activeWalletAccounts.find((source) => source.address === sourceChoice) ?? activeWalletAccounts[0];
+  const selectedSourceAccount = sourceChoice ? activeWalletAccounts.find((source) => source.address === sourceChoice) : activeWalletAccounts[0];
   const transferSource = selectedSourceAccount?.address || "";
+  const previousSourceRef = React.useRef(transferSource);
+  useEffect(() => {
+    if (previousSourceRef.current !== transferSource) setTransferAmount("");
+    if (sourceChoice && !transferSource) { setSourceChoice(""); setTransferAmount(""); }
+    previousSourceRef.current = transferSource;
+  }, [transferSource, sourceChoice]);
+  useEffect(() => {
+    if (selectedAssetMint && selectedAssetMint !== NATIVE_ASSET_VALUE && !portfolio.some((item) => item.mintAddress === selectedAssetMint)) {
+      setSelectedAssetMint(""); setSourceChoice(""); setTransferAmount(""); setTransferDestination("");
+    }
+  }, [portfolio, selectedAssetMint]);
 
   useEffect(() => {
     setValidationError(null);
@@ -158,6 +179,7 @@ export default function CommandDashboard({
   const isHealthOffline = health?.status === "Offline";
   const transferAllowed = Boolean(
     account && selectedAssetMint && transferSource && transferDestination && transferAmount.trim() &&
+    previousSourceRef.current === transferSource &&
     !validationError && !isHealthOffline && health?.status !== "Checking" && !nativeBusy
   );
 
@@ -311,11 +333,11 @@ export default function CommandDashboard({
                     <div className={styles.balanceAmount}>
                       {balanceError ? (
                         <span style={{ color: "var(--danger)", fontSize: "1.5rem" }}>Unavailable</span>
-                      ) : balance === null ? (
-                        <span style={{ fontSize: "1.5rem", color: "var(--text-muted)" }}>Loading...</span>
+                      ) : model?.native.rawBalance == null ? (
+                        <span style={{ fontSize: "1.5rem", color: "var(--text-muted)" }}>Unavailable</span>
                       ) : (
                         <>
-                           {balance.toString()} <span className={styles.balanceUnit}>native units</span>
+                           {model.native.rawBalance.toString()} <span className={styles.balanceUnit}>native units</span>
                         </>
                       )}
                     </div>
@@ -345,33 +367,10 @@ export default function CommandDashboard({
         {account && (
           <div className={styles.bottomGrid} style={{ marginTop: "2rem" }}>
             <div className={styles.gridBlockTokens}>
-              <h4 className={styles.blockTitle}>My Holdings / Created Tokens</h4>
-              <TokenDiscoveryStatus portfolio={portfolioHook} status={health.status} />
-              {portfolioHook.refreshing && portfolio.length === 0 ? (
-                <div style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>Loading tokens...</div>
-              ) : portfolio.length === 0 ? (
-                <div style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No verified holdings or saved created tokens in this view. Discovery may be partial.</div>
-              ) : (
-                <div className={styles.tokenList}>
-                  {portfolio.map((item) => {
-                    const balanceFmt = tokenReadBalance(item, account.address);
-                    return (
-                      <div key={item.mintAddress} className={styles.tokenItem}>
-                        <div className={styles.tokenLeft}>
-                          <div className={styles.tokenSymbol}>{item.mint?.ticker ?? "TOKEN"}</div>
-                          <div className={styles.tokenName}>{item.label || item.mintAddress.slice(0, 8) + "..."}</div>
-                          <div className={styles.tokenName}>{item.mint?.creator === account.address || item.mint?.mintAuthority === account.address ? "Created / controlled" : "Holding"}
-                            {item.discoveryRead === "cached" ? " · cached / stale" : ""}
-                            {item.tokenAccounts.length > 1 ? " · multiple accounts; balance shown for one account" : ""}</div>
-                        </div>
-                        <div className={styles.tokenRight}>
-                          <div className={styles.tokenBalance}>{balanceFmt}</div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              <h4 className={styles.blockTitle}>My Assets</h4>
+              {model && <NativeAssetSummary asset={model.native} />}
+              <TokenDiscoveryStatus portfolio={portfolioHook} status={health.status} model={model} />
+              {model && <PortfolioAssetList model={model} />}
             </div>
 
             <CommandActivity key={account.address} walletAddress={account.address} networkStatus={health.status} refreshRevision={nativeState?.revision ?? 0} />
@@ -388,8 +387,9 @@ export default function CommandDashboard({
                 {tokenSourceRestriction(selectedItem, account.address) && <p role="status" className={styles.nativeHint}>{tokenSourceRestriction(selectedItem, account.address)}</p>}
                 {selectedSourceAccount?.state && selectedItem?.mint && <p className={styles.nativeHint}>Selected source balance: {formatRawAmount(selectedSourceAccount.state.amount, selectedItem.mint.decimals)} {selectedItem.mint.ticker}</p>}
                 <div className={styles.inputGroup}>
-                  <label className={styles.inputLabel}>Recipient</label>
+                  <label className={styles.inputLabel} htmlFor="quick-send-recipient">Recipient</label>
                   <input 
+                    id="quick-send-recipient"
                     type="text" 
                     placeholder="thru1..." 
                     className={styles.inputText}
@@ -400,9 +400,10 @@ export default function CommandDashboard({
                   />
                 </div>
                 <div className={styles.inputGroup}>
-                  <label className={styles.inputLabel}>Amount</label>
+                  <label className={styles.inputLabel} htmlFor="quick-send-amount">Amount</label>
                   <div className={styles.inputAmountWrapper}>
                     <input 
+                      id="quick-send-amount"
                       type="text" 
                       placeholder="0.00" 
                       className={styles.inputText}
@@ -410,7 +411,7 @@ export default function CommandDashboard({
                       onChange={e => setTransferAmount(e.target.value)}
                       disabled={sendBusy}
                     />
-                    <button type="button" className={styles.maxBtn} onClick={handleSetMax}>MAX</button>
+                    <button type="button" className={styles.maxBtn} disabled={sendBusy || !selectedSourceAccount} onClick={handleSetMax}>MAX</button>
                   </div>
                   {validationError && (
                     <span style={{ color: "var(--danger)", fontSize: "0.75rem", marginTop: "2px", display: "block" }}>{validationError}</span>
@@ -454,6 +455,7 @@ export default function CommandDashboard({
                    aria-haspopup="dialog" aria-expanded={walletActionsOpen} aria-controls="command-wallet-actions"
                    onClick={() => { if (!popoverBusy) setWalletActionsOpen(!walletActionsOpen); }}>Wallet actions</button>
                  {walletActionsOpen && account && <PortWalletPopover id="command-wallet-actions" align="left" account={account} balance={balance}
+                   portfolioHook={portfolioHook} portfolioModel={model}
                    health={health} onForgetAccount={onForgetAccount} onBusyChange={setPopoverBusy} />}
                </div>
                <button type="button" className={styles.btnOutlineSmall} onClick={copyAddress} disabled={!account}>
