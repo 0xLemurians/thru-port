@@ -1075,7 +1075,13 @@
     position: fixed;
     transform: translateX(-100%);
     visibility: hidden;
+    /* Closed navigation must leave keyboard and accessibility trees immediately. */
+    transition: transform 0.3s ease;
     width: 16rem;
+  }
+  .navRail :is(.navLink, .navLinkSecondary, .themeBtn) {
+    /* Descendants must not animate their inherited visibility either. */
+    transition-property: color, background-color, opacity;
   }
   .navRailOpen {
     transform: translateX(0);

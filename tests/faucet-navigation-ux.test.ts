@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { register } from "node:module";
+import { createRequire, register } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+import { build } from "esbuild";
 import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup, renderToString } from "react-dom/server";
 import PortFaucetPanel from "../components/port/PortFaucetPanel";
 import { SAFE_FAUCET_UNCERTAIN_MESSAGE, SAFE_FAUCET_UNAVAILABLE_MESSAGE } from "../lib/wallet/faucet-safety";
 import type { NetworkStatus } from "../lib/network/network-health";
@@ -216,3 +220,223 @@ test("unmount cleanup prevents a late Escape from changing the old component", a
   if (typeof cleanup === "function") cleanup();
   key(doc.target, "Escape"); assert.equal(view.toggle(view.render()).props["aria-expanded"], true);
 });
+
+// Real browser coverage is necessary here: Node hook mocks cannot reproduce
+// CSS visibility interpolation or the browser's sequential keyboard focus order.
+interface NavigationLocator {
+  click(): Promise<void>; focus(): Promise<void>;
+  getAttribute(name: string): Promise<string | null>; isVisible(): Promise<boolean>;
+  evaluate<T>(fn: (element: HTMLElement) => T): Promise<Awaited<T>>;
+  getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): NavigationLocator;
+}
+interface NavigationPage {
+  keyboard: { press(key: string): Promise<void> };
+  setDefaultTimeout(ms: number): void; goto(url: string): Promise<unknown>;
+  addScriptTag(options: { content: string }): Promise<unknown>;
+  addStyleTag(options: { content: string }): Promise<unknown>;
+  locator(selector: string): NavigationLocator;
+  getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): NavigationLocator;
+  evaluate<T>(fn: () => T): Promise<Awaited<T>>;
+  waitForFunction(expression: string): Promise<unknown>; waitForTimeout(ms: number): Promise<void>;
+  setViewportSize(size: { width: number; height: number }): Promise<void>;
+  emulateMedia(options: { reducedMotion: "reduce" | "no-preference" }): Promise<void>;
+  on(event: "pageerror", cb: (error: Error) => void): void;
+  on(event: "console", cb: (message: { type(): string; text(): string }) => void): void;
+}
+interface NavigationRuntime {
+  chromium: { executablePath(): string; launch(options: { headless: boolean; executablePath: string; args: string[] }): Promise<{
+    close(): Promise<void>;
+    newContext(options: { serviceWorkers: "block" }): Promise<{
+      cookies(): Promise<unknown[]>; storageState(): Promise<{ cookies: unknown[]; origins: unknown[] }>;
+      newPage(): Promise<NavigationPage>;
+      route(pattern: string, cb: (route: { request(): { url(): string };
+        fulfill(options: { status: number; contentType: string; body: string }): Promise<void>; abort(): Promise<void> }) => Promise<void>): Promise<void>;
+    }>;
+  }> };
+}
+
+test("real hydrated CommandShell excludes closed mobile navigation immediately from keyboard focus", { timeout: 120_000 }, async (t) => {
+  const require = createRequire(import.meta.url);
+  const bundled = path.join(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright");
+  let runtime: NavigationRuntime;
+  try { runtime = require(process.env.PLAYWRIGHT_MODULE_PATH ?? (existsSync(bundled) ? bundled : "playwright")) as NavigationRuntime; }
+  catch { t.skip("Existing Playwright unavailable; no browser or dependency will be installed."); return; }
+  const executablePath = [runtime.chromium.executablePath(), "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"].find(existsSync);
+  if (!executablePath) { t.skip("No installed Chromium; this regression never downloads one."); return; }
+  const { default: Shell } = await import("../components/command/CommandShell");
+  const children = React.createElement("main", null,
+    React.createElement("label", { htmlFor: "navigation-outside" }, "Public workspace field"),
+    React.createElement("input", { id: "navigation-outside" }),
+    React.createElement("button", { type: "button" }, "Public workspace action"));
+  const shellProps: React.ComponentProps<typeof Shell> = { currentStage: "account", accountAvailable: false,
+    onStageChange: () => {}, health: { status: "Online", lastChecked: null, checkNow: () => {} }, children };
+  const ssr = renderToString(React.createElement(Shell, shellProps, children));
+  const shellPath = path.resolve("components/command/CommandShell.tsx").replaceAll("\\", "/");
+  const bundles = await build({ stdin: { contents: `
+    import React from 'react'; import {hydrateRoot} from 'react-dom/client';
+    import Shell from ${JSON.stringify(shellPath)};
+    window.navigationQA={stages:[],hydrationErrors:[],unmount:()=>{}};
+    const root=hydrateRoot(document.getElementById('root'),
+      <Shell currentStage="account" accountAvailable={false}
+        health={{status:'Online',lastChecked:null,checkNow:()=>{}}}
+        onStageChange={stage=>window.navigationQA.stages.push(stage)}>
+        <main><label htmlFor="navigation-outside">Public workspace field</label>
+          <input id="navigation-outside"/><button type="button">Public workspace action</button></main>
+      </Shell>,{onRecoverableError:error=>window.navigationQA.hydrationErrors.push(error.message)});
+    window.navigationQA.unmount=()=>root.unmount();
+  `, loader: "jsx", resolveDir: process.cwd(), sourcefile: "navigation-browser-entry.jsx" },
+    bundle: true, write: false, outdir: "unused-navigation-output", platform: "browser", format: "iife", jsx: "automatic",
+    define: { "process.env.NODE_ENV": '"production"' } });
+  const browser = await runtime.chromium.launch({ headless: true, executablePath,
+    args: ["--disable-extensions", "--disable-sync", "--no-first-run"] });
+  try {
+    // launch() owns a new temporary profile; no persistent/default user profile is used.
+    const context = await browser.newContext({ serviceWorkers: "block" });
+    assert.deepEqual(await context.storageState(), { cookies: [], origins: [] });
+    const unexpectedRequests: string[] = [], problems: string[] = [];
+    await context.route("**/*", async route => {
+      if (route.request().url() === "http://navigation.test/") await route.fulfill({ status: 200, contentType: "text/html",
+        body: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0"><div id="root">${ssr}</div><button id="after-shell" type="button">After shell</button></body></html>` });
+      else { unexpectedRequests.push(new URL(route.request().url()).hostname); await route.abort(); }
+    });
+    const page = await context.newPage(); page.setDefaultTimeout(5000);
+    await page.setViewportSize({ width: 390, height: 900 });
+    page.on("pageerror", error => problems.push(error.message));
+    page.on("console", message => { if (["error", "warning"].includes(message.type())) problems.push(message.text()); });
+    await page.goto("http://navigation.test/");
+    assert.deepEqual(await page.evaluate(async () => ({ origin: location.origin, local: localStorage.length,
+      session: sessionStorage.length, databases: (await indexedDB.databases()).length })),
+      { origin: "http://navigation.test", local: 0, session: 0, databases: 0 });
+    await page.addStyleTag({ content: readFileSync("app/globals.css", "utf8") });
+    for (const output of bundles.outputFiles) {
+      if (output.path.endsWith(".css")) await page.addStyleTag({ content: output.text });
+      else if (output.path.endsWith(".js")) await page.addScriptTag({ content: output.text });
+    }
+    await page.getByRole("button", { name: "Open navigation menu", exact: true }).getAttribute("aria-controls");
+    const nav = page.locator('nav[aria-label="Main navigation"]');
+    const trigger = page.getByRole("button", { name: /navigation menu$/ });
+    const dashboard = nav.getByRole("button", { name: /Dashboard$/ });
+    const outside = page.locator("#navigation-outside");
+    const state = () => page.evaluate(() => {
+      const nav = document.querySelector('nav[aria-label="Main navigation"]')!;
+      const trigger = document.querySelector('[aria-controls][aria-expanded]')!;
+      return { expanded: trigger.getAttribute("aria-expanded"), visibility: getComputedStyle(nav).visibility,
+        inNav: nav.contains(document.activeElement), onTrigger: document.activeElement === trigger,
+        activeId: document.activeElement?.id, lostFocus: document.activeElement === document.body,
+        controlsHidden: [...nav.querySelectorAll("button,a")].every(control => getComputedStyle(control).visibility === "hidden") };
+    });
+    const open = async (key: "Enter" | "Space" = "Enter") => {
+      if (await trigger.getAttribute("aria-expanded") !== "true") { await trigger.focus(); await page.keyboard.press(key); }
+      assert.equal(await trigger.getAttribute("aria-expanded"), "true");
+      // Wait only for OPENING. The Escape -> Tab race below contains no delay.
+      await page.waitForFunction(`getComputedStyle(document.querySelector('nav[aria-label="Main navigation"]')).visibility === 'visible' &&
+        new DOMMatrixReadOnly(getComputedStyle(document.querySelector('nav[aria-label="Main navigation"]')).transform).m41 === 0`);
+    };
+    const setTheme = async (theme: "dark" | "light", mobile: boolean) => {
+      if (await page.evaluate(() => document.documentElement.getAttribute("data-theme")) === theme) return;
+      if (mobile) await open();
+      await page.getByRole("button", { name: `Switch to ${theme} mode`, exact: true }).click();
+      if (mobile) await page.keyboard.press("Escape");
+    };
+    let immediateSequences = 0;
+    const immediateEscapeTab = async () => {
+      await dashboard.focus();
+      await page.keyboard.press("Escape");
+      await page.keyboard.press("Tab"); // No sleep, animation wait or intermediate DOM assertion.
+      const result = await state();
+      assert.equal(result.expanded, "false");
+      assert.equal(result.inNav, false, `Immediate Tab must never enter closed navigation: ${JSON.stringify(result)}`);
+      assert.equal(result.visibility, "hidden");
+      assert.equal(result.controlsHidden, true);
+      assert.equal(result.lostFocus, false); assert.equal(result.activeId, "navigation-outside");
+      immediateSequences++;
+    };
+    await t.test("actual server output hydrates with a clean isolated origin and no errors", async () => {
+      assert.equal(await trigger.getAttribute("aria-expanded"), "false");
+      assert.equal(await nav.getAttribute("id"), await trigger.getAttribute("aria-controls"));
+      assert.deepEqual(await page.evaluate(() => window.navigationQA.hydrationErrors), []);
+      assert.deepEqual(problems, []);
+    });
+    for (const width of [320, 390, 768]) for (const theme of ["dark", "light"] as const) {
+      await t.test(`${width}px ${theme}: immediate Escape/Tab and every closing sample exclude navigation`, async () => {
+        await page.setViewportSize({ width, height: 900 }); await setTheme(theme, true);
+        for (let cycle = 0; cycle < 3; cycle++) { await open(cycle % 2 ? "Space" : "Enter"); await immediateEscapeTab(); }
+        await open(); await dashboard.focus(); await page.keyboard.press("Escape");
+        const snapshots = [{ ms: 0, value: await state() }];
+        for (const [delay, ms] of [[50, 50], [100, 150], [200, 350]]) {
+          await page.waitForTimeout(delay); snapshots.push({ ms, value: await state() });
+        }
+        for (const snapshot of snapshots) {
+          assert.equal(snapshot.value.expanded, "false"); assert.equal(snapshot.value.visibility, "hidden");
+          assert.equal(snapshot.value.controlsHidden, true);
+          assert.equal(snapshot.value.inNav, false); assert.equal(snapshot.value.onTrigger, true);
+          assert.equal(snapshot.value.lostFocus, false);
+        }
+        assert.equal(await nav.evaluate(element => getComputedStyle(element).transitionProperty), "transform");
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        t.diagnostic(`Focus samples ${width}px ${theme}: 0/50/150/350ms all on trigger, nav hidden; immediate Tab x3 goes to public field.`);
+      });
+    }
+    await t.test("mouse trigger/selection closure and unrelated Escape focus remain correct", async () => {
+      await page.setViewportSize({ width: 390, height: 900 });
+      await open(); await trigger.click(); await page.keyboard.press("Tab");
+      assert.equal((await state()).activeId, "navigation-outside"); assert.equal((await state()).inNav, false);
+      await open("Space"); await dashboard.click(); await page.keyboard.press("Tab");
+      assert.equal((await state()).expanded, "false"); assert.equal((await state()).inNav, false);
+      assert.equal((await state()).lostFocus, false);
+      assert.deepEqual(await page.evaluate(() => window.navigationQA.stages), ["account"]);
+      await open(); await outside.focus(); await page.keyboard.press("Escape");
+      assert.equal((await state()).activeId, "navigation-outside"); assert.equal((await state()).expanded, "false");
+    });
+    await t.test("desktop keyboard navigation and breakpoint resizing preserve access without stealing focus", async () => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      // The unchanged desktop transition can run across a breakpoint. Settle
+      // resizing only; the Escape -> immediate Tab checks above never wait.
+      await page.waitForFunction(`getComputedStyle(document.querySelector('nav[aria-label="Main navigation"]')).visibility === 'visible'`);
+      for (const theme of ["dark", "light"] as const) {
+        await setTheme(theme, false);
+        assert.equal(await nav.isVisible(), true); assert.equal(await trigger.isVisible(), false);
+        assert.equal(await nav.evaluate(element => getComputedStyle(element).transitionProperty), "all");
+        await dashboard.focus(); await page.keyboard.press("Tab"); assert.equal((await state()).inNav, true);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      }
+      await outside.focus();
+      for (const width of [768, 769, 1440, 320, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.waitForFunction(`getComputedStyle(document.querySelector('nav[aria-label="Main navigation"]')).visibility === '${width <= 768 ? "hidden" : "visible"}'`);
+        assert.equal((await state()).visibility, width <= 768 ? "hidden" : "visible");
+        assert.equal((await state()).activeId, "navigation-outside");
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      }
+      // A logical mobile-open state must not hide or trap the desktop sidebar.
+      await page.setViewportSize({ width: 390, height: 900 }); await open();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.waitForFunction(`getComputedStyle(document.querySelector('nav[aria-label="Main navigation"]')).visibility === 'visible'`);
+      await dashboard.focus(); await page.keyboard.press("Escape");
+      assert.equal(await nav.isVisible(), true); assert.equal(await trigger.isVisible(), false);
+      assert.equal((await state()).onTrigger, false); assert.equal((await state()).inNav, true);
+    });
+    await t.test("reduced-motion preference preserves immediate exclusion and normal keyboard flow", async () => {
+      await page.setViewportSize({ width: 390, height: 900 });
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      assert.equal(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches), true);
+      for (let cycle = 0; cycle < 3; cycle++) { await open(); await immediateEscapeTab(); }
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+    });
+    await t.test("unmount cleans up without network, hydration errors or late focus changes", async () => {
+      await open();
+      await page.evaluate(() => window.navigationQA.unmount());
+      await page.locator("#after-shell").focus(); await page.keyboard.press("Escape");
+      assert.equal(await page.evaluate(() => document.activeElement?.id), "after-shell");
+      assert.equal(await page.evaluate(() => document.getElementById("root")!.childElementCount), 0);
+      assert.deepEqual(await page.evaluate(() => window.navigationQA.hydrationErrors), []);
+      assert.deepEqual(problems, []); assert.deepEqual(unexpectedRequests, []);
+      t.diagnostic(`Immediate Escape -> Tab sequences passed: ${immediateSequences}; RPC/network requests=0; console/hydration errors=0.`);
+    });
+  } finally { await browser.close(); }
+});
+
+declare global {
+  interface Window { navigationQA: { stages: string[]; hydrationErrors: string[]; unmount(): void }; }
+}
