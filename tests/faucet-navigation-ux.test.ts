@@ -126,7 +126,7 @@ for (const error of [SAFE_FAUCET_UNCERTAIN_MESSAGE, SAFE_FAUCET_UNAVAILABLE_MESS
 // Only React hooks are mocked here: production JSX, callbacks and DOM event
 // listener cleanup are exercised directly. Real React/keyboard behavior is also
 // checked in the isolated local browser, without adding a test dependency.
-async function shell(t: TestContext, accountAvailable = true) {
+async function shell(t: TestContext, accountAvailable = true, onStageChange?: (stage: WorkspaceStage) => void) {
   const { default: Shell } = await import("../components/command/CommandShell");
   const values: unknown[] = [true, "dark", false];
   const refs: { current: unknown }[] = [];
@@ -149,7 +149,7 @@ async function shell(t: TestContext, accountAvailable = true) {
   t.mock.method(React, "useEffect", (effect: React.EffectCallback) => { effects.push(effect); });
   const render = () => {
     stateIndex = 0; refIndex = 0; effects = [];
-    return Shell({ currentStage: "account", accountAvailable, onStageChange: (stage) => stages.push(stage),
+    return Shell({ currentStage: "account", accountAvailable, onStageChange: (stage) => { stages.push(stage); onStageChange?.(stage); },
       health: { status: "Online", lastChecked: null, checkNow: () => {} }, children: "Public test workspace" });
   };
   const toggle = (tree: React.ReactNode) => {
@@ -221,6 +221,37 @@ test("unmount cleanup prevents a late Escape from changing the old component", a
   key(doc.target, "Escape"); assert.equal(view.toggle(view.render()).props["aria-expanded"], true);
 });
 
+test("stage selection does not steal unrelated focus even if its callback is invoked directly", async (t) => {
+  const view = await shell(t), doc = documentTarget(t); let focusCalls = 0;
+  const outside = {}, trigger = { getClientRects: () => [{}], focus: () => { focusCalls++; } };
+  view.render(); view.refs[0].current = trigger; view.refs[1].current = { contains: () => false };
+  view.toggle(view.render()).props.onClick?.(); doc.focus(outside);
+  button(view.render(), "Dashboard").props.onClick?.();
+  assert.deepEqual(view.stages, ["account"]); assert.equal(doc.focused(), outside); assert.equal(focusCalls, 0);
+  assert.equal(view.toggle(view.render()).props["aria-expanded"], false);
+});
+
+test("stage callback can intentionally move focus outside navigation without it being stolen back", async (t) => {
+  const doc = documentTarget(t), outside = {}, link = {}; let focusCalls = 0;
+  const view = await shell(t, true, () => doc.focus(outside));
+  view.render(); view.refs[0].current = { getClientRects: () => [{}], focus: () => { focusCalls++; } };
+  view.refs[1].current = { contains: (node: unknown) => node === link };
+  view.toggle(view.render()).props.onClick?.(); doc.focus(link);
+  button(view.render(), "Tokens").props.onClick?.();
+  assert.deepEqual(view.stages, ["token"]); assert.equal(doc.focused(), outside); assert.equal(focusCalls, 0);
+  assert.equal(view.toggle(view.render()).props["aria-expanded"], false);
+});
+
+test("stage callback unmount clears refs before any selection focus restoration", async (t) => {
+  const doc = documentTarget(t), outside = {}, link = {}; let focusCalls = 0;
+  const view = await shell(t, true, () => { view.refs[0].current = null; view.refs[1].current = null; doc.focus(outside); });
+  view.render(); view.refs[0].current = { getClientRects: () => [{}], focus: () => { focusCalls++; } };
+  view.refs[1].current = { contains: (node: unknown) => node === link };
+  view.toggle(view.render()).props.onClick?.(); doc.focus(link);
+  button(view.render(), "Identity").props.onClick?.();
+  assert.deepEqual(view.stages, ["name"]); assert.equal(doc.focused(), outside); assert.equal(focusCalls, 0);
+});
+
 // Real browser coverage is necessary here: Node hook mocks cannot reproduce
 // CSS visibility interpolation or the browser's sequential keyboard focus order.
 interface NavigationLocator {
@@ -231,6 +262,7 @@ interface NavigationLocator {
 }
 interface NavigationPage {
   keyboard: { press(key: string): Promise<void> };
+  mouse: { click(x: number, y: number): Promise<void> };
   setDefaultTimeout(ms: number): void; goto(url: string): Promise<unknown>;
   addScriptTag(options: { content: string }): Promise<unknown>;
   addStyleTag(options: { content: string }): Promise<unknown>;
@@ -276,14 +308,20 @@ test("real hydrated CommandShell excludes closed mobile navigation immediately f
   const bundles = await build({ stdin: { contents: `
     import React from 'react'; import {hydrateRoot} from 'react-dom/client';
     import Shell from ${JSON.stringify(shellPath)};
-    window.navigationQA={stages:[],hydrationErrors:[],unmount:()=>{}};
-    const root=hydrateRoot(document.getElementById('root'),
-      <Shell currentStage="account" accountAvailable={false}
+    window.navigationQA={stages:[],hydrationErrors:[],unmount:()=>{},setAccountAvailable:()=>{}};
+    function Harness() {
+      const [stage,setStage]=React.useState('account');
+      const [available,setAvailable]=React.useState(false);
+      React.useEffect(()=>{window.navigationQA.setAccountAvailable=setAvailable;},[]);
+      return <Shell currentStage={stage} accountAvailable={available}
         health={{status:'Online',lastChecked:null,checkNow:()=>{}}}
-        onStageChange={stage=>window.navigationQA.stages.push(stage)}>
-        <main><label htmlFor="navigation-outside">Public workspace field</label>
+        onStageChange={next=>{window.navigationQA.stages.push(next);setStage(next);}}>
+        <main data-stage={stage}><label htmlFor="navigation-outside">Public workspace field</label>
           <input id="navigation-outside"/><button type="button">Public workspace action</button></main>
-      </Shell>,{onRecoverableError:error=>window.navigationQA.hydrationErrors.push(error.message)});
+      </Shell>;
+    }
+    const root=hydrateRoot(document.getElementById('root'),
+      <Harness/>,{onRecoverableError:error=>window.navigationQA.hydrationErrors.push(error.message)});
     window.navigationQA.unmount=()=>root.unmount();
   `, loader: "jsx", resolveDir: process.cwd(), sourcefile: "navigation-browser-entry.jsx" },
     bundle: true, write: false, outdir: "unused-navigation-output", platform: "browser", format: "iife", jsx: "automatic",
@@ -389,6 +427,49 @@ test("real hydrated CommandShell excludes closed mobile navigation immediately f
       await open(); await outside.focus(); await page.keyboard.press("Escape");
       assert.equal((await state()).activeId, "navigation-outside"); assert.equal((await state()).expanded, "false");
     });
+    await t.test("disabled Tokens and Identity reject pointer activation and stay out of keyboard order", async () => {
+      await open();
+      const before = await page.evaluate(() => window.navigationQA.stages.length);
+      for (const name of ["Tokens", "Identity"]) {
+        const action = nav.getByRole("button", { name: new RegExp(`${name}$`) });
+        assert.equal(await action.evaluate(element => element.matches(":disabled")), true);
+        const center = await action.evaluate(element => { const rect = element.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
+        await page.mouse.click(center.x, center.y);
+        assert.equal((await state()).expanded, "true");
+        assert.equal(await page.evaluate(() => window.navigationQA.stages.length), before);
+      }
+      await dashboard.focus(); await page.keyboard.press("Tab");
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Open Thru Documentation");
+      await page.keyboard.press("Escape");
+    });
+    let selections = 0;
+    const destinations = [["Dashboard", "account"], ["Tokens", "token"], ["Identity", "name"]] as const;
+    for (const width of [320, 390, 768]) for (const theme of ["dark", "light"] as const) {
+      await t.test(`${width}px ${theme}: every mobile destination restores focus for Enter, Space and pointer`, async () => {
+        await page.evaluate(() => window.navigationQA.setAccountAvailable(true));
+        await page.waitForFunction(`!document.querySelector('nav button:disabled')`);
+        await page.setViewportSize({ width, height: 900 }); await setTheme(theme, true);
+        for (const [name, stage] of destinations) for (const activation of ["Enter", "Space", "pointer"] as const) {
+          await open();
+          const action = nav.getByRole("button", { name: new RegExp(`${name}$`) });
+          const before = await page.evaluate(() => window.navigationQA.stages.length);
+          if (activation === "pointer") await action.click();
+          else { await action.focus(); await page.keyboard.press(activation); }
+          const selected = await state();
+          assert.equal(selected.expanded, "false"); assert.equal(selected.visibility, "hidden");
+          assert.equal(selected.controlsHidden, true); assert.equal(selected.onTrigger, true,
+            `${name}/${activation}: selection must focus the visible trigger before the item hides`);
+          assert.equal(selected.inNav, false); assert.equal(selected.lostFocus, false);
+          assert.equal(await page.locator("main").getAttribute("data-stage"), stage);
+          const stages = await page.evaluate(() => window.navigationQA.stages);
+          assert.equal(stages.length, before + 1); assert.equal(stages.at(-1), stage);
+          await page.keyboard.press("Tab");
+          const next = await state();
+          assert.equal(next.activeId, "navigation-outside"); assert.equal(next.inNav, false); assert.equal(next.lostFocus, false);
+          selections++;
+        }
+      });
+    }
     await t.test("desktop keyboard navigation and breakpoint resizing preserve access without stealing focus", async () => {
       await page.setViewportSize({ width: 1440, height: 900 });
       // The unchanged desktop transition can run across a breakpoint. Settle
@@ -400,6 +481,14 @@ test("real hydrated CommandShell excludes closed mobile navigation immediately f
         assert.equal(await nav.evaluate(element => getComputedStyle(element).transitionProperty), "all");
         await dashboard.focus(); await page.keyboard.press("Tab"); assert.equal((await state()).inNav, true);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        for (const [name, stage] of destinations) for (const activation of ["Enter", "Space", "pointer"] as const) {
+          const action = nav.getByRole("button", { name: new RegExp(`${name}$`) });
+          if (activation === "pointer") await action.click();
+          else { await action.focus(); await page.keyboard.press(activation); }
+          assert.equal(await action.evaluate(element => document.activeElement === element), true);
+          assert.equal((await state()).onTrigger, false); assert.equal(await nav.isVisible(), true);
+          assert.equal(await page.locator("main").getAttribute("data-stage"), stage);
+        }
       }
       await outside.focus();
       for (const width of [768, 769, 1440, 320, 1440]) {
@@ -425,18 +514,22 @@ test("real hydrated CommandShell excludes closed mobile navigation immediately f
       await page.emulateMedia({ reducedMotion: "no-preference" });
     });
     await t.test("unmount cleans up without network, hydration errors or late focus changes", async () => {
+      await open(); await dashboard.click();
+      assert.equal((await state()).onTrigger, true);
       await open();
       await page.evaluate(() => window.navigationQA.unmount());
       await page.locator("#after-shell").focus(); await page.keyboard.press("Escape");
+      await page.waitForTimeout(50);
       assert.equal(await page.evaluate(() => document.activeElement?.id), "after-shell");
       assert.equal(await page.evaluate(() => document.getElementById("root")!.childElementCount), 0);
       assert.deepEqual(await page.evaluate(() => window.navigationQA.hydrationErrors), []);
       assert.deepEqual(problems, []); assert.deepEqual(unexpectedRequests, []);
       t.diagnostic(`Immediate Escape -> Tab sequences passed: ${immediateSequences}; RPC/network requests=0; console/hydration errors=0.`);
+      t.diagnostic(`Mobile stage selections restored focus before immediate Tab: ${selections}; desktop selections retained their focused item.`);
     });
   } finally { await browser.close(); }
 });
 
 declare global {
-  interface Window { navigationQA: { stages: string[]; hydrationErrors: string[]; unmount(): void }; }
+  interface Window { navigationQA: { stages: string[]; hydrationErrors: string[]; unmount(): void; setAccountAvailable(available: boolean): void }; }
 }

@@ -62,6 +62,18 @@ export default function CommandShell({
     return () => document.removeEventListener("keydown", handleEscape);
   }, [isMobileMenuOpen]);
 
+  const selectStage = (stage: WorkspaceStage) => {
+    onStageChange(stage);
+    const trigger = menuButtonRef.current;
+    // Move focus before hiding the selected item, but preserve any focus the
+    // stage callback deliberately moved elsewhere and never focus a desktop trigger.
+    if (isMobileMenuOpen && trigger && trigger.getClientRects().length > 0 &&
+      navigationRef.current?.contains(document.activeElement)) {
+      trigger.focus();
+    }
+    setIsMobileMenuOpen(false);
+  };
+
   const toggleColorMode = () => {
     const newMode = colorMode === "dark" ? "light" : "dark";
     setColorMode(newMode);
@@ -102,7 +114,7 @@ export default function CommandShell({
           <div className={styles.navLinks}>
             <button 
               type="button"
-              onClick={() => { onStageChange("account"); setIsMobileMenuOpen(false); }} 
+              onClick={() => selectStage("account")}
               className={`${styles.navLink} ${currentStage === "account" ? styles.active : ""}`}
             >
               <span className={styles.navIcon}>◱</span>
@@ -111,7 +123,7 @@ export default function CommandShell({
             <button 
               type="button"
               disabled={!accountAvailable}
-              onClick={() => { if(accountAvailable) { onStageChange("token"); setIsMobileMenuOpen(false); } }} 
+              onClick={() => { if(accountAvailable) selectStage("token"); }}
               className={`${styles.navLink} ${currentStage === "token" ? styles.active : ""}`}
               style={{ opacity: accountAvailable ? 1 : 0.5, cursor: accountAvailable ? "pointer" : "not-allowed" }}
             >
@@ -121,7 +133,7 @@ export default function CommandShell({
             <button 
               type="button"
               disabled={!accountAvailable}
-              onClick={() => { if(accountAvailable) { onStageChange("name"); setIsMobileMenuOpen(false); } }} 
+              onClick={() => { if(accountAvailable) selectStage("name"); }}
               className={`${styles.navLink} ${currentStage === "name" ? styles.active : ""}`}
               style={{ opacity: accountAvailable ? 1 : 0.5, cursor: accountAvailable ? "pointer" : "not-allowed" }}
             >
