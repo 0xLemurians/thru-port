@@ -142,6 +142,8 @@ async function idbPut(
         reject(
           tx.error || req.error || new Error(`Failed to put to ${storeName}`),
         );
+      tx.onabort = () =>
+        reject(tx.error || new Error(`Write to ${storeName} was aborted`));
       req.onerror = () =>
         reject(req.error || new Error(`Failed to put to ${storeName}`));
     } catch (err) {

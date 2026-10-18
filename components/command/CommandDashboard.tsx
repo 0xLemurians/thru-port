@@ -7,6 +7,7 @@ import type { NetworkHealth } from "../port/useNetworkHealth";
 import PortFaucetPanel from "../port/PortFaucetPanel";
 import WalletBackupDialog from "../port/WalletBackupDialog";
 import { clearSecretInputs } from "@/lib/wallet/wallet-backup";
+import { WALLET_REMOVAL_ERROR } from "@/lib/wallet/persistent-wallet";
 import styles from "./command.module.css";
 import type { TokenPortfolioHook } from "@/lib/token/portfolio-hook";
 import { formatRawAmount } from "@thru/programs/token";
@@ -91,8 +92,23 @@ function ScopedCommandDashboard({
   const walletActionsRef = React.useRef<HTMLDivElement>(null);
   const walletTriggerRef = React.useRef<HTMLButtonElement>(null);
   const [popoverBusy, setPopoverBusy] = useState(false);
+  const [removalConfirm, setRemovalConfirm] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removalError, setRemovalError] = useState<string | null>(null);
+  const removalPromiseRef = React.useRef<Promise<void> | null>(null);
+  const removalMountedRef = React.useRef(true);
+  const removalTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const removalCancelRef = React.useRef<HTMLButtonElement>(null);
   const { state: nativeState, controller: nativeController } = useNativeTransfer();
   const nativeBusy = nativeState ? nativeSendBusy(nativeState) : false;
+
+  useEffect(() => {
+    removalMountedRef.current = true;
+    return () => { removalMountedRef.current = false; };
+  }, []);
+  useEffect(() => {
+    if (removalConfirm) removalCancelRef.current?.focus();
+  }, [removalConfirm]);
 
   useEffect(() => {
     setWalletActionsOpen(false);
@@ -143,6 +159,47 @@ function ScopedCommandDashboard({
     }
   });
 
+  // Shared by both removal surfaces. Reserve synchronously, before invoking
+  // the existing verified-deletion callback; repeated intent joins that work.
+  async function removeWalletSafely(): Promise<void> {
+    if (removalPromiseRef.current) return removalPromiseRef.current;
+    if (!removalMountedRef.current || !account || walletBusy || nativeBusy || sendBusy) {
+      throw new Error(WALLET_REMOVAL_ERROR);
+    }
+    const pending = Promise.resolve().then(() => {
+      if (!removalMountedRef.current) throw new Error(WALLET_REMOVAL_ERROR);
+      return onForgetAccount();
+    });
+    removalPromiseRef.current = pending;
+    setRemoving(true);
+    setRemovalError(null);
+    try {
+      await pending;
+    } finally {
+      removalPromiseRef.current = null;
+      if (removalMountedRef.current) setRemoving(false);
+    }
+  }
+
+  function cancelRemoval() {
+    if (removalPromiseRef.current) return;
+    setRemovalConfirm(false);
+    setRemovalError(null);
+    removalTriggerRef.current?.focus();
+  }
+
+  async function confirmRemoval() {
+    if (!removalConfirm || removalPromiseRef.current || popoverBusy || nativeBusy || sendBusy || walletBusy) return;
+    try {
+      await removeWalletSafely();
+      if (!removalMountedRef.current) return;
+      setRemovalConfirm(false);
+      removalTriggerRef.current?.focus();
+    } catch {
+      if (removalMountedRef.current) setRemovalError(WALLET_REMOVAL_ERROR);
+    }
+  }
+
   const selectedItem = useMemo(() => {
     return portfolio.find((p) => p.mintAddress === selectedAssetMint);
   }, [portfolio, selectedAssetMint]);
@@ -180,12 +237,12 @@ function ScopedCommandDashboard({
   const transferAllowed = Boolean(
     account && selectedAssetMint && transferSource && transferDestination && transferAmount.trim() &&
     previousSourceRef.current === transferSource &&
-    !validationError && !isHealthOffline && health?.status !== "Checking" && !nativeBusy
+    !validationError && !isHealthOffline && health?.status !== "Checking" && !nativeBusy && !removing
   );
 
   async function handleQuickSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!account || !selectedAssetMint || !transferAllowed || !tokenSendSourceAllowed(selectedItem, account.address, transferSource)) return;
+    if (!account || !selectedAssetMint || !transferAllowed || removalPromiseRef.current || !tokenSendSourceAllowed(selectedItem, account.address, transferSource)) return;
     await transfer({
       selectedTokenMint: selectedAssetMint,
       transferSource,
@@ -377,12 +434,12 @@ function ScopedCommandDashboard({
 
             <div className={styles.gridBlockActions}>
               <h4 className={styles.blockTitle}>Quick Actions</h4>
-              <SendAssetPicker value={selectedAssetMint} disabled={sendBusy || nativeBusy} onChange={(mint) => { setSelectedAssetMint(mint); setSourceChoice(""); setTransferAmount(""); }}
+              <SendAssetPicker value={selectedAssetMint} disabled={sendBusy || nativeBusy || removing} onChange={(mint) => { setSelectedAssetMint(mint); setSourceChoice(""); setTransferAmount(""); }}
                 options={portfolio.map((item) => {
                   return { value: item.mintAddress, label: `${item.mint?.ticker ?? "TOKEN"} — ${tokenReadBalance(item, account.address)}` };
                 })} />
               {selectedAssetMint === NATIVE_ASSET_VALUE ? <NativeSendForm /> : <form className={styles.quickSend} onSubmit={handleQuickSend}>
-                <TokenSourcePicker item={selectedItem} wallet={account.address} value={sourceChoice} disabled={sendBusy}
+                <TokenSourcePicker item={selectedItem} wallet={account.address} value={sourceChoice} disabled={sendBusy || removing}
                   onChange={(address) => { setSourceChoice(address); setTransferAmount(""); }} />
                 {tokenSourceRestriction(selectedItem, account.address) && <p role="status" className={styles.nativeHint}>{tokenSourceRestriction(selectedItem, account.address)}</p>}
                 {selectedSourceAccount?.state && selectedItem?.mint && <p className={styles.nativeHint}>Selected source balance: {formatRawAmount(selectedSourceAccount.state.amount, selectedItem.mint.decimals)} {selectedItem.mint.ticker}</p>}
@@ -395,7 +452,7 @@ function ScopedCommandDashboard({
                     className={styles.inputText}
                     value={transferDestination}
                     onChange={e => setTransferDestination(e.target.value)}
-                    disabled={sendBusy}
+                    disabled={sendBusy || removing}
                     spellCheck={false}
                   />
                 </div>
@@ -409,9 +466,9 @@ function ScopedCommandDashboard({
                       className={styles.inputText}
                       value={transferAmount}
                       onChange={e => setTransferAmount(e.target.value)}
-                      disabled={sendBusy}
+                      disabled={sendBusy || removing}
                     />
-                    <button type="button" className={styles.maxBtn} disabled={sendBusy || !selectedSourceAccount} onClick={handleSetMax}>MAX</button>
+                    <button type="button" className={styles.maxBtn} disabled={sendBusy || removing || !selectedSourceAccount} onClick={handleSetMax}>MAX</button>
                   </div>
                   {validationError && (
                     <span style={{ color: "var(--danger)", fontSize: "0.75rem", marginTop: "2px", display: "block" }}>{validationError}</span>
@@ -451,20 +508,50 @@ function ScopedCommandDashboard({
             </div>
             <div className={styles.panelActionsInline}>
                <div ref={walletActionsRef} className={styles.nativeWalletAnchor}>
-                 <button type="button" ref={walletTriggerRef} className={styles.btnOutlineSmall} disabled={!account}
+                 <button type="button" ref={walletTriggerRef} className={styles.btnOutlineSmall} disabled={!account || removing}
                    aria-haspopup="dialog" aria-expanded={walletActionsOpen} aria-controls="command-wallet-actions"
-                   onClick={() => { if (!popoverBusy) setWalletActionsOpen(!walletActionsOpen); }}>Wallet actions</button>
-                 {walletActionsOpen && account && <PortWalletPopover id="command-wallet-actions" align="left" account={account} balance={balance}
-                   portfolioHook={portfolioHook} portfolioModel={model}
-                   health={health} onForgetAccount={onForgetAccount} onBusyChange={setPopoverBusy} />}
+                   onClick={() => { if (!popoverBusy && !removalPromiseRef.current) {
+                     setRemovalConfirm(false); setRemovalError(null); setWalletActionsOpen(!walletActionsOpen);
+                   } }}>Wallet actions</button>
+                 {walletActionsOpen && account && <fieldset disabled={removing} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+                   <PortWalletPopover id="command-wallet-actions" align="left" account={account} balance={balance}
+                     portfolioHook={portfolioHook} portfolioModel={model}
+                     health={health} onForgetAccount={removeWalletSafely} onBusyChange={setPopoverBusy} />
+                 </fieldset>}
                </div>
                <button type="button" className={styles.btnOutlineSmall} onClick={copyAddress} disabled={!account}>
                  {copied ? "Copied" : "Copy Address"}
                </button>
-               <button type="button" className={styles.btnDangerGhostInline} onClick={onForgetAccount} disabled={!account || nativeBusy || sendBusy}>
+               <button type="button" ref={removalTriggerRef} className={styles.btnDangerGhostInline}
+                 aria-expanded={removalConfirm} aria-controls="dashboard-wallet-removal"
+                 onClick={() => {
+                   if (!account || removalPromiseRef.current || nativeBusy || sendBusy || popoverBusy || walletBusy) return;
+                   setWalletActionsOpen(false); setRemovalError(null); setRemovalConfirm(true);
+                 }} disabled={!account || nativeBusy || sendBusy || popoverBusy || removing || walletBusy}>
                  Remove
                </button>
             </div>
+            {account && removalConfirm && (
+              <div id="dashboard-wallet-removal" role="group" aria-labelledby="dashboard-wallet-removal-title"
+                aria-describedby="dashboard-wallet-removal-warning" aria-busy={removing}
+                style={{ marginTop: 12 }} onKeyDown={(event) => {
+                  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelRemoval(); }
+                }}>
+                <p id="dashboard-wallet-removal-title" className={styles.panelTitle}>Remove wallet from this device?</p>
+                <p id="dashboard-wallet-removal-warning" className={styles.panelTextMedium}>
+                  This removes the saved wallet from this browser only. Make sure you have a safe backup before continuing.
+                </p>
+                <div className={styles.panelActionsInline}>
+                  <button type="button" className={styles.btnDangerGhostInline}
+                    disabled={removing || nativeBusy || sendBusy || popoverBusy || walletBusy}
+                    onClick={() => { void confirmRemoval(); }}>{removing ? "Removing..." : "Confirm removal"}</button>
+                  <button type="button" ref={removalCancelRef} className={styles.btnOutlineSmall}
+                    disabled={removing} onClick={cancelRemoval}>Cancel</button>
+                </div>
+                {removing && <p role="status" className={styles.panelTextMedium}>Removing wallet from this device...</p>}
+                {removalError && <p role="alert" style={{ color: "var(--danger)" }}>{removalError}</p>}
+              </div>
+            )}
           </div>
 
           <div className={styles.panelDivider}></div>
