@@ -357,12 +357,15 @@ async function ensureAccountExistsLocked(
 
     const signedTransaction = createTx.toWire();
     signal?.throwIfAborted();
-    submitted = true;
     const statusResult = await submitSignedTransactionOnce({
       rawTransaction: signedTransaction,
       expectedSignature: signature,
       timeoutMs,
       signal,
+      send: (rawTransaction) => {
+        submitted = true;
+        return thru.transactions.send(rawTransaction);
+      },
       onDiagnostic: (diagnostic) =>
         reportSafeTransactionDiagnostic(onDiagnostic, {
           ...diagnostic,

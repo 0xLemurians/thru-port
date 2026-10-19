@@ -1,6 +1,9 @@
 import {
   SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
   SubmittedTransactionUncertainError,
+  TransactionDeadlineExceededError,
+  createTransactionDeadline,
+  transactionExecutionOutcome,
 } from "../thru/transactions";
 
 export const TRANSACTION_VISIBILITY_TIMEOUT_MS = 45_000;
@@ -69,7 +72,10 @@ export async function waitForTransactionVisibility<
     now = Date.now,
     sleep = abortableDelay,
   } = options;
-  const startedAt = now();
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TransactionStatusUncertainError(signature, false);
+  }
+  const deadline = createTransactionDeadline(timeoutMs, now);
   let attempt = 0;
   let expectedStateObserved = false;
 
@@ -77,12 +83,23 @@ export async function waitForTransactionVisibility<
     signal?.throwIfAborted();
     let status: TStatus | undefined;
     try {
-      status = await readStatus();
+      status = await deadline.run(readStatus, signal);
     } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof TransactionDeadlineExceededError) {
+        throw new TransactionStatusUncertainError(signature, expectedStateObserved);
+      }
       if (!isTransactionNotFoundError(error)) throw error;
     }
 
-    if (status?.executionResult) {
+    if (status?.executionResult && transactionExecutionOutcome(status.executionResult) !== "unknown") {
+      if (transactionExecutionOutcome(status.executionResult) === "failure" &&
+          status.statusCode !== undefined && isFinalConsensus(status.statusCode)) {
+        // Keep a caller's typed execution error if its assertion throws, but a
+        // boolean false must not fall through to conflicting post-state success.
+        assertExecutionSucceeded(status.executionResult);
+        throw new Error("Transaction execution failed.");
+      }
       const executionSucceeded = assertExecutionSucceeded(
         status.executionResult,
       );
@@ -101,7 +118,14 @@ export async function waitForTransactionVisibility<
     }
 
     if (verifyExpectedState) {
-      expectedStateObserved = await verifyExpectedState();
+      try { expectedStateObserved = await deadline.run(verifyExpectedState, signal); }
+      catch (error) {
+        signal?.throwIfAborted();
+        if (error instanceof TransactionDeadlineExceededError) {
+          throw new TransactionStatusUncertainError(signature, expectedStateObserved);
+        }
+        throw error;
+      }
       if (expectedStateObserved) {
         return {
           status,
@@ -111,8 +135,7 @@ export async function waitForTransactionVisibility<
       }
     }
 
-    const elapsedMs = now() - startedAt;
-    if (elapsedMs >= timeoutMs) {
+    if (deadline.remainingMs() <= 0) {
       throw new TransactionStatusUncertainError(
         signature,
         expectedStateObserved,
@@ -122,9 +145,14 @@ export async function waitForTransactionVisibility<
     const backoffMs = Math.min(
       initialBackoffMs * 2 ** attempt,
       maximumBackoffMs,
-      timeoutMs - elapsedMs,
+      deadline.remainingMs(),
     );
-    await sleep(backoffMs, signal);
+    try { await deadline.run(() => sleep(backoffMs, signal), signal); }
+    catch (error) {
+      signal?.throwIfAborted();
+      if (!(error instanceof TransactionDeadlineExceededError)) throw error;
+      throw new TransactionStatusUncertainError(signature, expectedStateObserved);
+    }
     attempt += 1;
   }
 }

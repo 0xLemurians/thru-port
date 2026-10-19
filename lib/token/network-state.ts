@@ -1,5 +1,9 @@
 import type { NetworkStatus } from "@/components/port/useNetworkHealth";
 import {
+  SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
+  SubmittedTransactionUncertainError,
+} from "@/lib/thru/transactions";
+import {
   NETWORK_RPC_DEGRADED_MESSAGE,
   NETWORK_RPC_UNAVAILABLE_MESSAGE,
 } from "@/lib/thru/name-service/constants";
@@ -50,11 +54,22 @@ export function safeTokenActionError(
   error: unknown,
   fallback: string,
 ): string {
+  // This known transaction outcome is not an untrusted transport diagnostic.
+  // Never replace its no-retry warning with a generic availability message.
+  if (error instanceof SubmittedTransactionUncertainError) {
+    return SAFE_TRANSACTION_UNCERTAIN_MESSAGE;
+  }
   const message = error instanceof Error
     ? error.message
     : typeof error === "string"
       ? error
       : "";
+  // The active transfer hook caches this exact safe text for wallet-scoped UI
+  // restoration. Preserve it on the second sanitizer pass, but never whitelist
+  // arbitrary errors merely containing some of the same words.
+  if (message === SAFE_TRANSACTION_UNCERTAIN_MESSAGE) {
+    return SAFE_TRANSACTION_UNCERTAIN_MESSAGE;
+  }
   if (!message || UNSAFE_NETWORK_ERROR_PATTERN.test(message)) {
     return message
       ? NETWORK_RPC_UNAVAILABLE_MESSAGE

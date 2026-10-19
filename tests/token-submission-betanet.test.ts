@@ -227,15 +227,28 @@ test("token execution vm/user error is definitive and typed", async (t) => {
 });
 
 test("token status timeout remains uncertain with one send", async (t) => {
+  // A repeated run proved this neighboring 1ms case can also expire pre-send.
+  // Keep its budget and UNCERTAIN expectation; expire both phases explicitly.
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  t.mock.method(performance, "now", () => Date.now());
   let sends = 0;
+  let statusReads = 0;
+  let finalizedReads = 0;
+  let stateReads = 0;
+  let uncertain: unknown;
   t.mock.method(thru.transactions, "send", async () => {
     sends += 1;
     return signature(15);
   });
-  t.mock.method(thru.transactions, "getStatus", async () => {
+  t.mock.method(thru.transactions, "getStatus", async (requested: string) => {
+    assert.equal(requested, signature(15));
+    statusReads += 1;
+    t.mock.timers.tick(1);
     throw new Error("read-only status unavailable");
   });
-  t.mock.method(thru.transactions, "get", async () => {
+  t.mock.method(thru.transactions, "get", async (requested: string) => {
+    assert.equal(requested, signature(15));
+    finalizedReads += 1;
     throw new Error("transaction not found");
   });
   await assert.rejects(
@@ -244,31 +257,56 @@ test("token status timeout remains uncertain with one send", async (t) => {
       () => undefined,
       1,
       undefined,
-      { verifyExpectedState: async () => false },
-    ),
+      { verifyExpectedState: async () => {
+        stateReads += 1;
+        t.mock.timers.tick(1);
+        return false;
+      } },
+    ).catch((error: unknown) => { uncertain = error; throw error; }),
     TransactionStatusUncertainError,
   );
   assert.equal(sends, 1);
+  assert.ok(uncertain instanceof TransactionStatusUncertainError);
+  assert.equal(uncertain.signature, signature(15));
+  assert.deepEqual([statusReads, finalizedReads, stateReads], [1, 1, 1]);
+  assert.equal(Date.now(), 2);
 });
 
 test("missing transaction status can reconcile a finalized exact mint without rebroadcast", async (t) => {
+  // Keep the 1ms budget, but expire it only after unary submission has begun.
+  // Tick the actual deadline timer during status lookup; the separate fallback
+  // then starts with a fresh 1ms budget, independent of real scheduler latency.
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  t.mock.method(performance, "now", () => Date.now());
   const walletAddress = address(18);
   const mintAddress = address(19);
+  const calls: string[] = [];
   let sends = 0;
   t.mock.method(thru.transactions, "send", async () => {
     sends += 1;
+    calls.push("send");
     return signature(18);
   });
-  t.mock.method(thru.transactions, "getStatus", async () => {
+  t.mock.method(thru.transactions, "getStatus", async (requested: string) => {
+    assert.equal(requested, signature(18));
+    calls.push("status-not-found");
+    t.mock.timers.tick(1);
     throw new Error("[not_found] transaction not found");
   });
-  t.mock.method(thru.transactions, "get", async () => {
+  t.mock.method(thru.transactions, "get", async (requested: string, options: unknown) => {
+    assert.equal(requested, signature(18));
+    assert.deepEqual(options, { minConsensus: ConsensusStatus.FINALIZED });
+    calls.push("finalized-not-found");
     throw new Error("[not_found] transaction not found");
   });
-  t.mock.method(thru.accounts, "get", async () => Object.assign(
-    includedMint(mintAddress, walletAddress),
-    { consensusStatus: ConsensusStatus.FINALIZED },
-  ));
+  t.mock.method(thru.accounts, "get", async (requested: string) => {
+    assert.equal(requested, mintAddress);
+    calls.push("finalized-mint");
+    return Object.assign(
+      includedMint(mintAddress, walletAddress),
+      { consensusStatus: ConsensusStatus.FINALIZED },
+    );
+  });
 
   const result = await submitAndRequireFinalizedExecution(
     transaction(18),
@@ -286,6 +324,8 @@ test("missing transaction status can reconcile a finalized exact mint without re
   );
   assert.equal(result, signature(18));
   assert.equal(sends, 1);
+  assert.deepEqual(calls, ["send", "status-not-found", "finalized-not-found", "finalized-mint"]);
+  assert.equal(Date.now(), 1);
 });
 
 test("exact CLUSTER_EXECUTED transaction can reconcile an INCLUDED mint without sending", async (t) => {

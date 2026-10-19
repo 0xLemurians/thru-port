@@ -140,6 +140,75 @@ function throwIfAborted(signal?: AbortSignal): void {
   signal?.throwIfAborted();
 }
 
+export class TransactionDeadlineExceededError extends Error {
+  constructor() {
+    super("Transaction verification timed out.");
+    this.name = "TransactionDeadlineExceededError";
+  }
+}
+
+/** One phase budget, including time spent inside RPC promises and delays. */
+export function createTransactionDeadline(timeoutMs: number, now = Date.now) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TransactionDeadlineExceededError();
+  }
+  const startedAt = now();
+  const monotonicStartedAt = performance.now();
+  let elapsed = 0;
+  let expired = false;
+  const remainingMs = () => {
+    // Millisecond precision matches existing injected clocks/backoff contracts;
+    // fractional performance timestamps must not create extra sub-ms polls.
+    elapsed = Math.max(elapsed, now() - startedAt, Math.floor(performance.now() - monotonicStartedAt));
+    return expired ? 0 : Math.max(0, timeoutMs - elapsed);
+  };
+  return {
+    remainingMs,
+    run<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+      return new Promise<T>((resolve, reject) => {
+        const remaining = remainingMs();
+        // Preserve an immediate final observation exactly at the deadline, but
+        // never let it wait beyond that boundary or restart the phase budget.
+        if (expired || elapsed > timeoutMs) {
+          reject(new TransactionDeadlineExceededError());
+          return;
+        }
+        let settled = false;
+        const cleanup = () => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+        };
+        const fail = (error: unknown) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(error);
+        };
+        const onAbort = () => fail(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+        const timer = setTimeout(() => {
+          expired = true;
+          fail(new TransactionDeadlineExceededError());
+        }, remaining);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) { onAbort(); return; }
+        try {
+          Promise.resolve(work()).then((value) => {
+            if (settled) return;
+            remainingMs();
+            if (expired || elapsed > timeoutMs) {
+              fail(new TransactionDeadlineExceededError());
+              return;
+            }
+            settled = true;
+            cleanup();
+            resolve(value);
+          }, fail);
+        } catch (error) { fail(error); }
+      });
+    },
+  };
+}
+
 /**
  * SDK 0.4.1 returns consensus metadata on point account reads instead of
  * accepting minConsensus in AccountQueryOptions. Final-state callers fail
@@ -251,12 +320,17 @@ export async function signTransactionForSubmission(
   throwIfAborted(signal);
 }
 
-function executionFailed(result: TransactionExecutionResultLike): boolean {
-  return (
-    result.vmError !== 0 ||
-    result.userErrorCode !== 0n ||
-    (result.executionResult !== undefined && result.executionResult !== 0n)
-  );
+export function transactionExecutionOutcome(result: unknown): "success" | "failure" | "unknown" {
+  if (!result || typeof result !== "object") return "unknown";
+  const { vmError, userErrorCode, executionResult } = result as Partial<TransactionExecutionResultLike>;
+  const uint64 = (value: unknown): value is bigint =>
+    typeof value === "bigint" && value >= 0n && value <= 0xffff_ffff_ffff_ffffn;
+  // SDK VM errors are a signed protobuf enum, including negative error codes.
+  if (typeof vmError !== "number" || !Number.isSafeInteger(vmError) ||
+      vmError < -0x8000_0000 || vmError > 0x7fff_ffff || !uint64(userErrorCode) ||
+      (executionResult !== undefined && !uint64(executionResult))) return "unknown";
+  return vmError !== 0 || userErrorCode !== 0n ||
+    (executionResult !== undefined && executionResult !== 0n) ? "failure" : "success";
 }
 
 export function reportSafeTransactionDiagnostic(
@@ -319,7 +393,7 @@ export async function submitSignedTransactionOnce(
     send = (raw) => thru.transactions.send(raw),
     getStatus = (signature) => thru.transactions.getStatus(signature),
     now = Date.now,
-    sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+    sleep = (delayMs) => abortableDelay(delayMs, pollingSignal),
     onDiagnostic,
   } = options;
 
@@ -334,6 +408,7 @@ export async function submitSignedTransactionOnce(
   }
 
   throwIfAborted(signal);
+  const deadline = createTransactionDeadline(timeoutMs, now);
   const releaseFence = reserveGuardedSubmission(rawTransaction, expectedSignature);
   reportSafeTransactionDiagnostic(onDiagnostic, {
     stage: "submit",
@@ -342,17 +417,29 @@ export async function submitSignedTransactionOnce(
   });
 
   let returnedSignature: string;
+  let sendStarted = false;
   try {
     // No AbortSignal is attached once this unary RPC starts: cancellation
     // cannot safely imply that the signed transaction was not accepted.
-    returnedSignature = await send(rawTransaction);
+    returnedSignature = await deadline.run(() => {
+      throwIfAborted(signal);
+      if (deadline.remainingMs() <= 0) throw new TransactionDeadlineExceededError();
+      sendStarted = true;
+      return send(rawTransaction);
+    });
   } catch (error) {
     reportSafeTransactionDiagnostic(onDiagnostic, {
       stage: "submit",
-      state: "uncertain",
+      state: sendStarted ? "uncertain" : "failed",
       signature: expectedSignature,
       error,
     });
+    if (!sendStarted) {
+      // Only this newly reserved fence can be released: the unary boundary was
+      // never entered. Existing unresolved fences are rejected by reservation.
+      releaseFence?.();
+      throw error;
+    }
     throw new SubmittedTransactionUncertainError(expectedSignature);
   }
 
@@ -375,9 +462,7 @@ export async function submitSignedTransactionOnce(
     signature: expectedSignature,
   });
 
-  const startedAt = now();
-  let executionSucceeded = false;
-  while (now() - startedAt < timeoutMs) {
+  while (deadline.remainingMs() > 0) {
     if (pollingSignal?.aborted) break;
     reportSafeTransactionDiagnostic(onDiagnostic, {
       stage: "status",
@@ -386,7 +471,7 @@ export async function submitSignedTransactionOnce(
     });
     let status: TransactionStatusLike;
     try {
-      status = await getStatus(expectedSignature);
+      status = await deadline.run(() => getStatus(expectedSignature), pollingSignal);
     } catch (error) {
       reportSafeTransactionDiagnostic(onDiagnostic, {
         stage: "status",
@@ -394,9 +479,11 @@ export async function submitSignedTransactionOnce(
         signature: expectedSignature,
         error,
       });
-      const remainingMs = timeoutMs - (now() - startedAt);
+      const remainingMs = deadline.remainingMs();
       if (remainingMs <= 0) break;
-      await sleep(Math.min(pollIntervalMs, remainingMs));
+      if (pollingSignal?.aborted) break;
+      try { await deadline.run(() => sleep(Math.min(pollIntervalMs, remainingMs)), pollingSignal); }
+      catch { break; }
       continue;
     }
 
@@ -425,32 +512,31 @@ export async function submitSignedTransactionOnce(
       throw new SubmittedTransactionUncertainError(expectedSignature);
     }
 
-    if (status.executionResult) {
+    const outcome = transactionExecutionOutcome(status.executionResult);
+    if (status.executionResult && outcome === "failure") {
       const { vmError, userErrorCode } = status.executionResult;
-      if (executionFailed(status.executionResult)) {
-        if (status.statusCode === ConsensusStatus.FINALIZED || status.statusCode === ConsensusStatus.CLUSTER_EXECUTED) releaseFence?.();
-        reportSafeTransactionDiagnostic(onDiagnostic, {
-          stage: "status",
-          state: "failed",
-          signature: expectedSignature,
-          consensusStatus: status.statusCode,
-          vmError,
-          userErrorCode,
-        });
-        return {
-          signature: expectedSignature,
-          executionSucceeded: false,
-          finalized: false,
-          statusTimedOut: false,
-          failure: { vmError, userErrorCode },
-        };
-      }
-      executionSucceeded = true;
+      if (status.statusCode === ConsensusStatus.FINALIZED || status.statusCode === ConsensusStatus.CLUSTER_EXECUTED) releaseFence?.();
+      reportSafeTransactionDiagnostic(onDiagnostic, {
+        stage: "status",
+        state: "failed",
+        signature: expectedSignature,
+        consensusStatus: status.statusCode,
+        vmError,
+        userErrorCode,
+      });
+      return {
+        signature: expectedSignature,
+        executionSucceeded: false,
+        finalized: false,
+        statusTimedOut: false,
+        failure: { vmError, userErrorCode },
+      };
     }
 
     const finalized =
       status.statusCode === ConsensusStatus.FINALIZED ||
       status.statusCode === ConsensusStatus.CLUSTER_EXECUTED;
+    const executionSucceeded = finalized && outcome === "success";
     reportSafeTransactionDiagnostic(onDiagnostic, {
       stage: "status",
       state: finalized && executionSucceeded ? "succeeded" : "uncertain",
@@ -480,9 +566,10 @@ export async function submitSignedTransactionOnce(
       };
     }
 
-    const remainingMs = timeoutMs - (now() - startedAt);
+    const remainingMs = deadline.remainingMs();
     if (remainingMs <= 0) break;
-    await sleep(Math.min(pollIntervalMs, remainingMs));
+    try { await deadline.run(() => sleep(Math.min(pollIntervalMs, remainingMs)), pollingSignal); }
+    catch { break; }
   }
 
   reportSafeTransactionDiagnostic(onDiagnostic, {
@@ -494,7 +581,7 @@ export async function submitSignedTransactionOnce(
 
   return {
     signature: expectedSignature,
-    executionSucceeded,
+    executionSucceeded: false,
     finalized: false,
     statusTimedOut: true,
   };
@@ -551,40 +638,46 @@ export async function verifySubmittedTransaction(
     throw new SubmittedTransactionUncertainError(signature);
   }
 
-  const startedAt = now();
+  const deadline = createTransactionDeadline(timeoutMs, now);
   let attempt = 0;
   let expectedStateObserved = false;
   while (true) {
     throwIfAborted(signal);
     try {
-      const finalizedTransaction = await readFinalizedTransaction();
+      const finalizedTransaction = await deadline.run(readFinalizedTransaction, signal);
       throwIfAborted(signal);
-      if (finalizedTransaction.executionResult) {
-        return executionFailed(finalizedTransaction.executionResult)
+      const outcome = transactionExecutionOutcome(finalizedTransaction.executionResult);
+      if (outcome !== "unknown") {
+        return outcome === "failure"
           ? { outcome: "failure", source: "finalized-transaction" }
           : { outcome: "success", source: "finalized-transaction" };
       }
-    } catch {
+    } catch (error) {
       throwIfAborted(signal);
+      if (error instanceof TransactionDeadlineExceededError) {
+        throw new SubmittedTransactionUncertainError(signature, expectedStateObserved);
+      }
     }
 
     if (verifyExpectedState) {
       try {
-        expectedStateObserved = await verifyExpectedState();
+        expectedStateObserved = await deadline.run(verifyExpectedState, signal);
         throwIfAborted(signal);
         if (expectedStateObserved) {
           return { outcome: "success", source: "post-state" };
         }
       } catch (error) {
         throwIfAborted(signal);
+        if (error instanceof TransactionDeadlineExceededError) {
+          throw new SubmittedTransactionUncertainError(signature, expectedStateObserved);
+        }
         if (classifyExpectedStateError(error) === "failure") {
           return { outcome: "failure", source: "post-state" };
         }
       }
     }
 
-    const elapsedMs = now() - startedAt;
-    if (elapsedMs >= timeoutMs) {
+    if (deadline.remainingMs() <= 0) {
       throw new SubmittedTransactionUncertainError(
         signature,
         expectedStateObserved,
@@ -594,9 +687,14 @@ export async function verifySubmittedTransaction(
     const backoffMs = Math.min(
       initialBackoffMs * 2 ** attempt,
       maximumBackoffMs,
-      timeoutMs - elapsedMs,
+      deadline.remainingMs(),
     );
-    await sleep(backoffMs, signal);
+    try { await deadline.run(() => sleep(backoffMs, signal), signal); }
+    catch (error) {
+      throwIfAborted(signal);
+      if (!(error instanceof TransactionDeadlineExceededError)) throw error;
+      throw new SubmittedTransactionUncertainError(signature, expectedStateObserved);
+    }
     attempt += 1;
   }
 }

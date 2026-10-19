@@ -39,7 +39,7 @@ import {
   TRANSACTION_FINALIZATION_FALLBACK_TIMEOUT_MS,
   verifySubmittedTransaction,
 } from "../thru/transactions";
-import { thru, type ThruAccount, getBalance, ensureAccountExists } from "./thru-wallet";
+import { thru, type ThruAccount, ensureAccountExists } from "./thru-wallet";
 import {
   SAFE_FAUCET_ERROR_MESSAGE,
   SAFE_FAUCET_UNAVAILABLE_MESSAGE,
@@ -194,7 +194,6 @@ async function withdrawFromFaucetLocked(
   }
 
   signal?.throwIfAborted();
-  const balanceBefore = await getBalance(account.address);
   try {
     const result = await attemptFaucetWithdraw(
       account,
@@ -220,13 +219,12 @@ async function withdrawFromFaucetLocked(
       };
     }
 
-    let postStateConfirmed = false;
-    if (!result.finalized && result.signature) {
+    if (result.signature) {
       try {
+        // A balance delta cannot attribute incoming funds to this faucet
+        // transaction. Only verify the original submitted signature here.
         const verification = await verifySubmittedTransaction({
           signature: result.signature,
-          verifyExpectedState: async () =>
-            (await getBalance(account.address)) === balanceBefore + amount,
           // The transaction has already been submitted; cancelling the UI
           // must not cancel read-only reconciliation or permit rebroadcast.
           signal: undefined,
@@ -243,7 +241,11 @@ async function withdrawFromFaucetLocked(
             attempts: 1,
           };
         }
-        postStateConfirmed = verification.source === "post-state";
+        return {
+          signature: result.signature,
+          finalized: true,
+          attempts: 1,
+        };
       } catch (error) {
         if (error instanceof SubmittedTransactionUncertainError) {
           return {
@@ -255,38 +257,6 @@ async function withdrawFromFaucetLocked(
         }
         throw error;
       }
-    }
-
-    if (postStateConfirmed) {
-      return {
-        signature: result.signature,
-        finalized: true,
-        attempts: 1,
-      };
-    }
-
-    const confirmedBalance = await waitForBalanceIncrease(
-      account.address,
-      balanceBefore,
-      amount,
-      undefined,
-    );
-    if (confirmedBalance !== null) {
-      return {
-        signature: result.signature,
-        finalized: true,
-        attempts: 1,
-      };
-    }
-    if (result.signature || result.finalized) {
-      return {
-        ...result,
-        finalized: false,
-        failureReason: result.finalized
-          ? SAFE_FAUCET_ERROR_MESSAGE
-          : SAFE_FAUCET_UNCERTAIN_MESSAGE,
-        attempts: 1,
-      };
     }
   } catch (error) {
     if (error instanceof SubmittedTransactionUncertainError) {
@@ -378,40 +348,4 @@ async function attemptFaucetWithdraw(
       ? "The faucet transaction was rejected during execution."
       : undefined,
   };
-}
-
-async function waitForBalanceIncrease(
-  address: string,
-  balanceBefore: bigint,
-  expectedIncrease: bigint,
-  signal?: AbortSignal,
-): Promise<bigint | null> {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    signal?.throwIfAborted();
-    const balance = await getBalance(address).catch(() => null);
-    if (balance !== null && balance === balanceBefore + expectedIncrease) {
-      return balance;
-    }
-    await abortableDelay(Math.min(500 * 2 ** attempt, 4_000), signal);
-  }
-  return null;
-}
-
-function abortableDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
-      return;
-    }
-
-    const onAbort = () => {
-      clearTimeout(timeout);
-      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
-    };
-    const timeout = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }

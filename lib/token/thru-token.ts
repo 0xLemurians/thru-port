@@ -33,8 +33,11 @@ import {
   accountReadFinality,
   assertFinalizedAccount,
   buildTransactionForSigning,
+  createTransactionDeadline,
   signTransactionForSubmission,
   SubmittedTransactionUncertainError,
+  TransactionDeadlineExceededError,
+  transactionExecutionOutcome,
   submitSignedTransactionOnce,
   verifySubmittedTransaction,
 } from "@/lib/thru/transactions";
@@ -251,41 +254,41 @@ export async function reconcilePendingOperation<TResult>(input: {
   buildResult: (
     signature: string,
     record: PendingTokenOperationRecord,
+    assertRecoveryActive: () => void,
   ) => Promise<TResult>;
   timeoutMs: number;
   retainOnSuccess?: boolean;
 }): Promise<{ outcome: "none" | "failure" } | { outcome: "success"; result: TResult }> {
+  let deadline: ReturnType<typeof createTransactionDeadline> | undefined;
   const reconciled = await reconcilePendingTokenOperationJournal({
     key: input.base.key,
     walletAddress: input.base.walletAddress,
     retainOnSuccess: true,
     verify: async (record) => {
+      deadline = createTransactionDeadline(Math.min(input.timeoutMs, TRANSACTION_VISIBILITY_TIMEOUT_MS));
       // A previously submitted operation may be CLUSTER_EXECUTED while its
       // exact point-account reads still say INCLUDED on Betanet. Only the
       // matching transaction status can authorize that provisional read.
       try {
-        const status = await thru.transactions.getStatus(record.signature);
+        const status = await deadline.run(() => thru.transactions.getStatus(record.signature));
         if (Signature.from(status.signature).toThruFmt() !== record.signature) {
           return "uncertain";
         }
-        if (status.executionResult && (
-          status.executionResult.vmError !== 0 ||
-          status.executionResult.userErrorCode !== 0n ||
-          (status.executionResult.executionResult !== undefined &&
-            status.executionResult.executionResult !== 0n)
-        )) {
+        const outcome = transactionExecutionOutcome(status.executionResult);
+        if (outcome === "failure") {
           return "failure";
         }
         if (
-          status.executionResult &&
+          outcome === "success" &&
           (status.statusCode === ConsensusStatus.CLUSTER_EXECUTED ||
             status.statusCode === ConsensusStatus.FINALIZED)
         ) {
-          return (await matchesPendingTokenRecord(record, "readable"))
+          return (await deadline.run(() => matchesPendingTokenRecord(record, "readable")))
             ? "success"
             : "uncertain";
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof TransactionDeadlineExceededError) return "uncertain";
         // A missing or temporarily unavailable status is not a failed
         // transaction. Continue with the stricter finalized-only fallback.
       }
@@ -294,10 +297,7 @@ export async function reconcilePendingOperation<TResult>(input: {
           signature: record.signature,
           verifyExpectedState: () => input.verifyExpectedState(record),
           classifyExpectedStateError: classifyTokenPostStateError,
-          timeoutMs: Math.min(
-            input.timeoutMs,
-            TRANSACTION_VISIBILITY_TIMEOUT_MS,
-          ),
+          timeoutMs: deadline.remainingMs(),
         });
         return verification.outcome;
       } catch {
@@ -314,10 +314,24 @@ export async function reconcilePendingOperation<TResult>(input: {
       false,
     );
   }
-  const result = await input.buildResult(
-    reconciled.record.signature,
-    reconciled.record,
-  );
+  let result: TResult;
+  let recoveryActive = true;
+  const assertRecoveryActive = () => {
+    if (!recoveryActive || (deadline && deadline.remainingMs() <= 0)) {
+      throw new TransactionStatusUncertainError(reconciled.record.signature, false);
+    }
+  };
+  try {
+    const buildResult = () => input.buildResult(reconciled.record.signature, reconciled.record, assertRecoveryActive);
+    result = deadline ? await deadline.run(buildResult) : await buildResult();
+  } catch (error) {
+    if (error instanceof TransactionDeadlineExceededError) {
+      throw new TransactionStatusUncertainError(reconciled.record.signature, false);
+    }
+    throw error;
+  } finally {
+    recoveryActive = false;
+  }
   if (!input.retainOnSuccess) {
     clearVerifiedPendingOperation(input.base.key, input.base.walletAddress);
   }
@@ -835,13 +849,15 @@ async function createTokenLocked(account: ThruAccount, input: CreateTokenInput, 
             observeMintState(record.mintAddress, (mint) =>
               matchesPendingMintOnlyState(record, mint),
             ),
-          buildResult: async (signature, record) => {
+          buildResult: async (signature, record, assertRecoveryActive) => {
             // The journal's exact transaction was authoritatively verified;
             // Betanet may still return INCLUDED for its point-account read.
-            current.verifiedMint = await getReadableMint(record.mintAddress);
-            if (!matchesPendingMintOnlyState(record, current.verifiedMint)) {
+            const verifiedMint = await getReadableMint(record.mintAddress);
+            assertRecoveryActive();
+            if (!matchesPendingMintOnlyState(record, verifiedMint)) {
               throw new TransactionStatusUncertainError(signature, false);
             }
+            current.verifiedMint = verifiedMint;
             pendingSignatures.mintSignature = signature;
             reportPendingSetup();
             onSubmitted(signature);
@@ -960,18 +976,20 @@ async function createTokenLocked(account: ThruAccount, input: CreateTokenInput, 
               (tokenAccount) =>
                 matchesPendingTokenAccountOnlyState(record, tokenAccount),
             ),
-          buildResult: async (signature, record) => {
-            current.verifiedTokenAccount = await getReadableTokenAccount(
+          buildResult: async (signature, record, assertRecoveryActive) => {
+            const verifiedTokenAccount = await getReadableTokenAccount(
               record.destinationTokenAccount!,
             );
+            assertRecoveryActive();
             if (
               !matchesPendingTokenAccountOnlyState(
                 record,
-                current.verifiedTokenAccount,
+                verifiedTokenAccount,
               )
             ) {
               throw new TransactionStatusUncertainError(signature, false);
             }
+            current.verifiedTokenAccount = verifiedTokenAccount;
             pendingSignatures.tokenAccountSignature = signature;
             reportPendingSetup();
             onSubmitted(signature);
@@ -1093,21 +1111,24 @@ async function createTokenLocked(account: ThruAccount, input: CreateTokenInput, 
               tokenAccount,
             );
           },
-          buildResult: async (signature, record) => {
-            [current.verifiedMint, current.verifiedTokenAccount] =
+          buildResult: async (signature, record, assertRecoveryActive) => {
+            const [verifiedMint, verifiedTokenAccount] =
               await Promise.all([
                 getReadableMint(record.mintAddress),
                 getReadableTokenAccount(record.destinationTokenAccount!),
               ]);
+            assertRecoveryActive();
             if (
               !matchesPendingMintDestinationState(
                 record,
-                current.verifiedMint,
-                current.verifiedTokenAccount,
+                verifiedMint,
+                verifiedTokenAccount,
               )
             ) {
               throw new TransactionStatusUncertainError(signature, false);
             }
+            current.verifiedMint = verifiedMint;
+            current.verifiedTokenAccount = verifiedTokenAccount;
             pendingSignatures.initialSupplySignature = signature;
             reportPendingSetup();
             onSubmitted(signature);
@@ -1582,8 +1603,9 @@ async function resumeTokenSetupLocked(account: ThruAccount, input: ResumeTokenSe
         observeMintState(record.mintAddress, (nextMint) =>
           matchesPendingMintOnlyState(record, nextMint),
         ),
-      buildResult: async (signature, record) => {
+      buildResult: async (signature, record, assertRecoveryActive) => {
         const nextMint = await getReadableMint(record.mintAddress);
+        assertRecoveryActive();
         if (!matchesPendingMintOnlyState(record, nextMint)) {
           throw new TransactionStatusUncertainError(signature, false);
         }
@@ -1638,10 +1660,11 @@ async function resumeTokenSetupLocked(account: ThruAccount, input: ResumeTokenSe
           (nextTokenAccount) =>
             matchesPendingTokenAccountOnlyState(record, nextTokenAccount),
         ),
-      buildResult: async (signature, record) => {
+      buildResult: async (signature, record, assertRecoveryActive) => {
         const nextTokenAccount = await getReadableTokenAccount(
           record.destinationTokenAccount!,
         );
+        assertRecoveryActive();
         if (!matchesPendingTokenAccountOnlyState(record, nextTokenAccount)) {
           throw new TransactionStatusUncertainError(signature, false);
         }
@@ -1790,11 +1813,12 @@ async function resumeTokenSetupLocked(account: ThruAccount, input: ResumeTokenSe
           nextTokenAccount,
         );
       },
-      buildResult: async (signature, record) => {
+      buildResult: async (signature, record, assertRecoveryActive) => {
         const [nextMint, nextTokenAccount] = await Promise.all([
           getReadableMint(record.mintAddress),
           getReadableTokenAccount(record.destinationTokenAccount!),
         ]);
+        assertRecoveryActive();
         if (
           !matchesPendingMintDestinationState(
             record,
@@ -2044,10 +2068,11 @@ async function createDestinationTokenAccountLocked(account: ThruAccount, input: 
               (tokenAccount) =>
                 matchesPendingTokenAccountOnlyState(record, tokenAccount),
             ),
-          buildResult: async (signature, record) => {
+          buildResult: async (signature, record, assertRecoveryActive) => {
             const tokenAccount = await getReadableTokenAccount(
               record.destinationTokenAccount!,
             );
+            assertRecoveryActive();
             if (!matchesPendingTokenAccountOnlyState(record, tokenAccount)) {
               throw new TransactionStatusUncertainError(signature, false);
             }
@@ -2272,11 +2297,12 @@ async function mintAdditionalSupplyLocked(account: ThruAccount, input: MintAddit
           ]);
           return matchesPendingMintDestinationState(record, mint, destination);
         },
-        buildResult: async (signature, record) => {
+        buildResult: async (signature, record, assertRecoveryActive) => {
           const [mint, destination] = await Promise.all([
             getReadableMint(record.mintAddress),
             getReadableTokenAccount(record.destinationTokenAccount!),
           ]);
+          assertRecoveryActive();
           if (!matchesPendingMintDestinationState(record, mint, destination)) {
             throw new TransactionStatusUncertainError(signature, false);
           }
@@ -2527,12 +2553,13 @@ async function transferTokensLocked(account: ThruAccount, input: TransferTokenIn
           ]);
           return matchesPendingTransferState(record, mint, source, destination);
         },
-        buildResult: async (signature, record) => {
+        buildResult: async (signature, record, assertRecoveryActive) => {
           const [mint, source, destination] = await Promise.all([
             getReadableMint(record.mintAddress),
             getReadableTokenAccount(record.sourceTokenAccount!),
             getReadableTokenAccount(record.destinationTokenAccount!),
           ]);
+          assertRecoveryActive();
           if (!matchesPendingTransferState(record, mint, source, destination)) {
             throw new TransactionStatusUncertainError(signature, false);
           }
@@ -3096,17 +3123,27 @@ async function waitForParsedState<T>(
   mismatchMessage: string,
   submittedSignature?: string,
 ): Promise<T> {
+  const deadline = createTransactionDeadline(TRANSACTION_VISIBILITY_TIMEOUT_MS);
   let lastError: unknown;
   for (let attempt = 0; attempt < REFRESH_ATTEMPTS; attempt++) {
     signal?.throwIfAborted();
     try {
-      const value = await read();
+      const value = await deadline.run(read, signal);
       if (matches(value)) return value;
       lastError = new Error(mismatchMessage);
     } catch (error) {
+      signal?.throwIfAborted();
       lastError = error;
+      if (error instanceof TransactionDeadlineExceededError) break;
     }
-    await abortableDelay(Math.min(500 * 2 ** attempt, 4_000), signal);
+    if (deadline.remainingMs() <= 0) break;
+    try {
+      await deadline.run(() => abortableDelay(Math.min(500 * 2 ** attempt, 4_000, deadline.remainingMs()), signal), signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!(error instanceof TransactionDeadlineExceededError)) throw error;
+      break;
+    }
   }
 
   if (submittedSignature) {

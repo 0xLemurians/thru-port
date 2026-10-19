@@ -153,7 +153,7 @@ export function loadPendingTokenOperations(
 }
 
 export function savePendingTokenOperations(
-  storage: Pick<Storage, "setItem">,
+  storage: Pick<Storage, "setItem"> & Partial<Pick<Storage, "getItem">>,
   records: PendingTokenOperationRecord[],
   now = Date.now(),
 ): void {
@@ -166,11 +166,31 @@ export function savePendingTokenOperations(
   }
   normalized.sort((a, b) => b.createdAt - a.createdAt);
   normalized.splice(MAX_PENDING_OPERATIONS);
+  const serialized = JSON.stringify(normalized);
   try {
-    storage.setItem(
-      PENDING_TOKEN_OPERATION_STORAGE_KEY,
-      JSON.stringify(normalized),
-    );
+    storage.setItem(PENDING_TOKEN_OPERATION_STORAGE_KEY, serialized);
+    // Resolve the same network-scoped boundary again instead of trusting a
+    // successful setItem call or an in-memory copy. A stale, missing or altered
+    // entry must not permit the first submission to begin.
+    if (typeof storage.getItem !== "function") {
+      throw new PendingOperationJournalError();
+    }
+    const persisted = storage.getItem(PENDING_TOKEN_OPERATION_STORAGE_KEY);
+    if (persisted === null) throw new PendingOperationJournalError();
+    const parsed: unknown = JSON.parse(persisted);
+    if (!Array.isArray(parsed) || parsed.length !== normalized.length) {
+      throw new PendingOperationJournalError();
+    }
+    const verified = parsed.map((candidate) => {
+      const record = normalizeRecord(candidate, now);
+      if (!record) throw new PendingOperationJournalError();
+      return record;
+    });
+    // Canonical comparison covers every intended signature, wallet, operation
+    // identifier and expected pre/post-state field, including empty cleanup.
+    if (JSON.stringify(verified) !== serialized) {
+      throw new PendingOperationJournalError();
+    }
   } catch {
     throw new PendingOperationJournalError();
   }
@@ -226,9 +246,18 @@ export function readPendingTokenOperation(
 export function persistPendingTokenOperation(
   record: PendingTokenOperationRecord,
 ): void {
+  const now = Date.now();
+  const intended = normalizeRecord(record, now);
+  // A new submission must not lose its own entry through TTL pruning. The
+  // general journal loader/writer retains the existing seven-day contract.
+  if (!intended) throw new PendingOperationJournalError();
   const storage = pendingTokenOperationStorage();
-  const records = loadPendingTokenOperations(storage);
-  savePendingTokenOperations(storage, upsertPendingTokenOperation(records, record));
+  const records = loadPendingTokenOperations(storage, now);
+  savePendingTokenOperations(
+    storage,
+    upsertPendingTokenOperation(records, intended),
+    now,
+  );
 }
 
 export function clearPendingTokenOperation(
