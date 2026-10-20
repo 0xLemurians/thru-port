@@ -6,6 +6,8 @@ import { ConsensusStatus, Pubkey, Signature, Transaction } from "@thru/sdk";
 import { thru } from "../lib/thru/client";
 import { networkStorageKey, THRU_NETWORK } from "../lib/thru/network";
 import {
+  SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
+  SubmittedTransactionIdentityError,
   SubmittedTransactionUncertainError,
   TransactionDeadlineExceededError,
   createTransactionDeadline,
@@ -276,6 +278,7 @@ test("S05: authoritative execution failure overrides conflicting success-shaped 
   const result = await verifySubmittedTransaction({
     signature,
     readFinalizedTransaction: async () => ({
+      getSignature: () => Signature.from(signatureBytes),
       executionResult: { vmError: 17, userErrorCode: 4n, executionResult: 1n },
     }),
     verifyExpectedState: async () => { postStateReads += 1; return true; },
@@ -514,7 +517,8 @@ test("Phase 5C-R: valid negative SDK VM errors and optional legacy result remain
 test("Phase 5C-R: malformed finalized evidence cannot synthesize either verifier outcome", async () => {
   let clock = 0;
   await assert.rejects(verifySubmittedTransaction({ signature, timeoutMs: 10, initialBackoffMs: 10,
-    readFinalizedTransaction: async () => ({ executionResult: { ...successfulExecution, vmError: NaN } }),
+    readFinalizedTransaction: async () => ({ getSignature: () => Signature.from(signatureBytes),
+      executionResult: { ...successfulExecution, vmError: NaN } }),
     verifyExpectedState: async () => false, now: () => clock, sleep: async (delay) => { clock += delay; },
   }), SubmittedTransactionUncertainError);
 });
@@ -599,4 +603,154 @@ test("Phase 5C-R: a frozen injected clock cannot restart the physical phase budg
   assert.equal(await deadline.run(async () => { monotonic = 7; return true; }), true);
   await assert.rejects(deadline.run(async () => { monotonic = 11; return true; }), TransactionDeadlineExceededError);
   assert.equal(deadline.remainingMs(), 0);
+});
+
+for (const outcome of ["success", "failure"] as const) test(`S1: default finalized lookup verifies matching SDK identity before ${outcome} evidence`, async (t) => {
+  const order: string[] = [];
+  let reads = 0, stateReads = 0;
+  t.mock.method(thru.transactions, "get", async (
+    requested: Parameters<typeof thru.transactions.get>[0],
+    options: Parameters<typeof thru.transactions.get>[1],
+  ) => {
+    reads++;
+    assert.equal(requested, signature);
+    assert.equal(options?.minConsensus, ConsensusStatus.FINALIZED);
+    return {
+      getSignature: () => { order.push("identity"); return Signature.from(signatureBytes); },
+      get executionResult() {
+        order.push("execution");
+        return outcome === "success" ? successfulExecution : { ...successfulExecution, vmError: -255 };
+      },
+    };
+  });
+  const result = await verifySubmittedTransaction({ signature,
+    verifyExpectedState: async () => { stateReads++; return true; },
+  });
+  assert.deepEqual(result, { outcome, source: "finalized-transaction" });
+  assert.deepEqual(order, ["identity", "execution"]);
+  assert.equal(reads, 1);
+  assert.equal(stateReads, 0);
+});
+
+for (const evidence of ["success", "failure"] as const) test(`S1: default finalized lookup rejects mismatched identity before reading ${evidence} metadata`, async (t) => {
+  let identityReads = 0, executionReads = 0, stateReads = 0;
+  t.mock.method(thru.transactions, "get", async (
+    requested: Parameters<typeof thru.transactions.get>[0],
+    options: Parameters<typeof thru.transactions.get>[1],
+  ) => {
+    assert.equal(requested, signature);
+    assert.equal(options?.minConsensus, ConsensusStatus.FINALIZED);
+    return {
+      getSignature: () => { identityReads++; return Signature.from(new Uint8Array(64).fill(190)); },
+      get executionResult() {
+        executionReads++;
+        return evidence === "success" ? successfulExecution : { ...successfulExecution, vmError: -255 };
+      },
+    };
+  });
+  await assert.rejects(verifySubmittedTransaction({ signature,
+    verifyExpectedState: async () => { stateReads++; return true; },
+  }), (error: unknown) => {
+    // Existing callers that catch the uncertain base contract must preserve the
+    // original submitted signature rather than the untrusted response identity.
+    assert.ok(error instanceof SubmittedTransactionIdentityError);
+    assert.ok(error instanceof SubmittedTransactionUncertainError);
+    assert.equal(error.signature, signature);
+    assert.equal(error.message, SAFE_TRANSACTION_UNCERTAIN_MESSAGE);
+    return true;
+  });
+  assert.equal(identityReads, 1);
+  assert.equal(executionReads, 0);
+  assert.equal(stateReads, 0);
+});
+
+test("S1: default finalized lookup sanitizes a throwing SDK signature getter without post-state fallback", async (t) => {
+  let executionReads = 0, stateReads = 0;
+  t.mock.method(thru.transactions, "get", async () => ({
+    getSignature: () => { throw new Error("Synthetic untrusted RPC internals"); },
+    get executionResult() { executionReads++; return successfulExecution; },
+  }));
+  await assert.rejects(verifySubmittedTransaction({ signature,
+    verifyExpectedState: async () => { stateReads++; return true; },
+  }), (error: unknown) => {
+    assert.ok(error instanceof SubmittedTransactionIdentityError);
+    assert.equal(error.signature, signature);
+    assert.equal(error.message, SAFE_TRANSACTION_UNCERTAIN_MESSAGE);
+    assert.equal(error.message.includes("RPC internals"), false);
+    return true;
+  });
+  assert.equal(executionReads, 0);
+  assert.equal(stateReads, 0);
+});
+
+test("S1 I13/I14: identity-conflicted token recovery retains its real journal and fence without rebuild, signing, or sending", async (t) => {
+  const storage = memoryStorage();
+  installStorage(t, storage);
+  const record = pendingRecord();
+  savePendingTokenOperations(storage, [record]);
+  const fenceStorageKey = `${networkStorageKey("thru.writeFence", 1)}.${walletAddress}`;
+  const fence = JSON.stringify({ network: THRU_NETWORK.storageScope, wallet: walletAddress, signature });
+  storage.setItem(fenceStorageKey, fence);
+  const locks: WriteLockProvider = { request: async (_name, _options, work) => work({}) };
+  let statusReads = 0, finalizedReads = 0, identityReads = 0;
+  let executionReads = 0, stateReads = 0, resultBuilds = 0;
+  let transactionBuilds = 0, signs = 0, sends = 0, competingWrites = 0;
+  t.mock.method(thru.transactions, "getStatus", async (
+    requested: Parameters<typeof thru.transactions.getStatus>[0],
+  ) => {
+    statusReads++;
+    assert.equal(requested, signature);
+    throw new Error("Synthetic transaction not found");
+  });
+  t.mock.method(thru.transactions, "get", async (
+    requested: Parameters<typeof thru.transactions.get>[0],
+    options: Parameters<typeof thru.transactions.get>[1],
+  ) => {
+    finalizedReads++;
+    assert.equal(requested, signature);
+    assert.equal(options?.minConsensus, ConsensusStatus.FINALIZED);
+    return {
+      getSignature: () => { identityReads++; return Signature.from(new Uint8Array(64).fill(190)); },
+      get executionResult() { executionReads++; return successfulExecution; },
+    };
+  });
+  t.mock.method(thru.transactions, "build", () => { transactionBuilds++; throw new Error("Unexpected recovery build"); });
+  t.mock.method(Transaction.prototype, "sign", () => { signs++; throw new Error("Unexpected recovery signing"); });
+  t.mock.method(thru.transactions, "send", () => { sends++; throw new Error("Unexpected recovery send"); });
+  t.mock.method(thru.transactions, "sendAndTrack", () => { sends++; throw new Error("Unexpected recovery streaming send"); });
+  await assert.rejects(withWalletWriteGuard(walletAddress, () => reconcilePendingOperation({
+    base: { key: record.key, operationType: record.operationType, walletAddress,
+      mintAddress, expectedPostState: record.expectedPostState },
+    verifyExpectedState: async () => { stateReads++; return true; },
+    buildResult: async () => { resultBuilds++; return "must not construct success"; },
+    timeoutMs: 100,
+  }), { locks, storage, readOnlyRecovery: true }), (error: unknown) => {
+    assert.ok(error instanceof TransactionStatusUncertainError);
+    assert.equal(error.signature, signature);
+    return true;
+  });
+  const [remaining] = loadPendingTokenOperations(storage);
+  assert.equal(remaining?.key, record.key);
+  assert.equal(remaining?.signature, signature);
+  assert.equal(remaining?.status, "uncertain");
+  assert.deepEqual(remaining?.expectedPostState, record.expectedPostState);
+  assert.equal(storage.getItem(fenceStorageKey), fence);
+  assert.equal(statusReads, 1);
+  assert.equal(finalizedReads, 1);
+  assert.equal(identityReads, 1);
+  assert.equal(executionReads, 0);
+  assert.equal(stateReads, 0);
+  assert.equal(resultBuilds, 0);
+
+  // A later competing write is still blocked by the unchanged durable fence.
+  await assert.rejects(withWalletWriteGuard(walletAddress, async () => {
+    competingWrites++;
+  }, { locks, storage }), WriteOperationBlockedError);
+  assert.equal(competingWrites, 0);
+  assert.equal(statusReads, 2);
+  assert.equal(storage.getItem(fenceStorageKey), fence);
+  assert.equal(loadPendingTokenOperations(storage)[0]?.signature, signature);
+  assert.equal(transactionBuilds, 0);
+  assert.equal(signs, 0);
+  assert.equal(sends, 0);
 });

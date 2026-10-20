@@ -87,6 +87,7 @@ export interface TransactionExecutionResultLike {
 }
 
 export interface FinalizedTransactionLike {
+  getSignature(): Signature | undefined;
   executionResult?: TransactionExecutionResultLike;
 }
 
@@ -110,6 +111,33 @@ export class SubmittedTransactionUncertainError extends Error {
     this.signature = signature;
     this.expectedStateObserved = expectedStateObserved;
   }
+}
+
+/** An invalid response identity cannot authorize execution or post-state success. */
+export class SubmittedTransactionIdentityError extends SubmittedTransactionUncertainError {
+  constructor(signature: string) {
+    super(signature);
+    this.name = "SubmittedTransactionIdentityError";
+  }
+}
+
+function assertFinalizedTransactionIdentity(
+  transaction: FinalizedTransactionLike,
+  expected: Signature,
+  originalSignature: string,
+): void {
+  try {
+    const returned = transaction?.getSignature();
+    if (returned instanceof Signature) {
+      // Copy and reparse through the official SDK, rather than trusting an
+      // arbitrary signature property or an overridden equals() implementation.
+      const canonical = Signature.from(returned.toBytes());
+      if (canonical.toBytes().some((byte) => byte !== 0) && expected.equals(canonical)) return;
+    }
+  } catch {
+    // Missing/throwing methods and malformed SDK-shaped values fail closed.
+  }
+  throw new SubmittedTransactionIdentityError(originalSignature);
 }
 
 export class AccountConsensusPendingError extends Error {
@@ -638,6 +666,16 @@ export async function verifySubmittedTransaction(
     throw new SubmittedTransactionUncertainError(signature);
   }
 
+  let expectedSignature: Signature;
+  try {
+    expectedSignature = Signature.from(signature);
+    if (!expectedSignature.toBytes().some((byte) => byte !== 0)) {
+      throw new Error("Missing transaction signature.");
+    }
+  } catch {
+    throw new SubmittedTransactionIdentityError(signature);
+  }
+
   const deadline = createTransactionDeadline(timeoutMs, now);
   let attempt = 0;
   let expectedStateObserved = false;
@@ -646,6 +684,7 @@ export async function verifySubmittedTransaction(
     try {
       const finalizedTransaction = await deadline.run(readFinalizedTransaction, signal);
       throwIfAborted(signal);
+      assertFinalizedTransactionIdentity(finalizedTransaction, expectedSignature, signature);
       const outcome = transactionExecutionOutcome(finalizedTransaction.executionResult);
       if (outcome !== "unknown") {
         return outcome === "failure"
@@ -654,6 +693,9 @@ export async function verifySubmittedTransaction(
       }
     } catch (error) {
       throwIfAborted(signal);
+      // Identity conflicts are not transport failures: never let a conflicting
+      // response fall through to success-shaped post-state or release a fence.
+      if (error instanceof SubmittedTransactionIdentityError) throw error;
       if (error instanceof TransactionDeadlineExceededError) {
         throw new SubmittedTransactionUncertainError(signature, expectedStateObserved);
       }

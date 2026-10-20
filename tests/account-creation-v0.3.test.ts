@@ -30,6 +30,7 @@ import {
   SAFE_FAUCET_UNCERTAIN_MESSAGE,
 } from "../lib/wallet/faucet-safety";
 import {
+  SubmittedTransactionIdentityError,
   SubmittedTransactionUncertainError,
   TransactionDeadlineExceededError,
 } from "../lib/thru/transactions";
@@ -280,7 +281,10 @@ function guardedAccountSubmissionFixture(
     assert.equal(requested, signature.toThruFmt());
     assert.deepEqual(options, { minConsensus: ConsensusStatus.FINALIZED });
     if (!state.finalizedAvailable) throw notFound();
-    return { executionResult: { vmError: 0, userErrorCode: 0n, executionResult: 0n } } as never;
+    return {
+      getSignature: () => signature,
+      executionResult: { vmError: 0, userErrorCode: 0n, executionResult: 0n },
+    } as never;
   });
 
   return {
@@ -464,6 +468,7 @@ test("a finalized read-only lookup resolves status polling that ends before fina
     finalizedReads += 1;
     assert.equal(signature, signatureText(15));
     return {
+      getSignature: () => Signature.from(new Uint8Array(64).fill(15)),
       executionResult: {
         vmError: 0,
         userErrorCode: 0n,
@@ -613,6 +618,7 @@ test("an unavailable account status endpoint falls back without rebroadcasting",
   t.mock.method(thru.transactions, "get", async () => {
     finalizedReads += 1;
     return {
+      getSignature: () => Signature.from(new Uint8Array(64).fill(19)),
       executionResult: {
         vmError: 0,
         userErrorCode: 0n,
@@ -765,6 +771,60 @@ test("read-only account finalization cannot turn a different wallet post-state i
   });
   assert.equal(fixture.counts.builds, 1);
   assert.equal(fixture.counts.sends, 1);
+});
+
+test("an account finalized identity conflict preserves the original uncertainty and write fence despite matching post-state", async (t) => {
+  const fixture = guardedAccountSubmissionFixture(t, 224, "success");
+  let returnedIdentityReads = 0;
+  t.mock.method(thru.transactions, "getStatus", async (requested: string) => {
+    fixture.counts.statusReads++;
+    assert.equal(requested, fixture.signature);
+    fixture.clock.advance(1);
+    throw new Error("Status endpoint temporarily unavailable");
+  });
+  t.mock.method(thru.transactions, "get", async (requested: string, options: unknown) => {
+    fixture.counts.finalizedReads++;
+    assert.equal(requested, fixture.signature);
+    assert.deepEqual(options, { minConsensus: ConsensusStatus.FINALIZED });
+    return {
+      getSignature: () => {
+        returnedIdentityReads++;
+        return Signature.from(new Uint8Array(64).fill(225));
+      },
+      executionResult: { vmError: 0, userErrorCode: 0n, executionResult: 0n },
+    } as never;
+  });
+
+  await assert.rejects(
+    ensureAccountExists(fixture.activeAccount, { timeoutMs: 1 }),
+    (error: unknown) => {
+      assert.ok(error instanceof SubmittedTransactionIdentityError);
+      return fixture.isUncertain(error);
+    },
+  );
+  assert.equal(returnedIdentityReads, 1);
+  assert.equal(fixture.state.account, "matching");
+  assert.equal(fixture.counts.accountReads, 1,
+    "matching post-state must not override conflicting finalized transaction identity");
+  assert.equal(fixture.counts.builds, 1);
+  assert.equal(fixture.counts.signs, 1);
+  assert.equal(fixture.counts.sends, 1);
+  assert.equal(fixture.counts.statusReads, 1);
+  assert.equal(fixture.counts.finalizedReads, 1);
+  assert.equal(fixture.counts.releases, 0);
+  assert.equal(JSON.parse(fixture.fence()!).signature, fixture.signature);
+
+  await assert.rejects(ensureAccountExists(fixture.activeAccount), WriteOperationBlockedError);
+  await withoutBrowserWriteLocks(async () => {
+    fixture.state.account = "missing";
+    await assert.rejects(ensureAccountExists(fixture.activeAccount), fixture.isUncertain);
+  });
+  assert.equal(fixture.counts.builds, 1);
+  assert.equal(fixture.counts.signs, 1);
+  assert.equal(fixture.counts.sends, 1);
+  assert.equal(fixture.counts.finalizedReads, 1);
+  assert.equal(fixture.counts.releases, 0);
+  assert.equal(JSON.parse(fixture.fence()!).signature, fixture.signature);
 });
 
 test("concurrent account creation calls cannot submit twice", async (t) => {
@@ -1005,6 +1065,7 @@ test("faucet funding uses read-only fallback after status polling times out", as
   t.mock.method(thru.transactions, "get", async () => {
     finalizedReads += 1;
     return {
+      getSignature: () => Signature.from(new Uint8Array(64).fill(120)),
       executionResult: {
         vmError: 0,
         userErrorCode: 0n,
@@ -1108,6 +1169,7 @@ test("abort after account-create submission reconciles without rebroadcast", asy
     statusSnapshot(41) as never,
   );
   t.mock.method(thru.transactions, "get", async () => ({
+    getSignature: () => Signature.from(new Uint8Array(64).fill(41)),
     executionResult: {
       vmError: 0,
       userErrorCode: 0n,
@@ -1162,6 +1224,7 @@ test("unrelated balance movement cannot override a finalized faucet failure", as
     }) as never,
   );
   t.mock.method(thru.transactions, "get", async () => ({
+    getSignature: () => Signature.from(new Uint8Array(64).fill(142)),
     executionResult: {
       vmError: 1,
       userErrorCode: 0n,

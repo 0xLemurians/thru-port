@@ -1,22 +1,28 @@
 import assert from "node:assert/strict";
+import http from "node:http";
+import https from "node:https";
 import test from "node:test";
+import { thru } from "../lib/thru/client";
 import {
   AccountConsensusPendingError,
   SAFE_TRANSACTION_UNCERTAIN_MESSAGE,
+  SubmittedTransactionIdentityError,
   SubmittedTransactionUncertainError,
   accountReadFinality,
   assertFinalizedAccount,
   submitSignedTransactionOnce,
   verifySubmittedTransaction,
+  type FinalizedTransactionLike,
 } from "../lib/thru/transactions";
 import { verifyTransferDeltas } from "../lib/token/operations";
-import { ConsensusStatus, Signature } from "@thru/sdk";
+import { ConsensusStatus, Signature, Transaction } from "@thru/sdk";
 import type {
   MintAccountInfo,
   TokenAccountInfo,
 } from "@thru/programs/token";
 
-const SIGNATURE = "public-test-transaction-signature";
+// Public shape-only signatures, never signed or submitted to a live service.
+const SIGNATURE = wireSignature(71);
 
 function wireSignature(byte: number): string {
   return Signature.from(new Uint8Array(64).fill(byte)).toThruFmt();
@@ -41,6 +47,28 @@ function successfulExecution() {
     executionResult: 0n,
   };
 }
+
+test.beforeEach((t) => {
+  if (!("mock" in t) || !("after" in t)) {
+    throw new Error("Finalization regressions require an isolated test context.");
+  }
+  let unexpectedCalls = 0;
+  const denied = () => {
+    unexpectedCalls += 1;
+    throw new Error("Finalization regressions forbid live transport and signing.");
+  };
+  t.after(() => assert.equal(unexpectedCalls, 0));
+  t.mock.method(globalThis, "fetch", denied);
+  for (const transport of [http, https]) {
+    t.mock.method(transport, "request", denied);
+    t.mock.method(transport, "get", denied);
+  }
+  for (const method of ["get", "getStatus", "send", "sendAndTrack", "build", "buildAndSign"] as const) {
+    t.mock.method(thru.transactions, method, denied);
+  }
+  t.mock.method(Transaction.prototype, "sign", denied);
+  t.mock.method(Transaction.prototype, "legacySign", denied);
+});
 
 test("unary submission occurs once and getStatus is polled to finalized execution", async () => {
   const signature = wireSignature(51);
@@ -276,6 +304,7 @@ test("finalized read-only transaction execution confirms success", async () => {
   const result = await verifySubmittedTransaction({
     signature: SIGNATURE,
     readFinalizedTransaction: async () => ({
+      getSignature: () => Signature.from(SIGNATURE),
       executionResult: successfulExecution(),
     }),
     verifyExpectedState: async () => {
@@ -295,6 +324,7 @@ test("finalized execution failure remains a verified failure", async () => {
   const result = await verifySubmittedTransaction({
     signature: SIGNATURE,
     readFinalizedTransaction: async () => ({
+      getSignature: () => Signature.from(SIGNATURE),
       executionResult: {
         vmError: 1,
         userErrorCode: 0n,
@@ -421,7 +451,7 @@ test("missing finalized transaction and missing post-state remain safely uncerta
 test("abort discards a stale finalized lookup result and stops further polling", async () => {
   const controller = new AbortController();
   let releaseRead:
-    | ((value: { executionResult: ReturnType<typeof successfulExecution> }) => void)
+    | ((value: FinalizedTransactionLike) => void)
     | undefined;
   let postStateReads = 0;
   const pending = verifySubmittedTransaction({
@@ -438,7 +468,7 @@ test("abort discards a stale finalized lookup result and stops further polling",
   });
 
   controller.abort();
-  releaseRead?.({ executionResult: successfulExecution() });
+  releaseRead?.({ getSignature: () => Signature.from(SIGNATURE), executionResult: successfulExecution() });
 
   await assert.rejects(
     pending,
@@ -447,3 +477,154 @@ test("abort discards a stale finalized lookup result and stops further polling",
   );
   assert.equal(postStateReads, 0);
 });
+
+test("I01: official canonicalization matches a hex request to the same SDK signature", async () => {
+  const canonical = Signature.from(SIGNATURE);
+  const result = await verifySubmittedTransaction({
+    signature: canonical.toHex(),
+    readFinalizedTransaction: async () => ({
+      getSignature: () => canonical,
+      executionResult: successfulExecution(),
+    }),
+  });
+  assert.deepEqual(result, { outcome: "success", source: "finalized-transaction" });
+});
+
+for (const [name, execution] of [
+  ["I03 successful metadata", successfulExecution()],
+  ["I04 failure metadata", { vmError: 7, userErrorCode: 9n, executionResult: 1n }],
+] as const) {
+  test(`${name}: different identity cannot authorize execution or contradictory post-state`, async () => {
+    let identityReads = 0, executionReads = 0, postStateReads = 0, sleeps = 0;
+    await assert.rejects(verifySubmittedTransaction({
+      signature: SIGNATURE,
+      readFinalizedTransaction: async () => ({
+        getSignature: () => { identityReads++; return Signature.from(wireSignature(72)); },
+        get executionResult() { executionReads++; return execution; },
+      }),
+      verifyExpectedState: async () => { postStateReads++; return true; },
+      classifyExpectedStateError: () => "failure",
+      sleep: async () => { sleeps++; },
+    }), (error: unknown) => {
+      assert.ok(error instanceof SubmittedTransactionIdentityError);
+      assert.ok(error instanceof SubmittedTransactionUncertainError);
+      assert.equal(error.signature, SIGNATURE);
+      assert.equal(error.expectedStateObserved, false);
+      assert.equal(error.message, SAFE_TRANSACTION_UNCERTAIN_MESSAGE);
+      return true;
+    });
+    assert.equal(identityReads, 1);
+    assert.equal(executionReads, 0);
+    assert.equal(postStateReads, 0, "I08: exact-looking state cannot mask an identity conflict");
+    assert.equal(sleeps, 0, "identity conflicts are not transient transport retries");
+  });
+}
+
+const invalidFinalizedIdentities: Array<[string, () => unknown]> = [
+  ["I05 missing signature", () => ({ getSignature: () => undefined })],
+  ["I06 string instead of SDK signature", () => ({ getSignature: () => SIGNATURE })],
+  ["I06 bytes instead of SDK signature", () => ({ getSignature: () => Signature.from(SIGNATURE).toBytes() })],
+  ["I06 arbitrary signature property without SDK method", () => ({ signature: SIGNATURE })],
+  ["I06 zero signature sentinel", () => ({ getSignature: () => Signature.from(new Uint8Array(64)) })],
+  ["I06 null response", () => null],
+  ["I06 malformed SDK signature bytes", () => {
+    const broken = Signature.from(SIGNATURE);
+    Object.defineProperty(broken, "toBytes", { value: () => new Uint8Array(3) });
+    return { getSignature: () => broken };
+  }],
+  ["I07 throwing getSignature", () => ({ getSignature: () => { throw new Error("untrusted RPC internals"); } })],
+  ["I07 throwing method getter", () => ({ get getSignature() { throw new Error("untrusted accessor"); } })],
+  ["I06 overridden equals cannot forge a match", () => {
+    const different = Signature.from(wireSignature(73));
+    Object.defineProperty(different, "equals", { value: () => true });
+    return { getSignature: () => different };
+  }],
+];
+
+for (const [name, response] of invalidFinalizedIdentities) {
+  test(`${name}: safely uncertain before execution or post-state`, async () => {
+    let executionReads = 0, postStateReads = 0, reads = 0;
+    const value = response();
+    if (value !== null && typeof value === "object") {
+      Object.defineProperty(value, "executionResult", {
+        get: () => { executionReads++; return successfulExecution(); },
+      });
+    }
+    await assert.rejects(verifySubmittedTransaction({
+      signature: SIGNATURE,
+      // Intentionally malformed external data exercises the runtime boundary.
+      readFinalizedTransaction: async () => { reads++; return value as FinalizedTransactionLike; },
+      verifyExpectedState: async () => { postStateReads++; return true; },
+    }), (error: unknown) => {
+      assert.ok(error instanceof SubmittedTransactionIdentityError);
+      assert.equal(error.signature, SIGNATURE);
+      assert.equal(error.message, SAFE_TRANSACTION_UNCERTAIN_MESSAGE);
+      assert.doesNotMatch(error.message, /internals|accessor|RPC|signature|bytes/i);
+      return true;
+    });
+    assert.equal(reads, 1);
+    assert.equal(executionReads, 0);
+    assert.equal(postStateReads, 0);
+  });
+}
+
+test("I09: not_found finalized lookup preserves exact authoritative post-state fallback", async () => {
+  let reads = 0, stateReads = 0;
+  const result = await verifySubmittedTransaction({
+    signature: SIGNATURE,
+    readFinalizedTransaction: async () => {
+      reads++;
+      throw Object.assign(new Error("transaction not found"), { code: 5 });
+    },
+    verifyExpectedState: async () => { stateReads++; return true; },
+  });
+  assert.deepEqual(result, { outcome: "success", source: "post-state" });
+  assert.equal(reads, 1);
+  assert.equal(stateReads, 1);
+});
+
+for (const [name, execution] of [
+  ["I11 absent execution", undefined],
+  ["I12 malformed VM error", { vmError: Number.NaN, userErrorCode: 0n }],
+  ["I12 malformed user error", { vmError: 0, userErrorCode: "0" }],
+] as const) {
+  test(`${name}: matching identity cannot manufacture authoritative execution`, async () => {
+    let clock = 0, identityReads = 0, postStateReads = 0;
+    await assert.rejects(verifySubmittedTransaction({
+      signature: SIGNATURE,
+      readFinalizedTransaction: async () => ({
+        getSignature: () => { identityReads++; return Signature.from(SIGNATURE); },
+        executionResult: execution,
+      }) as FinalizedTransactionLike,
+      verifyExpectedState: async () => { postStateReads++; return false; },
+      timeoutMs: 1_000,
+      initialBackoffMs: 1_000,
+      now: () => clock,
+      sleep: async (delay) => { clock += delay; },
+    }), (error: unknown) => {
+      assert.ok(error instanceof SubmittedTransactionUncertainError);
+      assert.equal(error instanceof SubmittedTransactionIdentityError, false);
+      assert.equal(error.signature, SIGNATURE);
+      assert.equal(error.expectedStateObserved, false);
+      return true;
+    });
+    assert.equal(identityReads, 2);
+    assert.equal(postStateReads, 2);
+  });
+}
+
+for (const requested of ["not-a-valid-signature", Signature.from(new Uint8Array(64)).toThruFmt()]) {
+  test(`invalid requested identity is uncertain before any read: ${requested.startsWith("ts") ? "zero sentinel" : "malformed"}`, async () => {
+    let reads = 0, stateReads = 0;
+    await assert.rejects(verifySubmittedTransaction({
+      signature: requested,
+      readFinalizedTransaction: async () => {
+        reads++;
+        return { getSignature: () => Signature.from(SIGNATURE), executionResult: successfulExecution() };
+      },
+      verifyExpectedState: async () => { stateReads++; return true; },
+    }), (error: unknown) => error instanceof SubmittedTransactionIdentityError && error.signature === requested);
+    assert.equal(reads, 0);
+    assert.equal(stateReads, 0);
+  });
+}

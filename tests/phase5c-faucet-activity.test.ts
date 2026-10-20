@@ -144,6 +144,7 @@ function mockFaucet(t: TestContext) {
     }
     return {
       signature,
+      getSignature: () => signature,
       executionResult: state.finalized === "failure" ? { ...success, vmError: 4 } : success,
     };
   });
